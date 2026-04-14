@@ -312,6 +312,31 @@ function Stop-QAgentGateway {
   } finally {
     Pop-Location
   }
+
+  # Stop OntoGit ports too
+  Stop-PortListeners -Port 8080 # Gateway
+  Stop-PortListeners -Port 8000 # XiaoGuGit
+  Stop-PortListeners -Port 5000 # Probability
+}
+
+function Start-OntoGitServices {
+  param(
+    [Parameter(Mandatory)]
+    [psobject]$Config
+  )
+
+  $ontoGitDir = Join-Path $Config.RootDir 'OntoGit'
+  $script = Join-Path $ontoGitDir 'start_ontogit.ps1'
+  
+  if (Test-Path $script) {
+    Write-Host "正在启动 OntoGit 本体中台服务栈..."
+    Push-Location $ontoGitDir
+    try {
+      & $script
+    } finally {
+      Pop-Location
+    }
+  }
 }
 
 function Invoke-LoggedCommand {
@@ -425,6 +450,9 @@ function Start-KimiStack {
   Stop-QAgentGateway -Config $Config
   Stop-PortListeners -Port $Config.BackendPort
   Stop-PortListeners -Port $Config.FrontendPort
+
+  Write-Host '启动 OntoGit 服务...'
+  Start-OntoGitServices -Config $Config
 
   Write-Host '启动后端...'
   Start-DetachedKimiProcess -Config $Config -ChildMode 'RunBackend' -LogFile $Config.BackendLogFile -PidFile $Config.BackendPidFile | Out-Null
