@@ -11,9 +11,22 @@
 
 ---
 
-## 🛠️ 快速启动 (Quick Start)
+### 选项 A：快捷启动全部组件 (全家桶)
+如果您想一键拉起包括 OntoGit 后台和 Web 前端在内的所有组件，可以使用根目录下的全量启动脚本：
 
-### 第 1 步：启动 OntoGit 后台服务栈
+*   **Windows (PowerShell)**:
+    ```powershell
+    .\start_kimi_stack.ps1
+    ```
+*   **Linux/macOS (Bash)**:
+    ```bash
+    chmod +x start_kimi_stack.sh
+    ./start_kimi_stack.sh
+    ```
+
+### 选项 B：分步手动启动 (推荐调试用)
+
+#### 第 1 步：启动 OntoGit 后台服务栈
 在进行任何前端操作前，需要启动本体中台的三个子服务（Gateway, XiaoGuGit, Probability）：
 
 ```powershell
