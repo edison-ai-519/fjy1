@@ -28,3 +28,7 @@ Ontology_Factory/storage/data/*.sqlite3
 # IDE
 .vscode/
 .idea/
+
+# Custom Ignores
+doc/
+docs/superpowers/
