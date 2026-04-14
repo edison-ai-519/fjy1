@@ -112,6 +112,16 @@ start_frontend() {
   wait_for_port "${FRONTEND_PORT}" "前端"
 }
 
+start_ontogit_services() {
+  local onto_script="${ROOT_DIR}/OntoGit/start_ontogit.sh"
+  if [[ -f "${onto_script}" ]]; then
+    echo "启动 OntoGit 本体中台服务栈..."
+    chmod +x "${onto_script}"
+    bash "${onto_script}"
+    sleep 2
+  fi
+}
+
 stop_qagent_gateway() {
   if [[ ! -d "${QAGENT_DIR}" ]]; then
     return
@@ -163,6 +173,12 @@ stop_qagent_gateway
 stop_port "${BACKEND_PORT}"
 stop_port "${FRONTEND_PORT}"
 
+# Also stop OntoGit ports
+stop_port 8080
+stop_port 8000
+stop_port 5000
+
+start_ontogit_services
 start_backend
 start_frontend
 print_summary
