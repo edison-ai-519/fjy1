@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster } from '@/components/ui/sonner';
 import { useOntologyData } from '@/hooks/useOntologyData';
+import { useOntologyAssistantState } from '@/hooks/useOntologyAssistantState';
 import { SearchPanel } from '@/components/SearchPanel';
 import { OntologyBrowser } from '@/components/OntologyBrowser';
 import { KnowledgeGraph } from '@/components/KnowledgeGraph';
@@ -11,12 +13,12 @@ import { OntologyAnalyzer } from '@/components/OntologyAnalyzer';
 import { SystemsOntologyView } from '@/components/SystemsOntologyView';
 import { OntologyAssistant } from '@/components/OntologyAssistant';
 import { EducationHub } from '@/components/EducationHub';
-
+import { Sidebar as AssistantSidebar } from '@/components/assistant/Sidebar';
 import { AboutKnowledgeBase } from '@/components/AboutKnowledgeBase';
 import { XiaoGuGitDashboard } from '@/components/XiaoGuGitDashboard';
-import { 
-  BookOpen, 
-  Network, 
+import {
+  BookOpen,
+  Network,
   BarChart3,
   Database,
   Menu,
@@ -24,12 +26,14 @@ import {
   Layers,
   Sparkles,
   Boxes,
-  MessageSquareText,
-  GraduationCap
+  GraduationCap,
+  FlaskConical,
+  MessageSquareText
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import type { Entity, KnowledgeLayer, KnowledgeGraphData } from '@/types/ontology';
 
 const LAYER_FILTERS: Array<{ value: 'all' | KnowledgeLayer; label: string }> = [
@@ -71,20 +75,21 @@ function buildFilteredStatistics(
 }
 
 function App() {
-  const { 
-    knowledgeGraph, 
-    loading, 
-    error, 
+  const {
+    knowledgeGraph,
+    loading,
+    error,
     searchEntities
   } = useOntologyData();
-  
+
   const entities = knowledgeGraph ? Object.values(knowledgeGraph.entity_index) : [];
   const crossReferences = knowledgeGraph?.cross_references || [];
-  
+
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('browse');
   const [selectedLayer, setSelectedLayer] = useState<'all' | KnowledgeLayer>('all');
+  const assistantState = useOntologyAssistantState(selectedEntity);
 
   const filteredEntities = entities.filter((entity) => (
     selectedLayer === 'all' || entity.layer === selectedLayer
@@ -94,7 +99,7 @@ function App() {
     visibleEntityIds.has(reference.source) && visibleEntityIds.has(reference.target)
   ));
   const filteredStatistics = buildFilteredStatistics(knowledgeGraph, filteredEntities, filteredCrossReferences);
-  
+
   // 数据加载完成后自动选择第一个实体
   useEffect(() => {
     if (filteredEntities.length === 0) {
@@ -108,16 +113,16 @@ function App() {
       setSelectedEntity(filteredEntities[0]);
     }
   }, [filteredEntities, selectedEntity]);
-  
+
   const relatedEntities = selectedEntity
     ? filteredCrossReferences
-        .map((reference) => {
-          const relatedId = reference.source === selectedEntity.id ? reference.target : (
-            reference.target === selectedEntity.id ? reference.source : null
-          );
-          return relatedId ? filteredEntities.find((entity) => entity.id === relatedId) || null : null;
-        })
-        .filter((entity): entity is Entity => Boolean(entity))
+      .map((reference) => {
+        const relatedId = reference.source === selectedEntity.id ? reference.target : (
+          reference.target === selectedEntity.id ? reference.source : null
+        );
+        return relatedId ? filteredEntities.find((entity) => entity.id === relatedId) || null : null;
+      })
+      .filter((entity): entity is Entity => Boolean(entity))
     : [];
 
   const handleSearch = async (query: string) => {
@@ -153,10 +158,10 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
       {/* Header */}
       <header className="border-b bg-card sticky top-0 z-40">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="w-full px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-primary/10 rounded-lg">
               <Database className="w-6 h-6 text-primary" />
@@ -166,30 +171,45 @@ function App() {
               <p className="text-xs text-muted-foreground">Ontology Knowledge Base</p>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-4">
+            <div className="hidden lg:flex items-center gap-1 bg-slate-100/50 p-1 rounded-2xl border border-slate-200/60 mr-2">
+              {LAYER_FILTERS.map((option) => (
+                <Button
+                  key={option.value}
+                  variant={selectedLayer === option.value ? 'default' : 'ghost'}
+                  size="sm"
+                  className={cn(
+                    "h-8 px-3 rounded-xl text-xs font-bold transition-all",
+                    selectedLayer === option.value
+                      ? "bg-white shadow-md text-blue-600 hover:bg-white"
+                      : "text-slate-500 hover:text-slate-900 hover:bg-white/50"
+                  )}
+                  onClick={() => setSelectedLayer(option.value)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+
             <div className="hidden md:flex items-center gap-2">
-              <Badge variant="outline" className="flex items-center gap-1">
-                <GitBranch className="w-3 h-3" />
+              <Badge variant="outline" className="flex items-center gap-1 rounded-full px-2 py-0.5 border-slate-200 text-[10px] font-bold">
+                <GitBranch className="w-3 h-3 text-blue-500" />
                 {filteredEntities.length} 实体
               </Badge>
-              <Badge variant="outline" className="flex items-center gap-1">
-                <Network className="w-3 h-3" />
+              <Badge variant="outline" className="flex items-center gap-1 rounded-full px-2 py-0.5 border-slate-200 text-[10px] font-bold">
+                <Network className="w-3 h-3 text-indigo-500" />
                 {filteredCrossReferences.length} 关系
               </Badge>
-              <Badge variant="outline" className="flex items-center gap-1">
-                <Layers className="w-3 h-3" />
-                {selectedLayer === 'all' ? '全部层' : selectedLayer}
-              </Badge>
             </div>
-            
+
             <div className="hidden md:block w-72">
-              <SearchPanel 
+              <SearchPanel
                 onSearch={handleSearch}
                 onSelectEntity={handleSelectEntity}
               />
             </div>
-            
+
             <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
               <SheetTrigger asChild>
                 <Button variant="outline" size="icon" className="lg:hidden">
@@ -201,7 +221,7 @@ function App() {
                   <h2 className="font-semibold">本体浏览器</h2>
                 </div>
                 <div className="p-4">
-                  <OntologyBrowser 
+                  <OntologyBrowser
                     entities={filteredEntities}
                     crossReferences={filteredCrossReferences}
                     onSelectEntity={handleSelectEntity}
@@ -214,254 +234,273 @@ function App() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-4 py-6">
-        <div className="mb-6 flex flex-wrap items-center gap-2 rounded-2xl border bg-card p-3">
-          <span className="text-sm text-muted-foreground">按存储层过滤</span>
-          {LAYER_FILTERS.map((option) => (
-            <Button
-              key={option.value}
-              type="button"
-              variant={selectedLayer === option.value ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setSelectedLayer(option.value)}
-            >
-              {option.label}
-            </Button>
-          ))}
-        </div>
+      {/* Main Content Area */}
+      <main className="w-full flex-1 min-h-0 overflow-hidden bg-background">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full min-h-0 gap-0 lg:flex-row">
+          <div className="w-full shrink-0 border-r bg-slate-50/30 lg:w-[300px] xl:w-[320px] lg:h-[calc(100vh-80px)] overflow-hidden flex flex-col">
+            <div className="p-4 flex flex-col h-full min-h-0 gap-4">
+              <TabsList className="flex h-auto w-full flex-row flex-wrap gap-1 rounded-3xl border bg-card/80 p-1.5 shadow-sm lg:flex-col shrink-0">
+                <TabsTrigger value="browse" title="库管理" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                  <BookOpen className="mr-2 h-4 w-4 text-primary/70" />
+                  <span className="font-bold text-xs uppercase tracking-tight">库管理</span>
+                </TabsTrigger>
+                <TabsTrigger value="workspace" title="工作台" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                  <GitBranch className="mr-2 h-4 w-4 text-primary/70" />
+                  <span className="font-bold text-xs uppercase tracking-tight">工作台</span>
+                </TabsTrigger>
+                <TabsTrigger value="assistant" title="问答助手" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                  <MessageSquareText className="mr-2 h-4 w-4 text-primary/70" />
+                  <span className="font-bold text-xs uppercase tracking-tight">问答助手</span>
+                </TabsTrigger>
+                <TabsTrigger value="lab" title="本体实验室" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                  <FlaskConical className="mr-2 h-4 w-4 text-primary/70" />
+                  <span className="font-bold text-xs uppercase tracking-tight">本体实验室</span>
+                </TabsTrigger>
+                <TabsTrigger value="graph" title="知识图谱" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                  <Network className="mr-2 h-4 w-4 text-primary/70" />
+                  <span className="font-bold text-xs uppercase tracking-tight">知识图谱</span>
+                </TabsTrigger>
+              </TabsList>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col lg:flex-row gap-8 items-start">
-          <div className="w-full lg:w-48 xl:w-56 shrink-0 lg:sticky lg:top-20">
-            <TabsList className="flex flex-row flex-wrap lg:flex-col h-auto w-full bg-slate-100/60 p-2 gap-1 rounded-xl">
-              <TabsTrigger value="browse" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <BookOpen className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">浏览总览</span>
-              </TabsTrigger>
-              <TabsTrigger value="workspace" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <GitBranch className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">工作台</span>
-              </TabsTrigger>
-              <TabsTrigger value="assistant" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <MessageSquareText className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">问答助手</span>
-              </TabsTrigger>
-              <TabsTrigger value="analyzer" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <Sparkles className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">概率分析</span>
-              </TabsTrigger>
-              <TabsTrigger value="systems" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <Boxes className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">系统视图</span>
-              </TabsTrigger>
-              <TabsTrigger value="education" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <GraduationCap className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">知识科普</span>
-              </TabsTrigger>
-              <TabsTrigger value="graph" className="w-full justify-start py-2.5 px-4 rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                <Network className="w-4 h-4 mr-2 text-primary/70" />
-                <span className="font-medium">知识图谱</span>
-              </TabsTrigger>
-            </TabsList>
+              <div className="flex-1 min-h-0">
+                {activeTab === 'browse' && (
+                  <OntologyBrowser
+                    entities={filteredEntities}
+                    crossReferences={filteredCrossReferences}
+                    onSelectEntity={handleSelectEntity}
+                    selectedEntityId={selectedEntity?.id}
+                  />
+                )}
+                {activeTab === 'assistant' && (
+                  <AssistantSidebar
+                    sessions={assistantState.sessions}
+                    activeSessionId={assistantState.activeSessionId}
+                    onSelectSession={assistantState.setActiveSessionId}
+                    onNewSession={assistantState.onNewSession}
+                    onDeleteSession={assistantState.onDeleteSession}
+                    isBusy={assistantState.isBusy}
+                  />
+                )}
+                {(activeTab === 'workspace' || activeTab === 'lab' || activeTab === 'graph') && (
+                  <div className="h-full rounded-3xl border border-slate-200/60 bg-white/40 p-6 flex flex-col items-center justify-center text-center backdrop-blur-sm shadow-sm">
+                    <div className="w-12 h-12 rounded-full bg-slate-100/50 flex items-center justify-center mb-4">
+                      <Sparkles className="w-6 h-6 text-slate-400" />
+                    </div>
+                    <h3 className="text-sm font-bold text-slate-600 mb-1">当前模块未开启侧栏</h3>
+                    <p className="text-xs text-slate-400">
+                      该功能模块的核心操作区位于主视图中。
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex-1 min-w-0 w-full space-y-6">
-            <TabsContent value="browse" className="mt-0 space-y-6">
-            <div className="rounded-3xl border bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 text-white overflow-hidden">
-              <div className="grid gap-6 px-6 py-6 lg:grid-cols-[1.6fr_1fr] lg:px-8">
-                <div>
-                  <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs">
-                    <BookOpen className="w-3.5 h-3.5" />
-                    WiKiMG 主阅读区
+          <TabsContent value="browse" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-500">
+            <ScrollArea className="h-full">
+              <div className="p-6 space-y-6">
+                {selectedEntity && (
+                  <div className="animate-in fade-in slide-in-from-top-4 duration-500">
+                    <EntityDetail
+                      entity={selectedEntity}
+                      relatedEntities={relatedEntities}
+                      onSelectRelated={handleSelectEntity}
+                    />
                   </div>
-                  <h2 className="mt-4 text-2xl font-semibold lg:text-3xl">
-                    用存储层过滤知识范围，再查看节点详情与关系网络
-                  </h2>
-                  <p className="mt-3 max-w-2xl text-sm text-slate-300 lg:text-base">
-                    当前页面会根据上方的层过滤展示 `common`、`domain`、`private` 中的节点。左侧用于快速比较代表节点，右侧会同步展开选中节点的定义、属性、来源和关联关系。
-                  </p>
-                </div>
+                )}
 
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-2xl bg-white/10 p-4">
-                    <div className="text-xs text-slate-300">当前实体</div>
-                    <div className="mt-2 text-lg font-semibold">{selectedEntity?.name || '未选择'}</div>
+                {!selectedEntity ? (
+                  <div className="space-y-6">
+                    <div className="rounded-3xl border bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 text-white overflow-hidden shadow-2xl">
+                      <div className="grid gap-6 px-8 py-10 lg:grid-cols-[1.6fr_1fr]">
+                        <div>
+                          <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[10px] uppercase tracking-wider font-bold">
+                            <BookOpen className="w-3.5 h-3.5" />
+                            WiKiMG 知识全景
+                          </div>
+                          <h2 className="mt-6 text-3xl font-bold lg:text-5xl leading-tight">
+                            从左侧侧栏选取概念<br />开启深度语义阅读
+                          </h2>
+                          <p className="mt-4 max-w-2xl text-slate-300 text-sm lg:text-base leading-relaxed">
+                            左侧本体树已整合全量节点，在此处您将看到节点的工业级定义、跨层关联关系以及多维度的属性特征。
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-center">
+                          <div className="grid grid-cols-2 gap-4 w-full max-w-[320px]">
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-5 text-center backdrop-blur-md">
+                              <div className="text-[10px] text-slate-400 uppercase font-black">Total Nodes</div>
+                              <div className="mt-1 text-2xl font-black tracking-tighter">{filteredEntities.length}</div>
+                            </div>
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-5 text-center backdrop-blur-md">
+                              <div className="text-[10px] text-slate-400 uppercase font-black">References</div>
+                              <div className="mt-1 text-2xl font-black tracking-tighter">{filteredCrossReferences.length}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="bg-white border rounded-3xl p-6 shadow-sm hover:shadow-md transition-all group">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                            <BookOpen className="w-6 h-6" />
+                          </div>
+                          <h3 className="font-bold">哲学本体</h3>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed">涵盖存在论、范畴论、属性论等形而上学核心。从传统哲学到现代分析的演进脉络。</p>
+                      </div>
+                      <div className="bg-white border rounded-3xl p-6 shadow-sm hover:shadow-md transition-all group">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="p-3 bg-green-50 text-green-600 rounded-2xl group-hover:bg-green-600 group-hover:text-white transition-colors">
+                            <Layers className="w-6 h-6" />
+                          </div>
+                          <h3 className="font-bold">形式本体</h3>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed">BFO, DOLCE 等顶层本体，以及 OWL/RDF 等形式化逻辑。支撑语义网的骨干。</p>
+                      </div>
+                      <div className="bg-white border rounded-3xl p-6 shadow-sm hover:shadow-md transition-all group">
+                        <div className="flex items-center gap-4 mb-4">
+                          <div className="p-3 bg-purple-50 text-purple-600 rounded-2xl group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                            <Network className="w-6 h-6" />
+                          </div>
+                          <h3 className="font-bold">科学本体</h3>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed">从物质探测到认知涌现的层次结构，跨越物理、生物与社会系统的集成模型。</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-wider">
+                        <BarChart3 className="w-3.5 h-3.5 text-blue-500" />
+                        运行实时指标
+                      </div>
+                      <StatsPanel statistics={filteredStatistics} />
+                    </div>
                   </div>
-                  <div className="rounded-2xl bg-white/10 p-4">
-                    <div className="text-xs text-slate-300">当前层节点</div>
-                    <div className="mt-2 text-lg font-semibold">{filteredEntities.length}</div>
+                ) : (
+                  <div className="pt-10 border-t border-dashed">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-sm font-bold text-slate-900">库全局统计</h4>
+                      <Badge variant="outline" className="text-[10px] font-medium opacity-50">Background metrics</Badge>
+                    </div>
+                    <StatsPanel statistics={filteredStatistics} />
                   </div>
-                  <div className="rounded-2xl bg-white/10 p-4">
-                    <div className="text-xs text-slate-300">当前层关系</div>
-                    <div className="mt-2 text-lg font-semibold">{filteredCrossReferences.length}</div>
-                  </div>
-                </div>
+                )}
+
+                <AboutKnowledgeBase />
               </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              <div className="hidden lg:block lg:col-span-4">
-                <OntologyBrowser 
-                  entities={filteredEntities}
-                  crossReferences={filteredCrossReferences}
-                  onSelectEntity={handleSelectEntity}
-                  selectedEntityId={selectedEntity?.id}
-                />
-              </div>
-
-              <div className="lg:col-span-8">
-                <div className="mb-4 grid gap-3 md:grid-cols-3">
-                  <div className="rounded-2xl border bg-card p-4">
-                    <div className="text-xs text-muted-foreground">当前阅读</div>
-                    <div className="mt-2 font-medium">{selectedEntity?.name || '当前过滤范围内暂无可阅读节点'}</div>
-                    <p className="mt-1 text-sm text-muted-foreground">右侧详情会跟随当前选中节点更新，并保留完整的定义、属性和关系信息。</p>
-                  </div>
-                  <div className="rounded-2xl border bg-card p-4">
-                    <div className="text-xs text-muted-foreground">当前过滤</div>
-                    <div className="mt-2 font-medium">{selectedLayer === 'all' ? '全部层' : selectedLayer}</div>
-                    <p className="mt-1 text-sm text-muted-foreground">浏览、图谱、统计会一起跟着这个层过滤同步变化。</p>
-                  </div>
-                  <div className="rounded-2xl border bg-card p-4">
-                    <div className="text-xs text-muted-foreground">左侧速览</div>
-                    <div className="mt-2 font-medium">优先展示与当前节点接近的候选内容</div>
-                    <p className="mt-1 text-sm text-muted-foreground">你可以先横向比较定义和领域，再决定把哪个节点切到主阅读区。</p>
-                  </div>
-                </div>
-
-                <EntityDetail 
-                  entity={selectedEntity}
-                  relatedEntities={relatedEntities}
-                  onSelectRelated={handleSelectEntity}
-                />
-              </div>
-            </div>
-
-            {/* Integrated Stats Panel */}
-            <div className="mt-8 space-y-6">
-              <div className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold">
-                <BarChart3 className="w-3.5 h-3.5 text-primary" />
-                知识库统计大盘
-              </div>
-              <StatsPanel statistics={filteredStatistics} />
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-card border rounded-lg p-6">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-blue-500/10 rounded-lg">
-                      <BookOpen className="w-6 h-6 text-blue-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold">哲学本体论</h3>
-                      <p className="text-xs text-muted-foreground">形而上学核心</p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    涵盖存在论、范畴论、属性论、关系论等形而上学核心问题，
-                    从巴门尼德、亚里士多德到现代分析哲学的本体论传统。
-                  </p>
-                </div>
-                <div className="bg-card border rounded-lg p-6">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-green-500/10 rounded-lg">
-                      <Layers className="w-6 h-6 text-green-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold">形式本体论</h3>
-                      <p className="text-xs text-muted-foreground">知识表示基础</p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    包括BFO、DOLCE、SUMO等顶层本体，以及OWL、RDF等本体语言，
-                    为知识表示和语义网提供形式化基础。
-                  </p>
-                </div>
-                <div className="bg-card border rounded-lg p-6">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-purple-500/10 rounded-lg">
-                      <Network className="w-6 h-6 text-purple-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold">科学本体论</h3>
-                      <p className="text-xs text-muted-foreground">层次结构</p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    从物理、化学、生物到认知、社会、信息的层次结构，
-                    展示从物质到意义的涌现层次。
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Integrated About Info */}
-            <div className="mt-12 pt-8 border-t border-slate-200">
-               <AboutKnowledgeBase />
-            </div>
+            </ScrollArea>
           </TabsContent>
 
-          <TabsContent value="assistant" className="space-y-6">
-            <OntologyAssistant selectedEntity={selectedEntity} />
-          </TabsContent>
-
-          <TabsContent value="analyzer" className="space-y-6">
-            <OntologyAnalyzer
-              entities={filteredEntities}
-              selectedEntity={selectedEntity}
-              onSelectEntity={handleSelectEntity}
+          <TabsContent value="assistant" className="mt-0 h-full flex-1 min-h-0">
+            <OntologyAssistant
+              activeSession={assistantState.activeSession}
+              businessPrompt={assistantState.businessPrompt}
+              isBusy={assistantState.isBusy}
+              modelName={assistantState.modelName}
+              onAsk={assistantState.onAsk}
+              onBusinessPromptChange={assistantState.setBusinessPrompt}
+              onDraftChange={assistantState.onDraftChange}
+              onModelNameChange={assistantState.setModelName}
+              selectedEntityName={selectedEntity?.name}
+              toolRuns={assistantState.currentToolRuns}
             />
           </TabsContent>
 
-          <TabsContent value="systems" className="space-y-6">
-            <SystemsOntologyView
-              entities={filteredEntities}
-              selectedEntity={selectedEntity}
-              onSelectEntity={handleSelectEntity}
-            />
-          </TabsContent>
+          <TabsContent value="lab" className="mt-0 h-full flex-1 min-h-0">
+            <ScrollArea className="h-full">
+              <div className="p-6 space-y-6">
+                <div className="mb-4 w-full rounded-3xl border bg-slate-50 p-1 shadow-inner">
+                  <Tabs defaultValue="analyzer" className="w-full">
+                    <div className="flex flex-col gap-4 border-b bg-white px-4 py-3 lg:flex-row lg:items-center lg:justify-between rounded-t-3xl">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FlaskConical className="w-5 h-5 text-blue-500" />
+                        <h2 className="text-lg font-bold break-words">深度分析实验室</h2>
+                      </div>
+                      <TabsList className="w-full flex-wrap justify-start bg-slate-100/50 p-1 rounded-xl lg:w-auto">
+                        <TabsTrigger value="analyzer" className="rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                          <Sparkles className="w-4 h-4 mr-2" /> 概率分析
+                        </TabsTrigger>
+                        <TabsTrigger value="systems" className="rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                          <Boxes className="w-4 h-4 mr-2" /> 系统视图
+                        </TabsTrigger>
+                        <TabsTrigger value="education" className="rounded-lg px-4 py-1.5 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                          <GraduationCap className="w-4 h-4 mr-2" /> 知识科普
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
 
-
-          <TabsContent value="education" className="space-y-6">
-            <EducationHub selectedEntity={selectedEntity} />
-          </TabsContent>
-
-          <TabsContent value="graph" className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2">
-                <KnowledgeGraph 
-                  entities={filteredEntities}
-                  crossReferences={filteredCrossReferences}
-                  onSelectEntity={handleSelectEntity}
-                  selectedEntityId={selectedEntity?.id}
-                />
-              </div>
-              <div className="lg:col-span-1">
-                <EntityDetail 
-                  entity={selectedEntity}
-                  relatedEntities={relatedEntities}
-                  onSelectRelated={handleSelectEntity}
-                />
-              </div>
-            </div>
-          </TabsContent>
-
-
-          <TabsContent value="workspace" className="space-y-6">
-            <div className="rounded-3xl border bg-gradient-to-r from-blue-600 to-indigo-700 text-white overflow-hidden mb-6">
-              <div className="px-6 py-6 lg:px-8">
-                <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs">
-                  <GitBranch className="w-3.5 h-3.5" />
-                  统一本体工作台 (Unified Workspace)
+                    <div className="mt-6">
+                      <TabsContent value="analyzer" className="mt-0">
+                        <OntologyAnalyzer
+                          entities={filteredEntities}
+                          selectedEntity={selectedEntity}
+                          onSelectEntity={handleSelectEntity}
+                        />
+                      </TabsContent>
+                      <TabsContent value="systems" className="mt-0">
+                        <SystemsOntologyView
+                          entities={filteredEntities}
+                          selectedEntity={selectedEntity}
+                          onSelectEntity={handleSelectEntity}
+                        />
+                      </TabsContent>
+                      <TabsContent value="education" className="mt-0">
+                        <EducationHub selectedEntity={selectedEntity} />
+                      </TabsContent>
+                    </div>
+                  </Tabs>
                 </div>
-                <h2 className="mt-4 text-2xl font-semibold">
-                  本体版本管理与实时编辑
-                </h2>
-                <p className="mt-2 text-sm text-blue-100 opacity-80">
-                  取代了旧版的离线编辑器。支持 Git 级的历史记录管理，并在每次写入时自动触发概率推理服务。
-                </p>
               </div>
-            </div>
-            <XiaoGuGitDashboard />
+            </ScrollArea>
           </TabsContent>
-          </div>
+
+          <TabsContent value="graph" className="mt-0 h-full flex-1 min-h-0">
+            <ScrollArea className="h-full">
+              <div className="p-6 space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2">
+                    <KnowledgeGraph
+                      entities={filteredEntities}
+                      crossReferences={filteredCrossReferences}
+                      onSelectEntity={handleSelectEntity}
+                      selectedEntityId={selectedEntity?.id}
+                    />
+                  </div>
+                  <div className="lg:col-span-1">
+                    <EntityDetail
+                      entity={selectedEntity}
+                      relatedEntities={relatedEntities}
+                      onSelectRelated={handleSelectEntity}
+                    />
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="workspace" className="mt-0 h-full flex-1 min-h-0">
+            <ScrollArea className="h-full">
+              <div className="p-6 space-y-6">
+                <div className="rounded-3xl border bg-gradient-to-r from-blue-600 to-indigo-700 text-white overflow-hidden mb-6">
+                  <div className="px-6 py-6 lg:px-8">
+                    <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs">
+                      <GitBranch className="w-3.5 h-3.5" />
+                      统一本体工作台 (Unified Workspace)
+                    </div>
+                    <h2 className="mt-4 text-2xl font-semibold">
+                      本体版本管理与实时编辑
+                    </h2>
+                    <p className="mt-2 text-sm text-blue-100 opacity-80">
+                      取代了旧版的离线编辑器。支持 Git 级的历史记录管理，并在每次写入时自动触发概率推理服务。
+                    </p>
+                  </div>
+                </div>
+                <XiaoGuGitDashboard />
+              </div>
+            </ScrollArea>
+          </TabsContent>
         </Tabs>
       </main>
 

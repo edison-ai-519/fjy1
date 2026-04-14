@@ -399,11 +399,12 @@ export interface AboutContent {
     detail: string;
   }>;
   metrics: {
-    coreEngine: string;
-    interfaceType: string;
-    authMode: string;
-    backendStatus: string;
-    storageStrategy: string;
+    provider: string;
+    entities: number;
+    relations: number;
+    domains: number;
+    levels: number;
+    layers: number;
   };
 }
 

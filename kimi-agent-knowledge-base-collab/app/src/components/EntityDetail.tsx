@@ -1,7 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { BookOpen, Layers, Atom, Tag, Link2, FileText } from 'lucide-react';
 import type { Entity, KnowledgeLayer } from '@/types/ontology';
 import { MarkdownBlocks } from '@/components/MarkdownBlocks';
@@ -77,7 +76,7 @@ export function EntityDetail({ entity, relatedEntities = [], onSelectRelated }: 
   };
 
   return (
-    <ScrollArea className="h-full">
+    <div className="h-full">
       <Card className="overflow-hidden border-slate-200 shadow-sm">
         <CardHeader className="pb-5 border-b bg-gradient-to-br from-white via-slate-50 to-blue-50/70">
           <div className="flex items-start justify-between gap-4">
@@ -106,22 +105,22 @@ export function EntityDetail({ entity, relatedEntities = [], onSelectRelated }: 
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-4">
-            <div className="rounded-xl border bg-background/80 p-3">
-              <div className="text-xs text-muted-foreground">来源</div>
-              <div className="mt-1 font-medium">{entity.source}</div>
+          <div className="grid gap-3 grid-cols-2">
+            <div className="rounded-xl border bg-background/80 p-3 overflow-hidden">
+              <div className="text-xs text-muted-foreground whitespace-nowrap tracking-wide uppercase">来源</div>
+              <div className="mt-1 text-2xl font-black tracking-tight truncate" title={entity.source}>{entity.source}</div>
             </div>
-            <div className="rounded-xl border bg-background/80 p-3">
-              <div className="text-xs text-muted-foreground">存储层</div>
-              <div className="mt-1 font-medium">{layerLabels[entity.layer]}</div>
+            <div className="rounded-xl border bg-background/80 p-3 overflow-hidden">
+              <div className="text-xs text-muted-foreground whitespace-nowrap tracking-wide uppercase">存储层</div>
+              <div className="mt-1 text-2xl font-black tracking-tight truncate">{layerLabels[entity.layer]}</div>
             </div>
-            <div className="rounded-xl border bg-background/80 p-3">
-              <div className="text-xs text-muted-foreground">属性项</div>
-              <div className="mt-1 font-medium">{Object.keys(entity.properties || {}).length}</div>
+            <div className="rounded-xl border bg-background/80 p-3 overflow-hidden">
+              <div className="text-xs text-muted-foreground whitespace-nowrap tracking-wide uppercase">属性项</div>
+              <div className="mt-1 text-2xl font-black tracking-tight truncate">{Object.keys(entity.properties || {}).length}</div>
             </div>
-            <div className="rounded-xl border bg-background/80 p-3">
-              <div className="text-xs text-muted-foreground">相关实体</div>
-              <div className="mt-1 font-medium">{relatedEntities.length}</div>
+            <div className="rounded-xl border bg-background/80 p-3 overflow-hidden">
+              <div className="text-xs text-muted-foreground whitespace-nowrap tracking-wide uppercase">相关实体</div>
+              <div className="mt-1 text-2xl font-black tracking-tight truncate">{relatedEntities.length}</div>
             </div>
           </div>
         </CardHeader>
@@ -273,6 +272,6 @@ export function EntityDetail({ entity, relatedEntities = [], onSelectRelated }: 
           </div>
         </CardContent>
       </Card>
-    </ScrollArea>
+    </div>
   );
 }

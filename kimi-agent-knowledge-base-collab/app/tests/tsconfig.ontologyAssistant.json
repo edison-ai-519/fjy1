@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.app.json",
+  "include": [
+    "../src/components/OntologyAssistant.tsx",
+    "../src/components/assistant/ChatArea.tsx",
+    "../src/components/assistant/ExecutionFlow.tsx",
+    "../src/components/assistant/Sidebar.tsx"
+  ]
+}

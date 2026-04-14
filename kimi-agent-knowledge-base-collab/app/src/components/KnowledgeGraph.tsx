@@ -30,11 +30,11 @@ interface Link {
   relation: string;
 }
 
-export function KnowledgeGraph({ 
-  entities, 
-  crossReferences, 
-  onSelectEntity, 
-  selectedEntityId 
+export function KnowledgeGraph({
+  entities,
+  crossReferences,
+  onSelectEntity,
+  selectedEntityId
 }: KnowledgeGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -44,8 +44,29 @@ export function KnowledgeGraph({
   const [isDragging, setIsDragging] = useState(false);
   const [draggedNode, setDraggedNode] = useState<string | null>(null);
 
-  const width = 800;
-  const height = 600;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight || 600
+        });
+      }
+    };
+
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(containerRef.current);
+    updateDimensions();
+
+    return () => observer.disconnect();
+  }, []);
+
+  const { width, height } = dimensions;
   const initialOrbitRadius = Math.min(260, 180 + entities.length * 4);
   const repulsionStrength = 2800;
   const targetLinkDistance = 135;
@@ -111,7 +132,7 @@ export function KnowledgeGraph({
     const simulation = setInterval(() => {
       setNodes(prevNodes => {
         const newNodes = [...prevNodes];
-        
+
         // 节点间斥力
         for (let i = 0; i < newNodes.length; i++) {
           for (let j = i + 1; j < newNodes.length; j++) {
@@ -121,7 +142,7 @@ export function KnowledgeGraph({
             const force = repulsionStrength / (dist * dist);
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
-            
+
             newNodes[i].vx -= fx;
             newNodes[i].vy -= fy;
             newNodes[j].vx += fx;
@@ -140,7 +161,7 @@ export function KnowledgeGraph({
             const force = (dist - targetLinkDistance) * springStrength;
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
-            
+
             sourceNode.vx += fx;
             sourceNode.vy += fy;
             targetNode.vx -= fx;
@@ -163,7 +184,7 @@ export function KnowledgeGraph({
             node.vy *= velocityDamping;
             node.x += node.vx;
             node.y += node.vy;
-            
+
             // 边界限制
             node.x = Math.max(node.radius, Math.min(width - node.radius, node.x));
             node.y = Math.max(node.radius, Math.min(height - node.radius, node.y));
@@ -184,14 +205,14 @@ export function KnowledgeGraph({
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!isDragging || !draggedNode || !svgRef.current) return;
-    
+
     const rect = svgRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left - translate.x) / scale;
     const y = (e.clientY - rect.top - translate.y) / scale;
-    
-    setNodes(prevNodes => 
-      prevNodes.map(node => 
-        node.id === draggedNode 
+
+    setNodes(prevNodes =>
+      prevNodes.map(node =>
+        node.id === draggedNode
           ? { ...node, x, y, vx: 0, vy: 0 }
           : node
       )
@@ -231,13 +252,14 @@ export function KnowledgeGraph({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="p-0">
-        <div className="relative overflow-hidden border-t">
+      <CardContent className="p-0 flex-1 min-h-0">
+        <div ref={containerRef} className="relative h-full min-h-[500px] overflow-hidden border-t">
           <svg
             ref={svgRef}
             width={width}
             height={height}
-            className="cursor-grab active:cursor-grabbing"
+            viewBox={`0 0 ${width} ${height}`}
+            className="cursor-grab active:cursor-grabbing w-full h-full"
             style={{
               transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
               transformOrigin: 'center'
@@ -259,7 +281,7 @@ export function KnowledgeGraph({
               const sourceNode = nodes.find(n => n.id === link.source);
               const targetNode = nodes.find(n => n.id === link.target);
               if (!sourceNode || !targetNode) return null;
-              
+
               return (
                 <g key={index}>
                   <line
@@ -328,14 +350,14 @@ export function KnowledgeGraph({
             ))}
           </svg>
         </div>
-        
+
         {/* 图例 */}
         <div className="p-4 border-t bg-muted/30">
           <div className="flex flex-wrap gap-2">
             {Object.entries(domainColors).map(([domain, color]) => (
               <Badge key={domain} variant="outline" className="flex items-center gap-1">
-                <div 
-                  className="w-3 h-3 rounded-full" 
+                <div
+                  className="w-3 h-3 rounded-full"
                   style={{ backgroundColor: color }}
                 />
                 <span className="text-xs">{domain}</span>

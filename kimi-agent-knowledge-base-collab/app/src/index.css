@@ -109,6 +109,18 @@
   background: hsl(var(--muted-foreground) / 0.5);
 }
 
+.custom-scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar-thin::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.2);
+}
+
+.custom-scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
 /* Smooth transitions */
 .transition-all {
   transition-property: all;
