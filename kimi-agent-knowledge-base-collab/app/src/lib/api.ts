@@ -133,6 +133,27 @@ export interface OntologyAssistantToolFinishedEvent {
   finishedAt: string;
 }
 
+export type OntologyAssistantSemanticStatus =
+  | 'thinking'
+  | 'executing'
+  | 'reasoning'
+  | 'observing'
+  | 'interrupted'
+  | 'failed'
+  | 'completed';
+
+export interface OntologyAssistantExecutionStageEvent {
+  id: string;
+  semanticStatus: OntologyAssistantSemanticStatus;
+  label: string;
+  phaseState: 'active' | 'completed';
+  sourceEventType: string;
+  detail: string;
+  callId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
 export interface PersistedOntologyAssistantToolRun {
   callId: string;
   command: string;
@@ -152,8 +173,11 @@ export interface PersistedOntologyAssistantMessage {
   question: string;
   answer: string;
   relatedNames: string[];
+  executionStages: PersistedOntologyAssistantExecutionStage[];
   toolRuns: PersistedOntologyAssistantToolRun[];
 }
+
+export interface PersistedOntologyAssistantExecutionStage extends OntologyAssistantExecutionStageEvent {}
 
 export interface PersistedOntologyAssistantSession {
   id: string;
@@ -176,6 +200,7 @@ export interface OntologyAssistantStreamHandlers {
   onStatus?: (message: string) => void;
   onContext?: (context: OntologyAssistantContext) => void;
   onAnswerDelta?: (delta: string) => void;
+  onExecutionStage?: (event: OntologyAssistantExecutionStageEvent) => void;
   onToolStarted?: (event: OntologyAssistantToolStartedEvent) => void;
   onToolOutput?: (event: OntologyAssistantToolOutputEvent) => void;
   onToolFinished?: (event: OntologyAssistantToolFinishedEvent) => void;
@@ -255,6 +280,8 @@ export async function askOntologyAssistantStream(
           handlers.onContext?.((parsed.data as OntologyAssistantResponse['context']) ?? {});
         } else if (parsed.event === 'answer_delta') {
           handlers.onAnswerDelta?.(typeof eventData?.delta === 'string' ? eventData.delta : '');
+        } else if (parsed.event === 'execution_stage') {
+          handlers.onExecutionStage?.(parsed.data as OntologyAssistantExecutionStageEvent);
         } else if (parsed.event === 'tool_started') {
           handlers.onToolStarted?.(parsed.data as OntologyAssistantToolStartedEvent);
         } else if (parsed.event === 'tool_output') {

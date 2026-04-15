@@ -1,4 +1,5 @@
 import type {
+  PersistedOntologyAssistantExecutionStage,
   PersistedOntologyAssistantMessage,
   PersistedOntologyAssistantSession,
   PersistedOntologyAssistantToolRun,
@@ -7,3 +8,6 @@ import type {
 export type ConversationToolRun = PersistedOntologyAssistantToolRun;
 export type ConversationMessage = PersistedOntologyAssistantMessage;
 export type ConversationSession = PersistedOntologyAssistantSession;
+export type ConversationExecutionStage = PersistedOntologyAssistantExecutionStage & {
+  toolRun?: PersistedOntologyAssistantToolRun | null;
+};

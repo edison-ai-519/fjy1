@@ -404,7 +404,7 @@ function App() {
               onDraftChange={assistantState.onDraftChange}
               onModelNameChange={assistantState.setModelName}
               selectedEntityName={selectedEntity?.name}
-              toolRuns={assistantState.currentToolRuns}
+              executionStages={assistantState.currentExecutionStages}
             />
           </TabsContent>
 

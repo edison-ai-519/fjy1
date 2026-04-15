@@ -31,7 +31,7 @@ import {
 import { ChatArea } from './assistant/ChatArea';
 import { ExecutionFlow } from './assistant/ExecutionFlow';
 import { ASSISTANT_PANEL_LAYOUT } from './assistant/panelLayout';
-import type { ConversationSession, ConversationToolRun } from './assistant/types';
+import type { ConversationExecutionStage, ConversationSession } from './assistant/types';
 
 interface AssistantProps {
   activeSession: ConversationSession | null;
@@ -43,7 +43,7 @@ interface AssistantProps {
   onDraftChange: (value: string) => void;
   onModelNameChange: (value: string) => void;
   selectedEntityName?: string;
-  toolRuns: ConversationToolRun[];
+  executionStages: ConversationExecutionStage[];
 }
 
 export function OntologyAssistant({
@@ -56,7 +56,7 @@ export function OntologyAssistant({
   onDraftChange,
   onModelNameChange,
   selectedEntityName,
-  toolRuns,
+  executionStages,
 }: AssistantProps) {
   if (!activeSession) {
     return null;
@@ -151,7 +151,7 @@ export function OntologyAssistant({
           defaultSize={ASSISTANT_PANEL_LAYOUT.flow.defaultSize}
           minSize={ASSISTANT_PANEL_LAYOUT.flow.minSize}
         >
-          <ExecutionFlow toolRuns={toolRuns} />
+          <ExecutionFlow executionStages={executionStages} />
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
