@@ -36,6 +36,19 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
             question: "什么是本体论？",
             answer: "关于存在者及其关系的结构化描述。",
             relatedNames: ["形式本体论"],
+            executionStages: [
+              {
+                id: "stage-1",
+                semanticStatus: "thinking",
+                label: "思考中...",
+                phaseState: "completed",
+                sourceEventType: "status.changed",
+                detail: "正在整理上下文",
+                callId: null,
+                startedAt: "2026-04-15T02:00:00.000Z",
+                finishedAt: "2026-04-15T02:00:01.000Z",
+              },
+            ],
             toolRuns: [],
           },
         ],
@@ -63,6 +76,19 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
             question: "什么是本体论？",
             answer: "关于存在者及其关系的结构化描述。",
             relatedNames: ["形式本体论"],
+            executionStages: [
+              {
+                id: "stage-1",
+                semanticStatus: "thinking",
+                label: "思考中...",
+                phaseState: "completed",
+                sourceEventType: "status.changed",
+                detail: "正在整理上下文",
+                callId: null,
+                startedAt: "2026-04-15T02:00:00.000Z",
+                finishedAt: "2026-04-15T02:00:01.000Z",
+              },
+            ],
             toolRuns: [],
           },
         ],
@@ -75,4 +101,54 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
     businessPrompt: "请优先使用知识库术语回答。",
     modelName: "gpt-4.1",
   });
+});
+
+test("AssistantSessionStateService derives execution stages from legacy tool runs", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "assistant-session-state-legacy-"));
+  const service = new AssistantSessionStateService({ runtimeRoot });
+
+  await service.save({
+    sessions: [
+      {
+        id: "session-legacy",
+        title: "旧会话",
+        draftQuestion: "",
+        messages: [
+          {
+            id: "message-legacy",
+            question: "列出目录",
+            answer: "已列出",
+            relatedNames: [],
+            toolRuns: [
+              {
+                callId: "tool-legacy",
+                command: "dir",
+                status: "success",
+                stdout: "file-a\n",
+                stderr: "",
+                exitCode: 0,
+                cwd: "D:\\code\\FJY",
+                durationMs: 32,
+                truncated: false,
+                startedAt: "2026-04-15T02:00:00.000Z",
+                finishedAt: "2026-04-15T02:00:01.000Z",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    activeSessionId: "session-legacy",
+    businessPrompt: "",
+    modelName: "gpt-4.1-mini",
+  });
+
+  const state = await service.load();
+  const executionStages = state.sessions[0].messages[0].executionStages;
+
+  assert.equal(Array.isArray(executionStages), true);
+  assert.equal(executionStages.length, 1);
+  assert.equal(executionStages[0].semanticStatus, "completed");
+  assert.equal(executionStages[0].callId, "tool-legacy");
+  assert.equal(executionStages[0].detail, "dir");
 });

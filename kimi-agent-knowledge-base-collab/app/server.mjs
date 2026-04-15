@@ -406,6 +406,9 @@ const server = createServer(async (req, res) => {
             onToolFinished(toolRun) {
               writeSse(res, "tool_finished", toolRun);
             },
+            onExecutionStage(executionStage) {
+              writeSse(res, "execution_stage", executionStage);
+            },
           },
           {
             conversationId,

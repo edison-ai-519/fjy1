@@ -294,6 +294,7 @@ if (isStream) {
   const toolStarts = [];
   const toolOutputs = [];
   const toolFinishes = [];
+  const executionStages = [];
   const result = await service.askStream(
     "请开始流式回答",
     createEmptyContext(),
@@ -312,6 +313,9 @@ if (isStream) {
       },
       onToolFinished(event) {
         toolFinishes.push(event);
+      },
+      onExecutionStage(event) {
+        executionStages.push(event);
       },
     },
   );
@@ -356,6 +360,11 @@ if (isStream) {
     startedAt: now,
     finishedAt: now,
   }]);
+  assert.deepEqual(
+    executionStages.map((stage) => stage.semanticStatus),
+    ["thinking", "executing", "observing", "reasoning", "completed"],
+  );
+  assert.equal(executionStages.at(-1)?.label, "执行结束...");
 });
 
 test("QAgentService returns the last runtime error as displayable answer when stream has no assistant text", async () => {

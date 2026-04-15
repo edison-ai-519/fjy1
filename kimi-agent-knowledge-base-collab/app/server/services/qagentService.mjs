@@ -3,11 +3,145 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { ExecutionStageClassifierService, getExecutionStageLabel } from "./executionStageClassifierService.mjs";
 
 const WEB_CHAT_CONVERSATION_STATE_VERSION = 2;
 const DEFAULT_HISTORY_TURN_LIMIT = 6;
 const DEFAULT_STREAM_TIMEOUT_MS = 120_000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 15_000;
+const DEFAULT_EXECUTION_STAGE_DETAIL = "已整理知识库上下文，准备连接 Agent CLI...";
+
+function createExecutionStageId() {
+  return `stage-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function extractExecutionStageDetail(event) {
+  if (!event || typeof event !== "object") {
+    return "";
+  }
+
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+
+  if (event.type === "request.started") {
+    return typeof payload.detail === "string" ? payload.detail : DEFAULT_EXECUTION_STAGE_DETAIL;
+  }
+
+  if (event.type === "status.changed") {
+    return typeof payload.detail === "string" ? payload.detail : "";
+  }
+
+  if (event.type === "tool.started") {
+    return typeof payload?.toolCall?.input?.command === "string" ? payload.toolCall.input.command : "";
+  }
+
+  if (event.type === "tool.output.delta") {
+    return typeof payload.command === "string" ? payload.command : "正在读取命令输出";
+  }
+
+  if (event.type === "assistant.delta" || event.type === "assistant.completed") {
+    return "正在整理回答内容";
+  }
+
+  if (event.type === "runtime.error") {
+    return typeof payload.message === "string" ? payload.message : "运行阶段出现异常";
+  }
+
+  if (event.type === "runtime.aborted") {
+    return typeof payload.reason === "string" ? payload.reason : "本轮执行已中断";
+  }
+
+  if (event.type === "command.completed") {
+    return "本轮执行已完成";
+  }
+
+  return "";
+}
+
+function extractExecutionStageCallId(event) {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  if (typeof payload.callId === "string") {
+    return payload.callId;
+  }
+  if (typeof payload?.toolCall?.id === "string") {
+    return payload.toolCall.id;
+  }
+  if (typeof payload?.result?.callId === "string") {
+    return payload.result.callId;
+  }
+
+  return null;
+}
+
+class ExecutionStageTracker {
+  constructor(options) {
+    this.classifier = options.classifier;
+    this.handlers = options.handlers;
+    this.modelConfig = options.modelConfig;
+    this.currentStage = null;
+  }
+
+  async track(event, options = {}) {
+    const classification = await this.classifier.classify({
+      type: event.type,
+      payload: event.payload,
+      createdAt: event.createdAt,
+      modelConfig: this.modelConfig,
+      currentSemanticStatus: this.currentStage?.semanticStatus,
+    });
+
+    if (!classification?.semanticStatus) {
+      return;
+    }
+
+    const detail = extractExecutionStageDetail(event);
+    const callId = extractExecutionStageCallId(event);
+    const createdAt = event.createdAt || new Date().toISOString();
+    const terminal = options.terminal === true;
+
+    if (
+      this.currentStage
+      && this.currentStage.semanticStatus === classification.semanticStatus
+      && !terminal
+    ) {
+      return;
+    }
+
+    if (
+      this.currentStage
+      && this.currentStage.semanticStatus === classification.semanticStatus
+      && terminal
+    ) {
+      const nextStage = {
+        ...this.currentStage,
+        phaseState: "completed",
+        finishedAt: createdAt,
+        detail: detail || this.currentStage.detail,
+      };
+      this.currentStage = nextStage;
+      this.handlers.onExecutionStage?.(nextStage);
+      return;
+    }
+
+    const nextStage = {
+      id: createExecutionStageId(),
+      semanticStatus: classification.semanticStatus,
+      label: getExecutionStageLabel(classification.semanticStatus),
+      phaseState: terminal ? "completed" : "active",
+      sourceEventType: event.type,
+      detail,
+      callId,
+      startedAt: createdAt,
+      finishedAt: terminal ? createdAt : null,
+    };
+
+    this.currentStage = nextStage;
+    this.handlers.onExecutionStage?.(nextStage);
+  }
+}
 
 function extractAssistantText(result) {
   const uiMessages = result?.payload?.uiMessages;
@@ -228,6 +362,7 @@ export class QAgentService {
     this.runtimeRoot = options.runtimeRoot || options.projectRoot;
     this.conversationWorklines = new Map();
     this.conversationWorklinesLoaded = false;
+    this.executionStageClassifier = options.executionStageClassifier || new ExecutionStageClassifierService();
   }
 
   buildPrompt(question, context, options = {}) {
@@ -368,6 +503,7 @@ export class QAgentService {
 
   async runQAgentStream(prompt, handlers = {}, options = {}) {
     const requestRuntimeRoot = await this.prepareIsolatedRuntime(options);
+    const executionStageModelConfig = await this.resolveExecutionStageModelConfig(requestRuntimeRoot, options);
     const [command, ...baseArgs] = this.getSpawnCommand();
     const providerOverride = await this.detectProviderOverride(requestRuntimeRoot);
     const spawnArgs = [
@@ -395,9 +531,32 @@ export class QAgentService {
       let lastInfoMessage = "";
       let rawResult = null;
       let completed = false;
+      let stageQueue = Promise.resolve();
+      let abortStageQueued = false;
+      const seenToolOutputCallIds = new Set();
+      const executionStageTracker = new ExecutionStageTracker({
+        classifier: this.executionStageClassifier,
+        handlers,
+        modelConfig: executionStageModelConfig,
+      });
       const streamTimeoutMs = this.resolveStreamTimeoutMs(options);
       let timeoutId = null;
       let forceKillTimeoutId = null;
+
+      const enqueueExecutionStage = (event, stageOptions = {}) => {
+        stageQueue = stageQueue
+          .then(() => executionStageTracker.track(event, stageOptions))
+          .catch(() => {});
+        return stageQueue;
+      };
+
+      void enqueueExecutionStage({
+        type: "request.started",
+        createdAt: new Date().toISOString(),
+        payload: {
+          detail: DEFAULT_EXECUTION_STAGE_DETAIL,
+        },
+      });
 
       const stopChild = (signalName = "SIGTERM") => {
         if (!completed) {
@@ -407,6 +566,16 @@ export class QAgentService {
 
       const signal = options.signal;
       const handleAbort = () => {
+        if (!abortStageQueued) {
+          abortStageQueued = true;
+          void enqueueExecutionStage({
+            type: "runtime.aborted",
+            createdAt: new Date().toISOString(),
+            payload: {
+              reason: "用户已中断当前执行",
+            },
+          }, { terminal: true });
+        }
         stopChild();
         reject(new Error("QAgent stream aborted"));
       };
@@ -443,6 +612,16 @@ export class QAgentService {
 
           lastErrorMessage = `QAgent 流式回答超过 ${Math.ceil(streamTimeoutMs / 1000)} 秒仍未完成，已终止本次请求。`;
           handlers.onStatus?.("QAgent 响应超时，正在结束这次回答...");
+          if (!abortStageQueued) {
+            abortStageQueued = true;
+            void enqueueExecutionStage({
+              type: "runtime.aborted",
+              createdAt: new Date().toISOString(),
+              payload: {
+                reason: lastErrorMessage,
+              },
+            }, { terminal: true });
+          }
           stopChild("SIGTERM");
           forceKillTimeoutId = setTimeout(() => {
             stopChild("SIGKILL");
@@ -461,6 +640,7 @@ export class QAgentService {
             lastInfoMessage = detail;
             handlers.onStatus?.(detail, event);
           }
+          void enqueueExecutionStage(event);
           return;
         }
 
@@ -469,6 +649,9 @@ export class QAgentService {
           if (typeof delta === "string" && delta.length > 0) {
             assistantDeltaBuffer += delta;
             handlers.onAnswerDelta?.(delta, event);
+          }
+          if (executionStageTracker.currentStage?.semanticStatus !== "reasoning") {
+            void enqueueExecutionStage(event);
           }
           return;
         }
@@ -492,6 +675,7 @@ export class QAgentService {
               startedAt: toolCall.createdAt || event.createdAt,
             }, event);
           }
+          void enqueueExecutionStage(event);
           return;
         }
 
@@ -514,6 +698,10 @@ export class QAgentService {
               cwd: typeof event.payload?.cwd === "string" ? event.payload.cwd : null,
               startedAt: typeof event.payload?.startedAt === "string" ? event.payload.startedAt : event.createdAt,
             }, event);
+            if (!seenToolOutputCallIds.has(event.payload.callId)) {
+              seenToolOutputCallIds.add(event.payload.callId);
+              void enqueueExecutionStage(event);
+            }
           }
           return;
         }
@@ -541,6 +729,7 @@ export class QAgentService {
           if (hasDisplayableAnswer(event.payload?.message)) {
             lastErrorMessage = event.payload.message;
           }
+          void enqueueExecutionStage(event, { terminal: true });
           return;
         }
 
@@ -550,6 +739,9 @@ export class QAgentService {
           if (hasDisplayableAnswer(commandCompletedAnswer)) {
             lastNonEmptyAssistantCompleted = commandCompletedAnswer;
           }
+          void enqueueExecutionStage(event, {
+            terminal: true,
+          });
         }
       };
 
@@ -632,11 +824,29 @@ export class QAgentService {
           });
         }
 
-        resolve({
-          raw: rawResult,
-          answer: resolvedAnswer,
-          stderr: stderr.trim(),
-        });
+        const finalStageEvent = {
+          type: abortStageQueued
+            ? "runtime.aborted"
+            : rawResult?.status === "success"
+              ? "command.completed"
+              : "runtime.error",
+          createdAt: new Date().toISOString(),
+          payload: abortStageQueued
+            ? { reason: lastErrorMessage || "本轮执行已中断" }
+            : rawResult?.status === "success"
+              ? { result: { status: "success", exitCode: code ?? 0 } }
+              : { message: lastErrorMessage || "QAgent 运行失败" },
+        };
+
+        stageQueue
+          .then(() => enqueueExecutionStage(finalStageEvent, { terminal: true }))
+          .then(() => {
+            resolve({
+              raw: rawResult,
+              answer: resolvedAnswer,
+              stderr: stderr.trim(),
+            });
+          });
       });
     });
   }
@@ -991,6 +1201,66 @@ export class QAgentService {
     }
 
     return undefined;
+  }
+
+  async resolveExecutionStageModelConfig(configRoot, options = {}) {
+    const configPaths = [
+      configRoot ? path.join(configRoot, ".agent", "config.json") : null,
+      path.join(os.homedir(), ".agent", "config.json"),
+    ].filter(Boolean);
+
+    let modelConfig = {};
+    for (const configPath of configPaths) {
+      try {
+        const parsed = JSON.parse(await readFile(configPath, "utf8"));
+        if (parsed?.model && typeof parsed.model === "object") {
+          modelConfig = {
+            ...parsed.model,
+            ...modelConfig,
+          };
+        }
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+
+    let provider = process.env.QAGENT_PROVIDER;
+    if (provider !== "openai" && provider !== "openrouter") {
+      if (modelConfig.provider === "openai" || modelConfig.provider === "openrouter") {
+        provider = modelConfig.provider;
+      } else if (typeof modelConfig.apiKey === "string" && modelConfig.apiKey.startsWith("sk-or-v1")) {
+        provider = "openrouter";
+      } else if (process.env.OPENROUTER_API_KEY) {
+        provider = "openrouter";
+      } else if (process.env.OPENAI_API_KEY || modelConfig.apiKey) {
+        provider = "openai";
+      } else {
+        provider = undefined;
+      }
+    }
+
+    const modelName = typeof options.modelName === "string" && options.modelName.trim()
+      ? options.modelName.trim()
+      : typeof modelConfig.model === "string" && modelConfig.model.trim()
+        ? modelConfig.model.trim()
+        : undefined;
+    const apiKey = provider === "openrouter"
+      ? process.env.OPENROUTER_API_KEY || modelConfig.apiKey
+      : process.env.OPENAI_API_KEY || modelConfig.apiKey;
+    const baseUrl = typeof modelConfig.baseUrl === "string" && modelConfig.baseUrl.trim()
+      ? modelConfig.baseUrl.trim()
+      : provider
+        ? baseUrlForProvider(provider)
+        : undefined;
+
+    return {
+      provider,
+      modelName,
+      apiKey,
+      baseUrl,
+    };
   }
 
   resolveStreamTimeoutMs(options = {}) {

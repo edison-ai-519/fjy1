@@ -8,7 +8,12 @@ import {
   type OntologyAssistantSessionState,
 } from '@/lib/api';
 import type { Entity } from '@/types/ontology';
-import type { ConversationSession, ConversationToolRun } from '@/components/assistant/types';
+import type { ConversationExecutionStage, ConversationSession, ConversationToolRun } from '@/components/assistant/types';
+import {
+  buildExecutionFlowStages,
+  normalizeAssistantMessageStages,
+  upsertExecutionStage,
+} from '@/components/assistant/executionStages';
 
 const STORAGE_KEY = 'ontology-assistant-state-v1';
 
@@ -33,7 +38,18 @@ function readBrowserState() {
   }
 
   try {
-    return JSON.parse(saved) as Partial<OntologyAssistantSessionState>;
+    const parsed = JSON.parse(saved) as Partial<OntologyAssistantSessionState>;
+    return {
+      ...parsed,
+      sessions: Array.isArray(parsed.sessions)
+        ? parsed.sessions.map((session) => ({
+          ...session,
+          messages: Array.isArray(session.messages)
+            ? session.messages.map((message) => normalizeAssistantMessageStages(message))
+            : [],
+        }))
+        : [],
+    } as Partial<OntologyAssistantSessionState>;
   } catch {
     return null;
   }
@@ -110,7 +126,7 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
     [sessions],
   );
   const currentToolRuns = React.useMemo(
-    () => activeSession?.messages.flatMap((message) => message.toolRuns) || [],
+    () => buildExecutionFlowStages(activeSession?.messages || []),
     [activeSession],
   );
 
@@ -130,7 +146,12 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
       try {
         const state = await fetchOntologyAssistantState();
         if (state?.sessions?.length) {
-          setSessions(state.sessions as ConversationSession[]);
+          setSessions(
+            state.sessions.map((session) => ({
+              ...session,
+              messages: session.messages.map((message) => normalizeAssistantMessageStages(message)),
+            })) as ConversationSession[],
+          );
           setActiveSessionId(state.activeSessionId || state.sessions[0]?.id || '');
           setBusinessPrompt(state.businessPrompt || '');
           setModelName(state.modelName || DEFAULT_MODEL);
@@ -232,17 +253,18 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
       loading: true,
       error: null,
       statusMessage: 'AI 思考中...',
-      messages: [
-        ...session.messages,
-        {
-          id: messageId,
-          question: query,
-          answer: '',
-          relatedNames: [],
-          toolRuns: [],
-        },
-      ],
-    }));
+          messages: [
+            ...session.messages,
+            normalizeAssistantMessageStages({
+              id: messageId,
+              question: query,
+              answer: '',
+              relatedNames: [],
+              executionStages: [],
+              toolRuns: [],
+            }),
+          ],
+        }));
 
     try {
       let accumulatedAnswer = '';
@@ -282,6 +304,20 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
               messages: session.messages.map((message) => (
                 message.id === messageId
                   ? { ...message, answer: accumulatedAnswer }
+                  : message
+              )),
+            }));
+          },
+          onExecutionStage: (event) => {
+            updateActiveSession((session) => ({
+              ...session,
+              statusMessage: event.label,
+              messages: session.messages.map((message) => (
+                message.id === messageId
+                  ? {
+                    ...message,
+                    executionStages: upsertExecutionStage(message.executionStages || [], event),
+                  }
                   : message
               )),
             }));
@@ -378,7 +414,7 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
     activeSession,
     activeSessionId,
     businessPrompt,
-    currentToolRuns,
+    currentExecutionStages: currentToolRuns as ConversationExecutionStage[],
     isBusy,
     modelName,
     onAsk,
