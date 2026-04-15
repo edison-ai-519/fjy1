@@ -14,6 +14,10 @@ import {
   normalizeAssistantMessageStages,
   upsertExecutionStage,
 } from '@/components/assistant/executionStages';
+import {
+  createAssistantSession,
+  removeAssistantSession,
+} from '@/hooks/assistantSessionState';
 
 const STORAGE_KEY = 'ontology-assistant-state-v1';
 
@@ -84,18 +88,6 @@ function updateToolRun(
   const next = [...runs];
   next[index] = updater(next[index]);
   return next;
-}
-
-export function createAssistantSession(index = 1): ConversationSession {
-  return {
-    id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    title: `新对话 ${index}`,
-    draftQuestion: '',
-    messages: [],
-    error: null,
-    loading: false,
-    statusMessage: null,
-  };
 }
 
 export function useOntologyAssistantState(selectedEntity: Entity | null) {
@@ -203,13 +195,11 @@ export function useOntologyAssistantState(selectedEntity: Entity | null) {
 
   const onDeleteSession = React.useCallback((sessionId: string) => {
     setSessions((previous) => {
-      const filtered = previous.filter((s) => s.id !== sessionId);
-      const next = filtered.length > 0 ? filtered : [createAssistantSession()];
-
-      if (sessionId === activeSessionId) {
-        setActiveSessionId(next[0].id);
+      const nextState = removeAssistantSession(previous, sessionId, activeSessionId);
+      if (nextState.activeSessionId !== activeSessionId) {
+        setActiveSessionId(nextState.activeSessionId);
       }
-      return next;
+      return nextState.sessions;
     });
   }, [activeSessionId]);
 

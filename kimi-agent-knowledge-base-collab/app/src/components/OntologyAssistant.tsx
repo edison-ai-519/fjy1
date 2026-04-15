@@ -31,6 +31,7 @@ import {
 import { ChatArea } from './assistant/ChatArea';
 import { ExecutionFlow } from './assistant/ExecutionFlow';
 import { ASSISTANT_PANEL_LAYOUT } from './assistant/panelLayout';
+import { stopPointerEventPropagation } from './assistant/pointerGuards';
 import type { ConversationExecutionStage, ConversationSession } from './assistant/types';
 
 interface AssistantProps {
@@ -58,19 +59,30 @@ export function OntologyAssistant({
   selectedEntityName,
   executionStages,
 }: AssistantProps) {
+  const layoutMode = 'split';
+
   if (!activeSession) {
     return null;
   }
 
   return (
-    <div className="h-full max-h-full min-h-0 w-full overflow-hidden rounded-3xl border bg-white shadow-sm flex flex-col">
-      <ResizablePanelGroup orientation="horizontal" id="assistant-primary-group" className="flex-1 min-h-0">
+    <div
+      className="flex h-full max-h-full min-h-0 min-w-0 w-full flex-col overflow-hidden rounded-3xl border bg-white shadow-sm"
+    >
+      <ResizablePanelGroup
+        orientation="horizontal"
+        id="assistant-primary-group"
+        className="flex-1 min-h-0"
+      >
         <ResizablePanel
           id="chat-panel"
           defaultSize={ASSISTANT_PANEL_LAYOUT.chat.defaultSize}
           minSize={ASSISTANT_PANEL_LAYOUT.chat.minSize}
         >
-          <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <div
+            className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+            onPointerDownCapture={stopPointerEventPropagation}
+          >
             <ChatArea
               activeSession={activeSession}
               onAsk={onAsk}
@@ -144,14 +156,23 @@ export function OntologyAssistant({
           </div>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle
+          withHandle
+          className="z-10 bg-slate-200/90 hover:bg-blue-400"
+        />
 
         <ResizablePanel
           id="flow-panel"
           defaultSize={ASSISTANT_PANEL_LAYOUT.flow.defaultSize}
           minSize={ASSISTANT_PANEL_LAYOUT.flow.minSize}
+          maxSize={ASSISTANT_PANEL_LAYOUT.flow.maxSize}
         >
-          <ExecutionFlow executionStages={executionStages} />
+          <div
+            className="h-full min-h-0"
+            onPointerDownCapture={stopPointerEventPropagation}
+          >
+            <ExecutionFlow executionStages={executionStages} layoutMode={layoutMode} />
+          </div>
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>

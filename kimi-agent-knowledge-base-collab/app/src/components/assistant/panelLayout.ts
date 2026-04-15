@@ -1,10 +1,11 @@
 export const ASSISTANT_PANEL_LAYOUT = {
   chat: {
-    defaultSize: 72,
-    minSize: 42,
+    defaultSize: 'calc(100% - 18rem)',
+    minSize: '16rem',
   },
   flow: {
-    defaultSize: 28,
-    minSize: 16,
+    defaultSize: '18rem',
+    minSize: '14rem',
+    maxSize: '22rem',
   },
 } as const;

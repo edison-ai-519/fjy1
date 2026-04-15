@@ -51,14 +51,14 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-white/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex flex-col">
-          <h3 className="text-xs font-bold truncate max-w-[300px] text-slate-800">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white/80 px-3 py-2 backdrop-blur-md sm:px-4">
+        <div className="min-w-0 flex flex-col">
+          <h3 className="max-w-[220px] truncate text-xs font-bold text-slate-800 sm:max-w-[300px]">
             {activeSession.title || '对话'}
           </h3>
-          <div className="flex items-center gap-1.5 mt-0.5">
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
             <span className="text-[9px] text-muted-foreground uppercase tracking-widest font-black">Context:</span>
-            <Badge variant="secondary" className="px-1 py-0 text-[9px] h-3.5 bg-blue-50 text-blue-600 border-none font-bold">
+            <Badge variant="secondary" className="h-3.5 max-w-[112px] truncate border-none bg-blue-50 px-1 py-0 text-[9px] font-bold text-blue-600 sm:max-w-[140px]">
               {selectedEntityName || 'None'}
             </Badge>
           </div>
@@ -69,7 +69,7 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
       </div>
 
       <ScrollArea ref={scrollRef} className="flex-1 min-h-0">
-        <div className="w-full py-3 px-6 space-y-3">
+        <div className="w-full space-y-3 px-3 py-3 sm:px-6">
           {messages.length === 0 && !loading && (
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
               <div className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center text-slate-400">
@@ -93,7 +93,7 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
                 </div>
                 <div className="flex-1 space-y-1">
                   <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">You</div>
-                  <div className="text-[13px] leading-relaxed text-slate-800 bg-slate-50/50 rounded-lg p-2.5 border border-transparent group-hover:border-slate-100 transition-colors">
+                  <div className="break-words [overflow-wrap:anywhere] text-[13px] leading-relaxed text-slate-800 bg-slate-50/50 rounded-lg p-2.5 border border-transparent group-hover:border-slate-100 transition-colors">
                     {message.question}
                   </div>
                 </div>
@@ -106,7 +106,7 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
                 </div>
                 <div className="flex-1 space-y-1">
                   <div className="text-[10px] font-black text-slate-900 flex items-center gap-1.5 uppercase tracking-widest">
-                    XiaoGu Agent
+                    Agent
                     {message.relatedNames?.length > 0 && (
                       <span className="text-[8px] font-medium text-slate-400 normal-case">
                         ({message.relatedNames.join(', ')})
@@ -126,10 +126,10 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
               <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 animate-pulse">
                 <Sparkles className="w-4 h-4 text-white" />
               </div>
-              <div className="flex-1 py-1">
-                <div className="text-sm font-bold text-slate-900">XiaoGu Agent</div>
-                <div className="mt-2 flex items-center gap-2 text-sm text-slate-500 italic">
-                  <span>{statusMessage}</span>
+              <div className="min-w-0 flex-1 py-1">
+                <div className="text-sm font-bold text-slate-900">Agent</div>
+                <div className="mt-2 flex min-w-0 items-center gap-2 text-sm italic text-slate-500">
+                  <span className="break-words [overflow-wrap:anywhere]">{statusMessage}</span>
                   <span className="flex gap-1">
                     <span className="w-1 h-1 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                     <span className="w-1 h-1 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
@@ -143,15 +143,15 @@ export function ChatArea({ activeSession, onAsk, onDraftChange, isBusy, selected
           {error && (
             <div className="flex items-center gap-3 p-4 rounded-xl border border-red-100 bg-red-50/50 text-red-600 text-sm">
               <AlertCircle className="w-4 h-4" />
-              <span>{error}</span>
+              <span className="break-words [overflow-wrap:anywhere]">{error}</span>
             </div>
           )}
         </div>
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="shrink-0 border-t bg-white p-4">
-        <div className="relative w-full px-6">
+      <div className="shrink-0 border-t bg-white p-3 sm:p-4">
+        <div className="relative w-full px-0 sm:px-6">
           <div className="relative flex items-end gap-2 bg-slate-50/50 rounded-3xl border border-slate-200 p-2 focus-within:bg-white focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-50/50 transition-all duration-300 shadow-sm">
             <Textarea
               ref={textareaRef}

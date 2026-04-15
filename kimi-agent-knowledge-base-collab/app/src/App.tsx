@@ -161,18 +161,18 @@ function App() {
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       {/* Header */}
       <header className="border-b bg-card sticky top-0 z-40">
-        <div className="w-full px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex min-h-16 w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 sm:px-4 lg:px-6">
+          <div className="flex min-w-0 max-w-full items-center gap-2 sm:gap-3">
             <div className="p-2 bg-primary/10 rounded-lg">
               <Database className="w-6 h-6 text-primary" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold">本体论知识库</h1>
-              <p className="text-xs text-muted-foreground">Ontology Knowledge Base</p>
+            <div className="min-w-0 max-w-[60vw] sm:max-w-none">
+              <h1 className="truncate text-base font-bold sm:text-lg lg:text-xl">本体论知识库</h1>
+              <p className="hidden truncate text-xs text-muted-foreground sm:block">Ontology Knowledge Base</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex min-w-0 max-w-full items-center gap-2 sm:gap-3">
             <div className="hidden lg:flex items-center gap-1 bg-slate-100/50 p-1 rounded-2xl border border-slate-200/60 mr-2">
               {LAYER_FILTERS.map((option) => (
                 <Button
@@ -192,7 +192,7 @@ function App() {
               ))}
             </div>
 
-            <div className="hidden md:flex items-center gap-2">
+            <div className="hidden xl:flex items-center gap-2">
               <Badge variant="outline" className="flex items-center gap-1 rounded-full px-2 py-0.5 border-slate-200 text-[10px] font-bold">
                 <GitBranch className="w-3 h-3 text-blue-500" />
                 {filteredEntities.length} 实体
@@ -203,7 +203,7 @@ function App() {
               </Badge>
             </div>
 
-            <div className="hidden md:block w-72">
+            <div className="hidden xl:block w-64 2xl:w-72">
               <SearchPanel
                 onSearch={handleSearch}
                 onSelectEntity={handleSelectEntity}
@@ -237,26 +237,26 @@ function App() {
       {/* Main Content Area */}
       <main className="w-full flex-1 min-h-0 overflow-hidden bg-background">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full min-h-0 gap-0 lg:flex-row">
-          <div className="w-full shrink-0 border-r bg-slate-50/30 lg:w-[300px] xl:w-[320px] lg:h-[calc(100vh-80px)] overflow-hidden flex flex-col">
-            <div className="p-4 flex flex-col h-full min-h-0 gap-4">
-              <TabsList className="flex h-auto w-full flex-row flex-wrap gap-1 rounded-3xl border bg-card/80 p-1.5 shadow-sm lg:flex-col shrink-0">
-                <TabsTrigger value="browse" title="库管理" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+          <div className="flex w-full shrink-0 flex-col overflow-hidden border-r bg-slate-50/30 lg:h-[calc(100vh-80px)] lg:w-[208px] xl:w-[240px]">
+            <div className="p-3 sm:p-4 flex flex-col h-full min-h-0 gap-4">
+              <TabsList className="grid h-auto w-full grid-cols-1 gap-1 rounded-3xl border bg-card/80 p-1.5 shadow-sm sm:grid-cols-2 lg:flex lg:flex-col shrink-0">
+                <TabsTrigger value="browse" title="库管理" className="w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
                   <BookOpen className="mr-2 h-4 w-4 text-primary/70" />
                   <span className="font-bold text-xs uppercase tracking-tight">库管理</span>
                 </TabsTrigger>
-                <TabsTrigger value="workspace" title="工作台" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                <TabsTrigger value="workspace" title="工作台" className="w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
                   <GitBranch className="mr-2 h-4 w-4 text-primary/70" />
                   <span className="font-bold text-xs uppercase tracking-tight">工作台</span>
                 </TabsTrigger>
-                <TabsTrigger value="assistant" title="问答助手" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                <TabsTrigger value="assistant" title="问答助手" className="w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
                   <MessageSquareText className="mr-2 h-4 w-4 text-primary/70" />
                   <span className="font-bold text-xs uppercase tracking-tight">问答助手</span>
                 </TabsTrigger>
-                <TabsTrigger value="lab" title="本体实验室" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                <TabsTrigger value="lab" title="本体实验室" className="w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
                   <FlaskConical className="mr-2 h-4 w-4 text-primary/70" />
                   <span className="font-bold text-xs uppercase tracking-tight">本体实验室</span>
                 </TabsTrigger>
-                <TabsTrigger value="graph" title="知识图谱" className="flex-1 lg:w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
+                <TabsTrigger value="graph" title="知识图谱" className="w-full justify-start rounded-2xl px-3 py-2.5 data-[state=active]:bg-white data-[state=active]:shadow-md">
                   <Network className="mr-2 h-4 w-4 text-primary/70" />
                   <span className="font-bold text-xs uppercase tracking-tight">知识图谱</span>
                 </TabsTrigger>
@@ -393,7 +393,7 @@ function App() {
             </ScrollArea>
           </TabsContent>
 
-          <TabsContent value="assistant" className="mt-0 h-full flex-1 min-h-0">
+          <TabsContent value="assistant" className="mt-0 h-full min-h-0 min-w-0 flex-1">
             <OntologyAssistant
               activeSession={assistantState.activeSession}
               businessPrompt={assistantState.businessPrompt}

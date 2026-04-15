@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $WorkingDir = "D:\code\FJY\OntoGit"
 
 # Ensure log directory exists

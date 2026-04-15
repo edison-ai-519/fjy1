@@ -81,8 +81,8 @@ function CodeBlock({
 
   return (
     <div className="my-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-sm">
-      <div className="flex items-center justify-between border-b border-white/10 bg-slate-900/90 px-4 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-slate-400">
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-white/10 bg-slate-900/90 px-3 py-2 sm:px-4">
+        <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.18em] text-slate-400">
           {language || 'text'}
         </span>
         <Button
@@ -92,13 +92,13 @@ function CodeBlock({
           onClick={() => {
             void handleCopy();
           }}
-          className="h-8 rounded-xl px-3 text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white"
+          className="h-8 shrink-0 rounded-xl px-2 text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white sm:px-3"
         >
-          {copied ? <Check className="mr-1 h-3.5 w-3.5" /> : <Copy className="mr-1 h-3.5 w-3.5" />}
-          {copied ? '已复制' : '复制代码'}
+          {copied ? <Check className="h-3.5 w-3.5 sm:mr-1" /> : <Copy className="h-3.5 w-3.5 sm:mr-1" />}
+          <span className="hidden sm:inline">{copied ? '已复制' : '复制代码'}</span>
         </Button>
       </div>
-      <pre className="overflow-x-auto p-4">
+      <pre className="max-w-full overflow-x-auto p-3 sm:p-4">
         <code className="font-mono text-[13px] leading-6 text-slate-100">{code}</code>
       </pre>
     </div>
@@ -122,7 +122,7 @@ const markdownComponents: Components = {
     </h3>
   ),
   p: ({ children, ...props }) => (
-    <p className="mb-3 text-[14px] leading-7 text-slate-700 last:mb-0" {...props}>
+    <p className="mb-3 break-words [overflow-wrap:anywhere] text-[14px] leading-7 text-slate-700 last:mb-0" {...props}>
       {children}
     </p>
   ),
@@ -153,14 +153,14 @@ const markdownComponents: Components = {
   ),
   blockquote: ({ children, ...props }) => (
     <blockquote
-      className="my-4 rounded-r-2xl border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-[14px] leading-7 text-slate-600"
+      className="my-4 break-words [overflow-wrap:anywhere] rounded-r-2xl border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-[14px] leading-7 text-slate-600"
       {...props}
     >
       {children}
     </blockquote>
   ),
   a: ({ children, ...props }) => (
-    <a className="font-medium text-blue-600 underline decoration-blue-200 underline-offset-4 hover:text-blue-700" {...props}>
+    <a className="break-all font-medium text-blue-600 underline decoration-blue-200 underline-offset-4 hover:text-blue-700" {...props}>
       {children}
     </a>
   ),
@@ -195,7 +195,7 @@ const markdownComponents: Components = {
   code: ({ children, className, ...props }) => (
     <code
       className={cn(
-        'rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[0.92em] text-slate-900',
+        'break-all whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[0.92em] text-slate-900',
         className,
       )}
       {...props}
@@ -217,7 +217,7 @@ export function AssistantMarkdown({
   }
 
   return (
-    <div className={cn('space-y-1 text-[14px] leading-7 text-slate-700', className)}>
+    <div className={cn('min-w-0 space-y-1 break-words [overflow-wrap:anywhere] text-[14px] leading-7 text-slate-700', className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
         {content}
       </ReactMarkdown>

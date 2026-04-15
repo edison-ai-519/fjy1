@@ -37,13 +37,13 @@ function ResizableHandle({
     <ResizablePrimitive.Separator
       data-slot="resizable-handle"
       className={cn(
-        "bg-border focus-visible:ring-ring relative flex w-1.5 items-center justify-center after:absolute after:inset-y-0 after:left-1/2 after:w-12 after:-translate-x-1/2 focus-visible:ring-1 focus-visible:ring-offset-1 focus-visible:outline-hidden data-[panel-group-direction=vertical]:h-1.5 data-[panel-group-direction=vertical]:w-full data-[panel-group-direction=vertical]:after:left-0 data-[panel-group-direction=vertical]:after:h-12 data-[panel-group-direction=vertical]:after:w-full data-[panel-group-direction=vertical]:after:translate-x-0 data-[panel-group-direction=vertical]:after:-translate-y-1/2 [&[data-panel-group-direction=vertical]>div]:rotate-90 hover:bg-blue-400 group/handle shrink-0 touch-none transition-colors z-50 cursor-col-resize data-[panel-group-direction=vertical]:cursor-row-resize",
+        "bg-border focus-visible:ring-ring relative z-50 flex w-px shrink-0 touch-none cursor-col-resize items-center justify-center transition-colors focus-visible:ring-1 focus-visible:ring-offset-1 focus-visible:outline-hidden hover:bg-blue-400 group/handle after:absolute after:left-1/2 after:top-1/2 after:!inset-y-auto after:!h-20 after:!w-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-transparent data-[panel-group-direction=vertical]:h-px data-[panel-group-direction=vertical]:w-full data-[panel-group-direction=vertical]:cursor-row-resize data-[panel-group-direction=vertical]:after:left-1/2 data-[panel-group-direction=vertical]:after:top-1/2 data-[panel-group-direction=vertical]:after:!h-2.5 data-[panel-group-direction=vertical]:after:!w-20 data-[panel-group-direction=vertical]:after:-translate-x-1/2 data-[panel-group-direction=vertical]:after:-translate-y-1/2 [&[data-panel-group-direction=vertical]>div]:rotate-90",
         className
       )}
       {...props}
     >
       {withHandle && (
-        <div className="bg-white z-20 flex h-6 w-3 items-center justify-center rounded-full border shadow-sm group-hover/handle:border-blue-300 group-hover/handle:scale-110 transition-all">
+        <div className="z-20 flex h-6 w-3 items-center justify-center rounded-full border bg-white shadow-sm transition-all group-hover/handle:scale-110 group-hover/handle:border-blue-300">
           <GripVerticalIcon className="size-3 text-slate-400 group-hover/handle:text-blue-500" />
         </div>
       )}

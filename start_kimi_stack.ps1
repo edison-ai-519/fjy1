@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [ValidateSet('RunStack', 'RunBackend', 'RunFrontend')]
   [string]$Mode = 'RunStack',

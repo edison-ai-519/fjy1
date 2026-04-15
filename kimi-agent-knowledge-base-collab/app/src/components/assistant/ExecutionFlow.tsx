@@ -7,31 +7,42 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible";
 import type { ConversationExecutionStage } from './types';
+import { clampExecutionFlowText } from './executionFlowText';
 
 interface ExecutionFlowProps {
   executionStages: ConversationExecutionStage[];
+  layoutMode?: 'split' | 'stacked';
 }
 
-export function ExecutionFlow({ executionStages }: ExecutionFlowProps) {
+export function ExecutionFlow({
+  executionStages,
+  layoutMode = 'split',
+}: ExecutionFlowProps) {
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden border-l bg-slate-50/30">
-      <div className="flex shrink-0 items-center gap-2 border-b bg-white p-4">
+    <div className={cn(
+      'flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/30',
+      layoutMode === 'split' ? 'border-l' : 'border-t',
+    )}>
+      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b bg-white px-3 py-3">
         <Activity className="w-4 h-4 text-blue-500" />
-        <h3 className="text-sm font-semibold tracking-tight">执行流 (Execution Flow)</h3>
-        <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 font-mono">
+        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
+          <span className="truncate">执行流</span>
+          <span className="hidden 2xl:inline"> (Execution Flow)</span>
+        </h3>
+        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">
           {executionStages.length} Steps
         </span>
       </div>
 
       <ScrollArea className="flex-1 min-h-0 overflow-hidden">
-        <div className="p-4 space-y-4">
+        <div className="space-y-3 p-3">
           {executionStages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center opacity-30">
               <Terminal className="w-8 h-8 mb-2" />
               <p className="text-xs">暂无执行阶段</p>
             </div>
           ) : (
-            <div className="relative pl-1 space-y-4">
+            <div className="relative pl-1 space-y-3">
               {/* Timeline Connector */}
               <div className="absolute left-3.5 top-2 bottom-2 w-0.5 bg-slate-200" />
 
@@ -49,6 +60,8 @@ export function ExecutionFlow({ executionStages }: ExecutionFlowProps) {
 function StepItem({ stage }: { stage: ConversationExecutionStage }) {
   const [isOpen, setIsOpen] = React.useState(false);
   const toolRun = stage.toolRun;
+  const compactLabel = clampExecutionFlowText(stage.label, 10);
+  const compactDetail = stage.detail ? clampExecutionFlowText(stage.detail, 24) : '';
 
   const getStatusIcon = () => {
     if (stage.phaseState !== 'completed') return <LoaderIcon />;
@@ -74,35 +87,35 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
       <Collapsible open={isOpen} onOpenChange={setIsOpen} className="space-y-2">
         <div
           className={cn(
-            "p-3 rounded-xl border bg-white shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer overflow-hidden relative",
+            "relative h-[78px] overflow-hidden rounded-xl border bg-white p-2.5 shadow-sm transition-all duration-200 cursor-pointer hover:shadow-md",
             stage.semanticStatus === 'interrupted' ? 'border-amber-100' : 'border-slate-100',
             isOpen ? 'ring-2 ring-blue-500/10' : ''
           )}
           onClick={() => setIsOpen(!isOpen)}
         >
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="flex items-center gap-1.5">
+          <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-1.5">
               <span className={cn(
-                "text-[10px] font-bold tracking-wider px-1.5 rounded",
+                "max-w-[5rem] truncate rounded px-1.5 text-[10px] font-bold tracking-wider",
                 stage.semanticStatus === 'completed' ? 'bg-green-100 text-green-700' :
                   stage.semanticStatus === 'interrupted' ? 'bg-amber-100 text-amber-700' :
                     stage.phaseState === 'active' ? 'bg-blue-100 text-blue-700' :
                       'bg-slate-100 text-slate-600'
               )}>
-                {stage.label}
+                {compactLabel}
               </span>
-              <span className="text-[10px] font-mono text-slate-400">
+              <span className="shrink-0 text-[10px] font-mono text-slate-400">
                 {stage.startedAt
                   ? new Date(stage.startedAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
                   : '--:--:--'}
               </span>
             </div>
-            {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
+            {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
           </div>
 
           {stage.detail ? (
-            <div className="text-[11px] font-medium text-slate-700 truncate leading-tight">
-              {stage.detail}
+            <div className="max-w-full truncate whitespace-nowrap text-[11px] font-medium leading-tight text-slate-700">
+              {compactDetail}
             </div>
           ) : null}
 
@@ -116,7 +129,7 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
 
         <CollapsibleContent forceMount className={cn("space-y-2 animate-in slide-in-from-top-1 duration-200", !isOpen && "hidden")}>
           {toolRun && (
-            <div className="bg-slate-900 rounded-xl p-3 font-mono text-[10px] leading-relaxed overflow-auto max-h-[300px] shadow-inner border border-slate-800">
+            <div className="max-w-full overflow-auto rounded-xl border border-slate-800 bg-slate-900 p-3 font-mono text-[10px] leading-relaxed shadow-inner">
               {toolRun.command && (
                 <div className="text-slate-300 mb-2">
                   <div className="text-[9px] uppercase tracking-widest font-bold text-slate-500 mb-1">Command</div>
