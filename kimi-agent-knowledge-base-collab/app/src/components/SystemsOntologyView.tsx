@@ -129,7 +129,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
                   className={cn(
                     "border-none font-bold",
                     selectedEntity.layer === 'common' && "bg-[#99AF91]/10 text-[#768A6F]",
-                    selectedEntity.layer === 'domain' && "bg-[#939FB0]/10 text-[#6D7A8D]",
+                    selectedEntity.layer === 'domain' && "bg-[#4F83C3]/10 text-[#345C8F]",
                     selectedEntity.layer === 'private' && "bg-[#C19292]/10 text-[#9B6D6D]"
                   )}
                 >
@@ -203,7 +203,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
                     className={cn(
                       "border-none font-bold",
                       analyzedEntity.layer === 'common' && "bg-[#99AF91]/10 text-[#768A6F]",
-                      analyzedEntity.layer === 'domain' && "bg-[#939FB0]/10 text-[#6D7A8D]",
+                      analyzedEntity.layer === 'domain' && "bg-[#4F83C3]/10 text-[#345C8F]",
                       analyzedEntity.layer === 'private' && "bg-[#C19292]/10 text-[#9B6D6D]"
                     )}
                   >

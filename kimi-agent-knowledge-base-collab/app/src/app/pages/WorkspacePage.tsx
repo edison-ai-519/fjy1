@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { GitBranch, Activity, LayoutDashboard } from 'lucide-react';
 
-import { XiaoGuGitDashboard } from '@/components/XiaoGuGitDashboard';
+import { WorkspaceDashboard } from '@/features/workspace/WorkspaceDashboard';
 import { SystemHubPage } from '@/app/pages/SystemHubPage';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
@@ -69,7 +69,7 @@ export function WorkspacePage() {
           {/* Main Content Sections */}
           {viewMode === 'business' ? (
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
-              <XiaoGuGitDashboard />
+              <WorkspaceDashboard />
             </div>
           ) : (
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">

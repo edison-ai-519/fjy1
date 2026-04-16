@@ -41,7 +41,7 @@ export function ExecutionFlow({
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth custom-scrollbar-thin">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-thin">
         <div className="flex min-h-full flex-col justify-end space-y-3 p-3">
           {executionStages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center opacity-30 my-auto">
@@ -51,7 +51,7 @@ export function ExecutionFlow({
           ) : (
             <div className="relative pl-1 space-y-3">
               {/* Timeline Connector */}
-              <div className="absolute left-3 top-2 bottom-2 w-0.5 bg-border/20 dark:bg-zinc-800" />
+              <div className="absolute left-3 top-2 bottom-2 w-[1px] bg-border/30 dark:bg-zinc-800 -translate-x-1/2" />
 
               {executionStages.map((stage, index) => (
                 <StepItem key={stage.id || index} stage={stage} />
@@ -74,20 +74,20 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
     if (stage.phaseState !== 'completed') return <LoaderIcon />;
 
     switch (stage.semanticStatus) {
-      case 'thinking': return <Sparkles className="w-4 h-4 text-violet-500 fill-white" />;
-      case 'executing': return <Activity className="w-4 h-4 text-blue-500 fill-white" />;
-      case 'reasoning': return <BrainCircuit className="w-4 h-4 text-indigo-500 fill-white" />;
-      case 'observing': return <Eye className="w-4 h-4 text-cyan-500 fill-white" />;
-      case 'completed': return <CheckCircle2 className="w-4 h-4 text-green-500 fill-white" />;
-      case 'interrupted': return <AlertTriangle className="w-4 h-4 text-amber-500 fill-white" />;
-      default: return <Clock className="w-4 h-4 text-slate-400 fill-white" />;
+      case 'thinking': return <Sparkles className="w-3.5 h-3.5 text-violet-500" />;
+      case 'executing': return <Activity className="w-3.5 h-3.5 text-blue-500" />;
+      case 'reasoning': return <BrainCircuit className="w-3.5 h-3.5 text-indigo-500" />;
+      case 'observing': return <Eye className="w-3.5 h-3.5 text-cyan-500" />;
+      case 'completed': return <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />;
+      case 'interrupted': return <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />;
+      default: return <Clock className="w-3.5 h-3.5 text-slate-400" />;
     }
   };
 
   return (
     <div className="relative pl-7 group">
       {/* Node Dot */}
-      <div className="absolute left-3 top-1 z-10 -translate-x-1/2 bg-background p-0.5 rounded-full border border-border/20 shadow-sm">
+      <div className="absolute left-3 top-1 z-10 -translate-x-1/2 flex items-center justify-center bg-background p-1 rounded-full border border-border/40 shadow-sm transition-colors dark:bg-zinc-950 dark:border-zinc-800">
         {getStatusIcon()}
       </div>
 

@@ -76,31 +76,31 @@ export function OntologyBrowser({
         <div className="grid grid-cols-2 gap-3 pt-4 lg:grid-cols-4">
           <div className="rounded-2xl border border-blue-500/20 bg-blue-500/5 p-4 transition-all hover:bg-blue-500/10 group">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-black text-blue-500/70 uppercase tracking-widest">领域数</span>
-              <BookOpen className="h-4 w-4 text-blue-500/50 group-hover:scale-110 transition-transform" />
+              <span className="text-sm font-black text-blue-500/70 uppercase tracking-widest">领域数</span>
+              <BookOpen className="h-6 w-6 text-blue-500/50 group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-2xl font-black text-blue-600 dark:text-blue-100 tracking-tighter">{domainCount}</div>
+            <div className="text-3xl font-black text-blue-600 dark:text-blue-100 tracking-tighter">{domainCount}</div>
           </div>
           <div className="rounded-2xl border border-purple-500/20 bg-purple-500/5 p-4 transition-all hover:bg-purple-500/10 group">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-black text-purple-500/70 uppercase tracking-widest">存储层</span>
-              <Layers className="h-4 w-4 text-purple-500/50 group-hover:scale-110 transition-transform" />
+              <span className="text-sm font-black text-purple-500/70 uppercase tracking-widest">存储层</span>
+              <Layers className="h-6 w-6 text-purple-500/50 group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-2xl font-black text-purple-600 dark:text-purple-100 tracking-tighter">{layerCount}</div>
+            <div className="text-3xl font-black text-purple-600 dark:text-purple-100 tracking-tighter">{layerCount}</div>
           </div>
           <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 transition-all hover:bg-amber-500/10 group">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-black text-amber-500/70 uppercase tracking-widest">实体数</span>
-              <Atom className="h-4 w-4 text-amber-500/50 group-hover:scale-110 transition-transform" />
+              <span className="text-sm font-black text-amber-500/70 uppercase tracking-widest">实体数</span>
+              <Atom className="h-6 w-6 text-amber-500/50 group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-2xl font-black text-amber-600 dark:text-amber-100 tracking-tighter">{entities.length}</div>
+            <div className="text-3xl font-black text-amber-600 dark:text-amber-100 tracking-tighter">{entities.length}</div>
           </div>
           <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 transition-all hover:bg-emerald-500/10 group">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-black text-emerald-500/70 uppercase tracking-widest">关系数</span>
-              <Link2 className="h-4 w-4 text-emerald-500/50 group-hover:scale-110 transition-transform" />
+              <span className="text-sm font-black text-emerald-500/70 uppercase tracking-widest">关系数</span>
+              <Link2 className="h-6 w-6 text-emerald-500/50 group-hover:scale-110 transition-transform" />
             </div>
-            <div className="text-2xl font-black text-emerald-600 dark:text-emerald-100 tracking-tighter">{crossReferences.length}</div>
+            <div className="text-3xl font-black text-emerald-600 dark:text-emerald-100 tracking-tighter">{crossReferences.length}</div>
           </div>
         </div>
       </CardHeader>
@@ -169,7 +169,7 @@ export function OntologyBrowser({
                             className={cn(
                               "text-[10px] h-5 border-none font-bold",
                               entity.layer === 'common' && "bg-[#99AF91]/10 text-[#768A6F]",
-                              entity.layer === 'domain' && "bg-[#939FB0]/10 text-[#6D7A8D]",
+                              entity.layer === 'domain' && "bg-[#4F83C3]/10 text-[#345C8F]",
                               entity.layer === 'private' && "bg-[#C19292]/10 text-[#9B6D6D]"
                             )}
                           >

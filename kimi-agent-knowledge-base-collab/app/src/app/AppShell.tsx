@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   BookOpen,
-  Database,
+  Blocks,
   GitBranch,
   Menu,
   MessageSquareText,
@@ -10,14 +10,20 @@ import {
   Sun,
   Moon,
   Zap,
-  Activity,
+  Layers,
+  Atom,
+  Link2,
+  TreePine,
+  Search,
 } from 'lucide-react';
+
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { SearchPanel } from '@/components/SearchPanel';
 import { OntologyBrowser } from '@/components/OntologyBrowser';
 import { Sidebar as AssistantSidebar } from '@/components/assistant/Sidebar';
 import { Toaster } from '@/components/ui/sonner';
@@ -32,10 +38,144 @@ import { AssistantPage } from '@/app/pages/AssistantPage';
 import { LabPage } from '@/app/pages/LabPage';
 import { GraphPage } from '@/app/pages/GraphPage';
 import { WorkspacePage } from '@/app/pages/WorkspacePage';
+import type { Entity } from '@/types/ontology';
+
+const GlobalSidebar = ({
+  domainCount,
+  layerCount,
+  entityCount,
+  relationCount,
+  selectedLayer,
+  setSelectedLayer,
+  onSearch,
+  onSelectEntity,
+  filteredEntityCount,
+  filteredRelationCount
+}: {
+  domainCount: number;
+  layerCount: number;
+  entityCount: number;
+  relationCount: number;
+  filteredEntityCount: number;
+  filteredRelationCount: number;
+  selectedLayer: string;
+  setSelectedLayer: (layer: any) => void;
+  onSearch: (query: string) => Promise<any[]>;
+  onSelectEntity: (entity: any) => void;
+}) => (
+  <div className="flex flex-col h-full gap-5">
+    {/* 1. 标题与搜索 */}
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 px-1">
+        <Sparkles className="w-4 h-4 text-primary/70" />
+        <h3 className="text-[11px] font-black uppercase tracking-widest text-foreground/70">视图工厂控制台</h3>
+      </div>
+      
+      <div className="relative group mx-0.5">
+        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 group-focus-within:text-primary/70 transition-colors">
+          <Search className="w-3.5 h-3.5" />
+        </div>
+        <input 
+          type="text"
+          placeholder="快速搜索实体..."
+          className="w-full h-9 pl-9 pr-4 rounded-xl bg-muted/30 border border-border/40 text-[11px] focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary/40 focus:bg-background transition-all"
+          onChange={(e) => onSearch(e.target.value)}
+        />
+      </div>
+    </div>
+
+    {/* 2. 四个功能按钮 (全部层, Common, Domain, Private) */}
+    <div className="flex items-center gap-1 bg-muted/40 p-1 rounded-2xl border border-border/40">
+      {LAYER_FILTERS.map((option) => (
+        <Button
+          key={option.value}
+          variant={selectedLayer === option.value ? 'default' : 'ghost'}
+          size="sm"
+          className={cn(
+            'flex-1 h-8 rounded-xl text-[10px] font-bold transition-all px-0 active:scale-95',
+            selectedLayer === option.value
+              ? 'bg-background shadow-sm text-primary hover:bg-background'
+              : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50',
+          )}
+          onClick={() => setSelectedLayer(option.value)}
+        >
+          {option.label}
+        </Button>
+      ))}
+    </div>
+
+    {/* 3. 实时状态小图标 */}
+    <div className="flex items-center gap-2 px-1">
+      <Badge variant="outline" className="flex items-center gap-1.5 rounded-full px-2.5 py-1 border-border/60 text-[10px] font-bold bg-muted/20">
+        <GitBranch className="w-3 h-3 text-primary/70" />
+        {filteredEntityCount} 实体
+      </Badge>
+      <Badge variant="outline" className="flex items-center gap-1.5 rounded-full px-2.5 py-1 border-border/60 text-[10px] font-bold bg-muted/20">
+        <Network className="w-3 h-3 text-primary/70" />
+        {filteredRelationCount} 关系
+      </Badge>
+    </div>
+
+    <Separator className="bg-border/40" />
+
+    {/* 4. 底部四个彩色大框框 */}
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 px-1">
+        <TreePine className="w-4 h-4 text-primary/70" />
+        <h3 className="text-[11px] font-black uppercase tracking-widest text-foreground/70">概念速览</h3>
+      </div>
+      
+      <div className="grid grid-cols-2 gap-2 px-0.5">
+        {[
+          { label: '领域数', value: domainCount, icon: BookOpen, color: 'blue' },
+          { label: '层级数', value: layerCount, icon: Layers, color: 'purple' },
+          { label: '实体数', value: entityCount, icon: Atom, color: 'amber' },
+          { label: '关系数', value: relationCount, icon: Link2, color: 'emerald' },
+        ].map((stat) => (
+          <div 
+            key={stat.label}
+            className={cn(
+              "rounded-xl border p-2.5 transition-all active:scale-95 group",
+              stat.color === 'blue' && "border-blue-500/20 bg-blue-500/5 hover:border-blue-500/50 hover:bg-blue-500/10 hover:shadow-[0_0_12px_rgba(59,130,246,0.1)]",
+              stat.color === 'purple' && "border-purple-500/20 bg-purple-500/5 hover:border-purple-500/50 hover:bg-purple-500/10 hover:shadow-[0_0_12px_rgba(168,85,247,0.1)]",
+              stat.color === 'amber' && "border-amber-500/20 bg-amber-500/5 hover:border-amber-500/50 hover:bg-amber-500/10 hover:shadow-[0_0_12px_rgba(245,158,11,0.1)]",
+              stat.color === 'emerald' && "border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/50 hover:bg-emerald-500/10 hover:shadow-[0_0_12px_rgba(16,185,129,0.1)]"
+            )}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className={cn(
+                "text-[9px] font-bold uppercase tracking-tight opacity-70",
+                stat.color === 'blue' && "text-blue-600 dark:text-blue-300",
+                stat.color === 'purple' && "text-purple-600 dark:text-purple-300",
+                stat.color === 'amber' && "text-amber-600 dark:text-amber-300",
+                stat.color === 'emerald' && "text-emerald-600 dark:text-emerald-300"
+              )}>{stat.label}</span>
+              <stat.icon className={cn(
+                "h-3.5 w-3.5 opacity-40 group-hover:opacity-80 transition-opacity",
+                stat.color === 'blue' && "text-blue-500",
+                stat.color === 'purple' && "text-purple-500",
+                stat.color === 'amber' && "text-amber-500",
+                stat.color === 'emerald' && "text-emerald-500"
+              )} />
+            </div>
+            <div className={cn(
+              "text-xl font-black tracking-tighter",
+              stat.color === 'blue' && "text-blue-700 dark:text-blue-100",
+              stat.color === 'purple' && "text-purple-700 dark:text-purple-100",
+              stat.color === 'amber' && "text-amber-700 dark:text-amber-100",
+              stat.color === 'emerald' && "text-emerald-700 dark:text-emerald-100"
+            )}>{stat.value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  </div>
+);
 
 function AppShellContent() {
   const [activeTab, setActiveTab] = useState('browse');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
       return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
@@ -52,9 +192,12 @@ function AppShellContent() {
       document.documentElement.classList.remove('dark');
     }
   };
+
   const {
     loading,
     error,
+    entities,
+    crossReferences,
     filteredEntities,
     filteredCrossReferences,
     selectedEntity,
@@ -66,9 +209,22 @@ function AppShellContent() {
   } = useOntologyContext();
   const assistantState = useOntologyAssistantState(selectedEntity);
 
-  const handleSelectEntity = (entity: NonNullable<typeof selectedEntity>) => {
+  const handleSelectEntity = (entity: Entity) => {
     selectEntity(entity);
     setSidebarOpen(false);
+  };
+
+  const commonSidebarProps = {
+    domainCount: new Set((filteredEntities || []).map(e => e.domain)).size,
+    layerCount: new Set((filteredEntities || []).map(e => e.layer)).size,
+    entityCount: (filteredEntities || []).length,
+    relationCount: (filteredCrossReferences || []).length,
+    filteredEntityCount: (filteredEntities || []).length,
+    filteredRelationCount: (filteredCrossReferences || []).length,
+    selectedLayer,
+    setSelectedLayer,
+    onSearch: searchInLayer,
+    onSelectEntity: handleSelectEntity,
   };
 
   if (loading) {
@@ -99,64 +255,32 @@ function AppShellContent() {
         <div className="flex min-h-16 w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 sm:px-4 lg:px-6">
           <div className="flex min-w-0 max-w-full items-center gap-2 sm:gap-3">
             <div className="p-2 bg-primary/10 rounded-lg">
-              <Database className="w-6 h-6 text-primary" />
+              <Blocks className="w-6 h-6 text-primary" />
             </div>
             <div className="min-w-0 max-w-[60vw] sm:max-w-none">
-              <h1 className="truncate text-base font-bold sm:text-lg lg:text-xl">本体论知识库</h1>
-              <p className="hidden truncate text-xs text-muted-foreground sm:block">Ontology Knowledge Base</p>
+              <h1 className="truncate text-base font-bold sm:text-lg lg:text-xl">本体工厂</h1>
+              <p className="hidden truncate text-xs text-muted-foreground sm:block">Ontology Factory</p>
             </div>
           </div>
 
           <div className="flex min-w-0 max-w-full items-center gap-2 sm:gap-3">
-            <div className="hidden lg:flex items-center gap-1 bg-muted/50 p-1 rounded-2xl border border-border/60 mr-2">
-              {LAYER_FILTERS.map((option) => (
-                <Button
-                  key={option.value}
-                  variant={selectedLayer === option.value ? 'default' : 'ghost'}
-                  size="sm"
-                  className={cn(
-                    'h-8 px-3 rounded-xl text-xs font-bold transition-all',
-                    selectedLayer === option.value
-                      ? 'bg-background shadow-md text-primary hover:bg-background'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
-                  )}
-                  onClick={() => setSelectedLayer(option.value)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
-
-            <div className="hidden xl:flex items-center gap-2">
-              <Badge variant="outline" className="flex items-center gap-1 rounded-full px-2 py-0.5 border-border text-[10px] font-bold">
-                <GitBranch className="w-3 h-3 text-primary/70" />
-                {filteredEntities.length} 实体
-              </Badge>
-              <Badge variant="outline" className="flex items-center gap-1 rounded-full px-2 py-0.5 border-border text-[10px] font-bold">
-                <Network className="w-3 h-3 text-primary/70" />
-                {filteredCrossReferences.length} 关系
-              </Badge>
-            </div>
-
-            <div className="hidden xl:block w-64 2xl:w-72">
-              <SearchPanel
-                onSearch={searchInLayer}
-                onSelectEntity={handleSelectEntity}
-              />
-            </div>
-
             <Button
               variant="ghost"
               size="icon"
               onClick={toggleTheme}
-              className="h-9 w-9 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-all ml-1"
+              className="h-9 w-9 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-all ml-1 relative overflow-hidden"
               title={theme === 'dark' ? "切换到浅色模式" : "切换到深色模式"}
             >
-              {theme === 'dark' ? (
-                <Sun className="h-[1.2rem] w-[1.2rem] text-yellow-500 rotate-0 scale-100 transition-all dark:rotate-0 dark:scale-100" />
-              ) : (
-                <Moon className="h-[1.2rem] w-[1.2rem] transition-all rotate-0 scale-100" />
-              )}
+              <div className="relative h-full w-full flex items-center justify-center">
+                <Sun className={cn(
+                  "h-[1.2rem] w-[1.2rem] text-yellow-500 transition-all duration-500 absolute",
+                  theme === 'dark' ? "rotate-0 scale-100 opacity-100" : "rotate-90 scale-0 opacity-0"
+                )} />
+                <Moon className={cn(
+                  "h-[1.2rem] w-[1.2rem] transition-all duration-500 absolute",
+                  theme === 'dark' ? "-rotate-90 scale-0 opacity-0" : "rotate-0 scale-100 opacity-100"
+                )} />
+              </div>
             </Button>
 
             <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
@@ -165,9 +289,10 @@ function AppShellContent() {
                   <Menu className="w-5 h-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-80 p-0">
-                <div className="p-4 border-b">
-                  <h2 className="font-semibold">{activeTab === 'assistant' ? '助手会话' : '本体浏览器'}</h2>
+              <SheetContent side="left" className="w-80 p-0 border-r shadow-2xl bg-background">
+                <div className="p-4 border-b flex items-center justify-between bg-muted/20">
+                  <h2 className="text-xs font-black uppercase tracking-widest text-primary">本体工厂 | 控制台</h2>
+                  <Badge variant="outline" className="text-[10px] font-bold">STAT LIVE</Badge>
                 </div>
                 <div className="p-4 h-full min-h-0">
                   {activeTab === 'assistant' ? (
@@ -180,15 +305,7 @@ function AppShellContent() {
                       isBusy={assistantState.isBusy}
                     />
                   ) : (
-                    <div className="h-full rounded-3xl border border-border/60 bg-muted/20 p-6 flex flex-col items-center justify-center text-center backdrop-blur-sm shadow-sm">
-                      <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
-                        <Sparkles className="w-6 h-6 text-muted-foreground" />
-                      </div>
-                      <h3 className="text-sm font-bold text-foreground/80 mb-1">当前模块未开启侧栏</h3>
-                      <p className="text-xs text-slate-400">
-                        该功能模块的核心操作区位于主视图中。
-                      </p>
-                    </div>
+                    <GlobalSidebar {...commonSidebarProps} />
                   )}
                 </div>
               </SheetContent>
@@ -216,11 +333,11 @@ function AppShellContent() {
                 </TabsTrigger>
                 <TabsTrigger value="lab" className="w-full justify-start rounded-2xl px-3 py-3 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <Sparkles className="mr-3 h-5 w-5 text-primary" />
-                  <span className="font-black text-sm uppercase tracking-tight">本体实验室</span>
+                  <span className="font-black text-sm uppercase tracking-tight">本体分析</span>
                 </TabsTrigger>
                 <TabsTrigger value="explorer" className="w-full justify-start rounded-2xl px-3 py-3 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <Zap className="mr-3 h-5 w-5 text-primary" />
-                  <span className="font-black text-sm uppercase tracking-tight">全景图谱</span>
+                  <span className="font-black text-sm uppercase tracking-tight">本体图谱</span>
                 </TabsTrigger>
               </TabsList>
 
@@ -235,15 +352,7 @@ function AppShellContent() {
                     isBusy={assistantState.isBusy}
                   />
                 ) : (
-                  <div className="h-full rounded-3xl border border-border/60 bg-muted/20 p-6 flex flex-col items-center justify-center text-center backdrop-blur-sm shadow-sm">
-                    <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
-                      <Sparkles className="w-6 h-6 text-muted-foreground" />
-                    </div>
-                    <h3 className="text-sm font-bold text-foreground/80 mb-1">当前模块未开启侧栏</h3>
-                    <p className="text-xs text-muted-foreground">
-                      该功能模块的核心操作区位于主视图中。
-                    </p>
-                  </div>
+                  <GlobalSidebar {...commonSidebarProps} />
                 )}
               </div>
             </div>

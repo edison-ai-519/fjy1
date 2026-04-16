@@ -19,9 +19,9 @@ const typeIcons: Record<string, React.ReactNode> = {
 };
 
 const levelColors: Record<number, string> = {
-  1: 'bg-blue-500/10 text-blue-400',
-  2: 'bg-green-500/10 text-green-400',
-  3: 'bg-yellow-500/10 text-yellow-400',
+  1: 'bg-[#99AF91]/10 text-[#768A6F]', // Match Common
+  2: 'bg-[#4F83C3]/10 text-[#345C8F]', // Match Domain
+  3: 'bg-[#C19292]/10 text-[#9B6D6D]', // Match Private
   4: 'bg-purple-500/10 text-purple-400',
   5: 'bg-pink-500/10 text-pink-400',
   6: 'bg-indigo-500/10 text-indigo-400',
@@ -29,7 +29,7 @@ const levelColors: Record<number, string> = {
 
 const layerBadgeClasses: Record<KnowledgeLayer, string> = {
   common: 'bg-[#99AF91]/10 text-[#768A6F] border-none',
-  domain: 'bg-[#939FB0]/10 text-[#6D7A8D] border-none',
+  domain: 'bg-[#4F83C3]/10 text-[#345C8F] border-none',
   private: 'bg-[#C19292]/10 text-[#9B6D6D] border-none',
 };
 

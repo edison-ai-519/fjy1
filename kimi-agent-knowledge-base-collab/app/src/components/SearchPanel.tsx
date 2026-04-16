@@ -104,7 +104,7 @@ export function SearchPanel({ onSearch, onSelectEntity }: SearchPanelProps) {
                         className={cn(
                           "text-xs border-none font-bold",
                           entity.layer === 'common' && "bg-[#99AF91]/10 text-[#768A6F]",
-                          entity.layer === 'domain' && "bg-[#939FB0]/10 text-[#6D7A8D]",
+                          entity.layer === 'domain' && "bg-[#4F83C3]/10 text-[#345C8F]",
                           entity.layer === 'private' && "bg-[#C19292]/10 text-[#9B6D6D]"
                         )}
                       >

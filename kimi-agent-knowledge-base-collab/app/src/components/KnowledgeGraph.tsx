@@ -68,11 +68,11 @@ export function KnowledgeGraph({
 
   const { width, height } = dimensions;
   const initialOrbitRadius = 80;
-  const repulsionStrength = 9000; 
+  const repulsionStrength = 9000;
   const targetLinkDistance = 280; // Spread more
-  const springStrength = 0.005; 
-  const centerPullStrength = 0.006; 
-  const velocityDamping = 0.5; 
+  const springStrength = 0.005;
+  const centerPullStrength = 0.006;
+  const velocityDamping = 0.5;
   const palette = ['#2563eb', '#7c3aed', '#059669', '#ea580c', '#db2777', '#0f766e', '#4f46e5', '#ca8a04'];
   const uniqueDomains = [...new Set(entities.map((entity) => entity.domain).filter(Boolean))];
   const domainColors = uniqueDomains.reduce<Record<string, string>>((accumulator, domain, index) => {
@@ -81,7 +81,7 @@ export function KnowledgeGraph({
   }, {});
   const layerStrokeColors: Record<KnowledgeLayer, string> = {
     common: '#99AF91', // 草木灰绿
-    domain: '#939FB0', // 石墨蓝灰
+    domain: '#4F83C3', // 工业深蓝 (明显蓝色)
     private: '#C19292', // 干枯玫瑰红
   };
   const layerLabels: Record<KnowledgeLayer, string> = {
@@ -114,15 +114,30 @@ export function KnowledgeGraph({
       };
     });
 
-    // 创建链接
-    const initialLinks: Link[] = crossReferences.map(ref => ({
-      source: ref.source,
-      target: ref.target,
-      relation: ref.relation
-    }));
+    // 创建链接 (增加合并去重逻辑，防止相同两点间的关系文字叠加)
+    // 使用排序后的 ID 作为 key，确保 A->B 和 B->A 被归为同一条物理边，从根本上解决中点文字重叠
+    const mergedLinksMap = new Map<string, Link>();
+
+    crossReferences.forEach(ref => {
+      const ids = [ref.source, ref.target].sort();
+      const key = ids.join('--');
+      const existing = mergedLinksMap.get(key);
+
+      if (existing) {
+        if (!existing.relation.split(' | ').includes(ref.relation)) {
+          existing.relation += ` | ${ref.relation}`;
+        }
+      } else {
+        mergedLinksMap.set(key, {
+          source: ref.source,
+          target: ref.target,
+          relation: ref.relation
+        });
+      }
+    });
 
     setNodes(initialNodes);
-    setLinks(initialLinks);
+    setLinks(Array.from(mergedLinksMap.values()));
   }, [entities, crossReferences, selectedEntityId]);
 
   // 力导向模拟
@@ -169,10 +184,10 @@ export function KnowledgeGraph({
           }
         });
 
-        // 中心引力 (极致上移，偏向 35% 的高度处)
+        // 中心引力 (平衡布局，偏向 45% 的高度处)
         newNodes.forEach(node => {
           const dx = width / 2 - node.x;
-          const dy = (height * 0.35) - node.y; 
+          const dy = (height * 0.45) - node.y;
           node.vx += dx * centerPullStrength;
           node.vy += dy * centerPullStrength;
         });
@@ -237,7 +252,7 @@ export function KnowledgeGraph({
       <div className="absolute top-2 left-6 right-6 z-20 flex items-center justify-between pointer-events-none">
         <div className="flex items-center gap-2 bg-background/40 backdrop-blur-md px-3 py-1 rounded-full border border-border/40 shadow-sm pointer-events-auto">
           <Network className="w-3.5 h-3.5 text-primary" />
-          <CardTitle className="text-xs font-bold tracking-tight">全景图谱</CardTitle>
+          <CardTitle className="text-xs font-bold tracking-tight">本体图谱</CardTitle>
         </div>
         <div className="flex items-center gap-1 bg-background/40 backdrop-blur-md px-1.5 py-0.5 rounded-full border border-border/40 shadow-sm pointer-events-auto">
           <Button variant="ghost" size="icon" className="w-6 h-6 rounded-md hover:bg-primary/20" onClick={handleZoomOut}>
@@ -297,7 +312,7 @@ export function KnowledgeGraph({
                     x={(sourceNode.x + targetNode.x) / 2}
                     y={(sourceNode.y + targetNode.y) / 2}
                     textAnchor="middle"
-                    className="text-[11px] fill-foreground font-bold"
+                    className="text-[10px] fill-muted-foreground font-medium"
                     style={{ textShadow: '0 0 4px hsl(var(--background))' }}
                   >
                     {link.relation}
@@ -344,9 +359,7 @@ export function KnowledgeGraph({
                   strokeWidth={node.entity.layer === 'private' ? 4 : 2.5}
                   className="hover:opacity-80 transition-opacity"
                 />
-                <title>
-                  {`${node.entity.name}\n领域: ${node.entity.domain}\n存储层: ${layerLabels[node.entity.layer]}\n${node.entity.definition}`}
-                </title>
+                {/* Removed default title tooltip */}
                 {/* 节点标签 */}
                 <text
                   textAnchor="middle"
@@ -362,7 +375,7 @@ export function KnowledgeGraph({
         </div>
 
         {/* 工业级专业图例 - 对称居中布局 */}
-        <div className="px-6 py-2 border-t bg-muted/10 backdrop-blur-xl shrink-0 border-border/20">
+        <div className="px-6 pt-4 pb-3 border-t bg-muted/10 backdrop-blur-xl shrink-0 border-border/20">
           <div className="relative flex items-center justify-center h-8">
             {/* 左侧装饰线 */}
             <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between px-10 pointer-events-none">
@@ -377,7 +390,7 @@ export function KnowledgeGraph({
                 <div className="w-1 h-3 bg-primary/30 rounded-full" />
                 <span className="text-[10px] font-bold text-muted-foreground/80 leading-none">图层分级</span>
               </div>
-              
+
               <div className="flex items-center gap-2">
                 {Object.entries(layerLabels).map(([layer, label]) => (
                   <div key={layer} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-background/20 border border-border/30 shadow-inner">

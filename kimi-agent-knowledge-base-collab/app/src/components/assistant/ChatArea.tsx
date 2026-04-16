@@ -110,7 +110,7 @@ export function ChatArea({
       {/* Messages Area */}
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
       >
         <div className="flex min-h-full flex-col justify-end">
           {messages.length === 0 && !loading && (

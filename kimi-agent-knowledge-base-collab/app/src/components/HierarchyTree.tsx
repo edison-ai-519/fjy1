@@ -28,9 +28,9 @@ const domainIcons: Record<string, React.ReactNode> = {
 };
 
 const levelColors: Record<number, string> = {
-  1: 'text-blue-600',
-  2: 'text-green-600',
-  3: 'text-yellow-600',
+  1: 'text-[#768A6F]', // Match Common
+  2: 'text-[#345C8F]', // Match Domain
+  3: 'text-[#9B6D6D]', // Match Private
   4: 'text-purple-600',
   5: 'text-pink-600',
   6: 'text-indigo-600',
