@@ -1,4 +1,5 @@
 import { FileJson, History } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -8,19 +9,20 @@ interface FileListPanelProps {
   timelines: XgTimeline[];
   selectedFile: string;
   onSelectFile: (filename: string) => void;
+  className?: string;
 }
 
-export function FileListPanel({ timelines, selectedFile, onSelectFile }: FileListPanelProps) {
+export function FileListPanel({ timelines, selectedFile, onSelectFile, className }: FileListPanelProps) {
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md shadow-lg overflow-hidden">
-      <CardHeader className="pb-3 border-b border-border/20">
+    <Card className={cn("border-border/40 bg-card/60 backdrop-blur-md shadow-lg overflow-hidden flex flex-col", className)}>
+      <CardHeader className="pb-3 border-b border-border/20 shrink-0">
         <CardTitle className="text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 text-muted-foreground/80">
           <History className="h-4 w-4 text-purple-500/70" />
           文件列表
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-3">
-        <ScrollArea className="h-64">
+      <CardContent className="p-3 flex-1 flex flex-col min-h-0">
+        <ScrollArea className="flex-1 min-h-0">
           <div className="space-y-1.5 pr-2">
             {timelines.map((timeline) => (
               <button

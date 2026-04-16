@@ -19,8 +19,9 @@ export function WorkspaceDashboard() {
   return (
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-12">
-        <div className="lg:col-span-3 space-y-6">
+        <div className="lg:col-span-3 flex flex-col h-full space-y-6">
           <ProjectListPanel
+            className="h-[600px]"
             projects={workspace.projects}
             selectedProjectId={workspace.selectedProjectId}
             loading={workspace.loading}
@@ -34,7 +35,7 @@ export function WorkspaceDashboard() {
             onRefresh={workspace.loadProjects}
             onInitProject={workspace.handleInitProject}
           />
-          <FileListPanel timelines={workspace.timelines} selectedFile={workspace.selectedFile} onSelectFile={handleSelectFile} />
+          <FileListPanel className="flex-1" timelines={workspace.timelines} selectedFile={workspace.selectedFile} onSelectFile={handleSelectFile} />
         </div>
         <div className="lg:col-span-9 space-y-6">
           <div className="grid gap-6 md:grid-cols-2">

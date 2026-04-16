@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { CheckCircle2, GitBranch, Plus, RefreshCw } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,6 +22,7 @@ interface ProjectListPanelProps {
   onSelectProject: (projectId: string) => void;
   onRefresh: () => void | Promise<void>;
   onInitProject: () => void | Promise<void>;
+  className?: string;
 }
 
 export function ProjectListPanel(props: ProjectListPanelProps) {
@@ -37,10 +39,11 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
     onSelectProject,
     onRefresh,
     onInitProject,
+    className,
   } = props;
 
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md shadow-lg overflow-hidden">
+    <Card className={cn("border-border/40 bg-card/60 backdrop-blur-md shadow-lg overflow-hidden flex flex-col", className)}>
       <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0 border-b border-border/20">
         <CardTitle className="text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 text-muted-foreground/80">
           <GitBranch className="h-4 w-4 text-primary/70" />
@@ -75,8 +78,8 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
           </DialogContent>
         </Dialog>
       </CardHeader>
-      <CardContent className="p-3">
-        <ScrollArea className="h-48 mb-4">
+      <CardContent className="p-3 flex-1 flex flex-col min-h-0">
+        <ScrollArea className="flex-1 min-h-0 mb-4">
           <div className="space-y-1.5 pr-2">
             {projects.map((project) => (
               <button

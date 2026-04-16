@@ -198,7 +198,7 @@ function AppShellContent() {
 
       <main className="w-full flex-1 min-h-0 overflow-hidden bg-background">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full min-h-0 gap-0 lg:flex-row">
-          <div className="flex w-full shrink-0 flex-col overflow-hidden border-r bg-muted/10 lg:h-[calc(100vh-80px)] lg:w-[208px] xl:w-[240px]">
+          <div className="flex w-full shrink-0 flex-col overflow-hidden border-r bg-muted/10 lg:h-full lg:w-[208px] xl:w-[240px]">
             <div className="p-3 sm:p-4 flex flex-col h-full min-h-0 gap-4">
               <TabsList className="grid h-auto w-full grid-cols-1 gap-1 rounded-3xl border bg-card/10 p-1.5 shadow-sm sm:grid-cols-2 lg:flex lg:flex-col shrink-0">
                 <TabsTrigger value="browse" className="w-full justify-start rounded-2xl px-3 py-3 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
@@ -207,7 +207,7 @@ function AppShellContent() {
                 </TabsTrigger>
                 <TabsTrigger value="workspace" className="w-full justify-start rounded-2xl px-3 py-3 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <GitBranch className="mr-3 h-5 w-5 text-primary" />
-                  <span className="font-black text-sm uppercase tracking-tight">工作台</span>
+                  <span className="font-black text-sm uppercase tracking-tight">小故Git</span>
                 </TabsTrigger>
                 <TabsTrigger value="assistant" className="w-full justify-start rounded-2xl px-3 py-3 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <MessageSquareText className="mr-3 h-5 w-5 text-primary" />
