@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { fetchSystemAnalysis, type SystemAnalysisData } from '@/lib/api';
+import { fetchSystemAnalysis, type SystemAnalysisData } from '@/features/ontology/api';
 import type { Entity, KnowledgeLayer } from '@/types/ontology';
 
 interface SystemsOntologyViewProps {
@@ -183,7 +183,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="bg-purple-50">
+              <Badge variant="outline" className="bg-purple-500/10 text-purple-600 dark:text-purple-300 border-purple-500/20">
                 系统本体论
               </Badge>
               {analyzedEntity ? (
@@ -210,7 +210,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
             </TabsList>
 
             <TabsContent value="holistic" className="space-y-4">
-              <Card className="bg-purple-50/50">
+              <Card className="bg-muted/10 border-border/40 backdrop-blur-sm">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-lg flex items-center gap-2">
                     <Zap className="w-5 h-5 text-purple-500" />
@@ -220,11 +220,11 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
                 <CardContent>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {analysis.holistic_properties.map((prop, index) => (
-                      <div key={prop} className="flex items-start gap-3 p-4 bg-white rounded-lg border">
-                        <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center text-purple-600 font-semibold shrink-0">
+                      <div key={prop} className="flex items-start gap-3 p-4 bg-muted/30 rounded-lg border border-border/20">
+                        <div className="w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center text-purple-500 font-black shrink-0">
                           {index + 1}
                         </div>
-                        <p className="text-sm">{prop}</p>
+                        <p className="text-sm text-foreground/80">{prop}</p>
                       </div>
                     ))}
                   </div>
@@ -248,21 +248,21 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
 
             <TabsContent value="boundary" className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card className="bg-blue-50/50">
+                <Card className="bg-blue-500/5 border-blue-500/20">
                   <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Square className="w-4 h-4 text-blue-500" />物理边界</CardTitle></CardHeader>
-                  <CardContent><p className="text-sm">{analysis.boundary.physical}</p></CardContent>
+                  <CardContent><p className="text-sm text-foreground/80">{analysis.boundary.physical}</p></CardContent>
                 </Card>
-                <Card className="bg-green-50/50">
-                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Activity className="w-4 h-4 text-green-500" />功能边界</CardTitle></CardHeader>
-                  <CardContent><p className="text-sm">{analysis.boundary.functional}</p></CardContent>
+                <Card className="bg-emerald-500/5 border-emerald-500/20">
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Activity className="w-4 h-4 text-emerald-500" />功能边界</CardTitle></CardHeader>
+                  <CardContent><p className="text-sm text-foreground/80">{analysis.boundary.functional}</p></CardContent>
                 </Card>
-                <Card className="bg-yellow-50/50">
-                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Triangle className="w-4 h-4 text-yellow-500" />认知边界</CardTitle></CardHeader>
-                  <CardContent><p className="text-sm">{analysis.boundary.cognitive}</p></CardContent>
+                <Card className="bg-amber-500/5 border-amber-500/20">
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Triangle className="w-4 h-4 text-amber-500" />认知边界</CardTitle></CardHeader>
+                  <CardContent><p className="text-sm text-foreground/80">{analysis.boundary.cognitive}</p></CardContent>
                 </Card>
-                <Card className="bg-red-50/50">
-                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><RefreshCw className="w-4 h-4 text-red-500" />动态边界</CardTitle></CardHeader>
-                  <CardContent><p className="text-sm">{analysis.boundary.dynamic}</p></CardContent>
+                <Card className="bg-rose-500/5 border-rose-500/20">
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><RefreshCw className="w-4 h-4 text-rose-500" />动态边界</CardTitle></CardHeader>
+                  <CardContent><p className="text-sm text-foreground/80">{analysis.boundary.dynamic}</p></CardContent>
                 </Card>
               </div>
             </TabsContent>
@@ -278,16 +278,16 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
                 <CardContent>
                   <p className="text-sm text-muted-foreground mb-4">{analysis.environment.description}</p>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 bg-green-50 rounded-lg">
-                      <h4 className="font-semibold text-green-800 mb-2">输入</h4>
+                    <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-lg">
+                      <h4 className="font-bold text-emerald-500 mb-2 uppercase tracking-tighter text-[11px]">输入</h4>
                       <div className="flex flex-wrap gap-2">
-                        {analysis.environment.inputs.map((item) => <Badge key={item} variant="secondary">{item}</Badge>)}
+                        {analysis.environment.inputs.map((item) => <Badge key={item} variant="secondary" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-none">{item}</Badge>)}
                       </div>
                     </div>
-                    <div className="p-4 bg-blue-50 rounded-lg">
-                      <h4 className="font-semibold text-blue-800 mb-2">输出</h4>
+                    <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-lg">
+                      <h4 className="font-bold text-blue-500 mb-2 uppercase tracking-tighter text-[11px]">输出</h4>
                       <div className="flex flex-wrap gap-2">
-                        {analysis.environment.outputs.map((item) => <Badge key={item} variant="secondary">{item}</Badge>)}
+                        {analysis.environment.outputs.map((item) => <Badge key={item} variant="secondary" className="bg-blue-500/10 text-blue-600 dark:text-blue-400 border-none">{item}</Badge>)}
                       </div>
                     </div>
                   </div>
@@ -297,16 +297,16 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
 
             <TabsContent value="feedback" className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card className="bg-blue-50/50">
-                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2 text-blue-800"><RefreshCw className="w-4 h-4" />负反馈</CardTitle></CardHeader>
+                <Card className="bg-blue-500/5 border-blue-500/20">
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2 text-blue-500 font-bold uppercase tracking-tight"><RefreshCw className="w-4 h-4" />负反馈</CardTitle></CardHeader>
                   <CardContent className="space-y-2">
-                    {analysis.feedback.negative.map((item) => <div key={item} className="text-sm p-2 bg-white rounded border border-blue-200">{item}</div>)}
+                    {analysis.feedback.negative.map((item) => <div key={item} className="text-sm p-2 bg-muted/40 rounded border border-blue-500/10 text-foreground/80">{item}</div>)}
                   </CardContent>
                 </Card>
-                <Card className="bg-red-50/50">
-                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2 text-red-800"><Activity className="w-4 h-4" />正反馈</CardTitle></CardHeader>
+                <Card className="bg-rose-500/5 border-rose-500/20">
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2 text-rose-500 font-bold uppercase tracking-tight"><Activity className="w-4 h-4" />正反馈</CardTitle></CardHeader>
                   <CardContent className="space-y-2">
-                    {analysis.feedback.positive.map((item) => <div key={item} className="text-sm p-2 bg-white rounded border border-red-200">{item}</div>)}
+                    {analysis.feedback.positive.map((item) => <div key={item} className="text-sm p-2 bg-muted/40 rounded border border-rose-500/10 text-foreground/80">{item}</div>)}
                   </CardContent>
                 </Card>
               </div>
@@ -348,3 +348,4 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
     </div>
   );
 }
+

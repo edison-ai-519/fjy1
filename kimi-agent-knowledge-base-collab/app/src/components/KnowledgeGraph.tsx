@@ -67,12 +67,12 @@ export function KnowledgeGraph({
   }, []);
 
   const { width, height } = dimensions;
-  const initialOrbitRadius = Math.min(260, 180 + entities.length * 4);
-  const repulsionStrength = 2800;
-  const targetLinkDistance = 135;
-  const springStrength = 0.006;
-  const centerPullStrength = 0.0005;
-  const velocityDamping = 0.86;
+  const initialOrbitRadius = 80;
+  const repulsionStrength = 9000; 
+  const targetLinkDistance = 280; // Spread more
+  const springStrength = 0.005; 
+  const centerPullStrength = 0.006; 
+  const velocityDamping = 0.5; 
   const palette = ['#2563eb', '#7c3aed', '#059669', '#ea580c', '#db2777', '#0f766e', '#4f46e5', '#ca8a04'];
   const uniqueDomains = [...new Set(entities.map((entity) => entity.domain).filter(Boolean))];
   const domainColors = uniqueDomains.reduce<Record<string, string>>((accumulator, domain, index) => {
@@ -108,7 +108,7 @@ export function KnowledgeGraph({
         y: height / 2 + Math.sin(angle) * initialOrbitRadius,
         vx: 0,
         vy: 0,
-        radius: entity.id === selectedEntityId ? 25 : 18,
+        radius: 20, // Constant radius to prevent physics "pops" on selection
         color: domainColors[entity.domain] || '#6b7280',
         entity: entity
       };
@@ -169,10 +169,10 @@ export function KnowledgeGraph({
           }
         });
 
-        // 中心引力
+        // 中心引力 (极致上移，偏向 35% 的高度处)
         newNodes.forEach(node => {
           const dx = width / 2 - node.x;
-          const dy = height / 2 - node.y;
+          const dy = (height * 0.35) - node.y; 
           node.vx += dx * centerPullStrength;
           node.vy += dy * centerPullStrength;
         });
@@ -185,9 +185,9 @@ export function KnowledgeGraph({
             node.x += node.vx;
             node.y += node.vy;
 
-            // 边界限制
-            node.x = Math.max(node.radius, Math.min(width - node.radius, node.x));
-            node.y = Math.max(node.radius, Math.min(height - node.radius, node.y));
+            // 极简边界限制 (只有 5px 内边距)
+            node.x = Math.max(node.radius + 5, Math.min(width - node.radius - 5, node.x));
+            node.y = Math.max(node.radius + 5, Math.min(height - node.radius - 5, node.y));
           }
         });
 
@@ -232,28 +232,28 @@ export function KnowledgeGraph({
   };
 
   return (
-    <Card className="w-full">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Network className="w-5 h-5" />
-            知识图谱
-          </CardTitle>
-          <div className="flex items-center gap-1">
-            <Button variant="outline" size="icon" onClick={handleZoomOut}>
-              <ZoomOut className="w-4 h-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={handleReset}>
-              <Maximize2 className="w-4 h-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={handleZoomIn}>
-              <ZoomIn className="w-4 h-4" />
-            </Button>
-          </div>
+    <Card className="w-full h-full border-0 shadow-none bg-transparent flex flex-col relative overflow-hidden">
+      {/* 绝对定位头部，省去占位空间 */}
+      <div className="absolute top-2 left-6 right-6 z-20 flex items-center justify-between pointer-events-none">
+        <div className="flex items-center gap-2 bg-background/40 backdrop-blur-md px-3 py-1 rounded-full border border-border/40 shadow-sm pointer-events-auto">
+          <Network className="w-3.5 h-3.5 text-primary" />
+          <CardTitle className="text-xs font-bold tracking-tight">全景图谱</CardTitle>
         </div>
-      </CardHeader>
-      <CardContent className="p-0 flex-1 min-h-0">
-        <div ref={containerRef} className="relative h-full min-h-[500px] overflow-hidden border-t">
+        <div className="flex items-center gap-1 bg-background/40 backdrop-blur-md px-1.5 py-0.5 rounded-full border border-border/40 shadow-sm pointer-events-auto">
+          <Button variant="ghost" size="icon" className="w-6 h-6 rounded-md hover:bg-primary/20" onClick={handleZoomOut}>
+            <ZoomOut className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="icon" className="w-6 h-6 rounded-md hover:bg-primary/20" onClick={handleReset}>
+            <Maximize2 className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="icon" className="w-6 h-6 rounded-md hover:bg-primary/20" onClick={handleZoomIn}>
+            <ZoomIn className="w-3 h-3" />
+          </Button>
+        </div>
+      </div>
+
+      <CardContent className="p-0 flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div ref={containerRef} className="relative flex-1 w-full overflow-hidden bg-background/50">
           <svg
             ref={svgRef}
             width={width}
@@ -270,11 +270,11 @@ export function KnowledgeGraph({
           >
             {/* 背景网格 */}
             <defs>
-              <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1" fill="#e5e7eb" />
+              <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+                <circle cx="1" cy="1" r="1" className="fill-border/40" />
               </pattern>
             </defs>
-            <rect width={width} height={height} fill="url(#grid)" />
+            <rect width="100%" height="100%" fill="url(#grid)" />
 
             {/* 链接 */}
             {links.map((link, index) => {
@@ -289,17 +289,16 @@ export function KnowledgeGraph({
                     y1={sourceNode.y}
                     x2={targetNode.x}
                     y2={targetNode.y}
-                    stroke="#9ca3af"
-                    strokeWidth={2}
-                    strokeOpacity={0.6}
+                    className="stroke-muted-foreground/30"
+                    strokeWidth={1.5}
                   />
                   {/* 关系标签 */}
                   <text
                     x={(sourceNode.x + targetNode.x) / 2}
                     y={(sourceNode.y + targetNode.y) / 2}
                     textAnchor="middle"
-                    className="text-xs fill-gray-500"
-                    style={{ fontSize: '10px' }}
+                    className="text-[11px] fill-foreground font-bold"
+                    style={{ textShadow: '0 0 4px hsl(var(--background))' }}
                   >
                     {link.relation}
                   </text>
@@ -319,12 +318,23 @@ export function KnowledgeGraph({
                 {/* 选中光环 */}
                 {node.id === selectedEntityId && (
                   <circle
-                    r={node.radius + 5}
+                    r={node.radius + 6}
                     fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth={3}
-                    strokeDasharray="5,5"
-                  />
+                    stroke="currentColor"
+                    className="text-primary"
+                    strokeWidth={2.5}
+                    strokeDasharray="4,4"
+                  >
+                    <animateTransform
+                      attributeName="transform"
+                      attributeType="XML"
+                      type="rotate"
+                      from={`0 0 0`}
+                      to={`360 0 0`}
+                      dur="10s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
                 )}
                 {/* 节点圆圈 */}
                 <circle
@@ -340,9 +350,9 @@ export function KnowledgeGraph({
                 {/* 节点标签 */}
                 <text
                   textAnchor="middle"
-                  dy={node.radius + 15}
-                  className="text-xs fill-gray-700 font-medium"
-                  style={{ fontSize: '11px', pointerEvents: 'none' }}
+                  dy={node.radius + 18}
+                  className="text-xs fill-foreground font-bold"
+                  style={{ fontSize: '13px', pointerEvents: 'none', textShadow: '0 1px 2px hsl(var(--background))' }}
                 >
                   {node.name}
                 </text>
@@ -351,29 +361,35 @@ export function KnowledgeGraph({
           </svg>
         </div>
 
-        {/* 图例 */}
-        <div className="p-4 border-t bg-muted/30">
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(domainColors).map(([domain, color]) => (
-              <Badge key={domain} variant="outline" className="flex items-center gap-1">
-                <div
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="text-xs">{domain}</span>
-              </Badge>
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {Object.entries(layerLabels).map(([layer, label]) => (
-              <Badge key={layer} variant={layer === 'private' ? 'destructive' : 'outline'} className="flex items-center gap-1">
-                <div
-                  className="w-3 h-3 rounded-full border-2 bg-white"
-                  style={{ borderColor: layerStrokeColors[layer as KnowledgeLayer] }}
-                />
-                <span className="text-xs">{label}</span>
-              </Badge>
-            ))}
+        {/* 工业级专业图例 - 对称居中布局 */}
+        <div className="px-6 py-2 border-t bg-muted/10 backdrop-blur-xl shrink-0 border-border/20">
+          <div className="relative flex items-center justify-center h-8">
+            {/* 左侧装饰线 */}
+            <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between px-10 pointer-events-none">
+              <div className="h-px w-1/4 bg-gradient-to-r from-transparent via-border/40 to-transparent" />
+              <div className="h-px w-1/4 bg-gradient-to-r from-transparent via-border/40 to-transparent" />
+            </div>
+
+            {/* 中心内容 */}
+            <div className="z-10 bg-background/5 px-4 flex items-center gap-6">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] font-black text-muted-foreground/40 uppercase tracking-[0.2em] leading-none">Knowledge Layers</span>
+                <div className="w-1 h-3 bg-primary/30 rounded-full" />
+                <span className="text-[10px] font-bold text-muted-foreground/80 leading-none">图层分级</span>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                {Object.entries(layerLabels).map(([layer, label]) => (
+                  <div key={layer} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-background/20 border border-border/30 shadow-inner">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full border border-white/40 ring-1 ring-black/20 shadow-[0_0_8px_rgba(0,0,0,0.3)]"
+                      style={{ backgroundColor: layerStrokeColors[layer as KnowledgeLayer] }}
+                    />
+                    <span className="text-[10px] font-bold text-foreground/60">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </CardContent>

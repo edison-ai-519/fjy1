@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { fetchKnowledgeGraph, fetchOntologies, searchEntities as searchEntitiesRequest } from '@/lib/api';
+import { fetchKnowledgeGraph, fetchOntologies, searchEntities as searchEntitiesRequest } from '@/features/ontology/api';
 import type { KnowledgeGraphData, Entity, OntologyModule } from '@/types/ontology';
 
 export function useOntologyData() {
@@ -14,10 +14,10 @@ export function useOntologyData() {
     const loadData = async () => {
       try {
         setLoading(true);
-        
+
         const [kgData, ontologies] = await Promise.all([
           fetchKnowledgeGraph(),
-          fetchOntologies()
+          fetchOntologies(),
         ]);
 
         setKnowledgeGraph(kgData);
@@ -45,26 +45,20 @@ export function useOntologyData() {
 
   const getEntitiesByDomain = (domain: string): Entity[] => {
     if (!knowledgeGraph) return [];
-    return Object.values(knowledgeGraph.entity_index).filter(entity => 
-      entity.domain === domain
-    );
+    return Object.values(knowledgeGraph.entity_index).filter((entity) => entity.domain === domain);
   };
 
   const getEntitiesByLevel = (level: number): Entity[] => {
     if (!knowledgeGraph) return [];
-    return Object.values(knowledgeGraph.entity_index).filter(entity => 
-      entity.level === level
-    );
+    return Object.values(knowledgeGraph.entity_index).filter((entity) => entity.level === level);
   };
 
   const getRelatedEntities = (entityId: string): Entity[] => {
     if (!knowledgeGraph) return [];
-    
-    const related = knowledgeGraph.cross_references.filter(ref => 
-      ref.source === entityId || ref.target === entityId
-    );
-    
-    return related.map(ref => {
+
+    const related = knowledgeGraph.cross_references.filter((ref) => ref.source === entityId || ref.target === entityId);
+
+    return related.map((ref) => {
       const relatedId = ref.source === entityId ? ref.target : ref.source;
       return knowledgeGraph.entity_index[relatedId];
     }).filter(Boolean);
@@ -81,6 +75,6 @@ export function useOntologyData() {
     searchEntities,
     getEntitiesByDomain,
     getEntitiesByLevel,
-    getRelatedEntities
+    getRelatedEntities,
   };
 }

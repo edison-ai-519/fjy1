@@ -8,11 +8,11 @@ interface MarkdownBlocksProps {
 }
 
 const calloutStyles: Record<string, string> = {
-  note: 'border-blue-200 bg-blue-50 text-blue-950',
-  info: 'border-sky-200 bg-sky-50 text-sky-950',
-  tip: 'border-emerald-200 bg-emerald-50 text-emerald-950',
-  warning: 'border-amber-200 bg-amber-50 text-amber-950',
-  caution: 'border-rose-200 bg-rose-50 text-rose-950',
+  note: 'border-blue-500/20 bg-blue-500/5 text-blue-200',
+  info: 'border-sky-500/20 bg-sky-500/5 text-sky-200',
+  tip: 'border-emerald-500/20 bg-emerald-500/5 text-emerald-200',
+  warning: 'border-amber-500/20 bg-amber-500/5 text-amber-200',
+  caution: 'border-rose-500/20 bg-rose-500/5 text-rose-200',
 };
 
 const calloutIcons: Record<string, ReactNode> = {
@@ -34,18 +34,18 @@ function renderInlineTokens(
   return tokens.map((token, index) => {
     if (token.type === 'code') {
       return (
-        <code key={index} className="rounded bg-slate-100 px-1.5 py-0.5 text-[0.9em] text-slate-900">
+        <code key={index} className="rounded-md bg-muted/30 border border-border/40 px-1.5 py-0.5 font-mono text-[0.9em] text-primary/90">
           {token.text}
         </code>
       );
     }
 
     if (token.type === 'strong') {
-      return <strong key={index} className="font-semibold text-foreground">{token.text}</strong>;
+      return <strong key={index} className="font-black text-foreground">{token.text}</strong>;
     }
 
     if (token.type === 'emphasis') {
-      return <em key={index} className="italic">{token.text}</em>;
+      return <em key={index} className="italic text-foreground/80">{token.text}</em>;
     }
 
     if (token.type === 'link') {
@@ -54,7 +54,7 @@ function renderInlineTokens(
           <button
             key={index}
             type="button"
-            className="text-primary underline decoration-primary/40 underline-offset-4 hover:text-primary/80"
+            className="font-bold text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-primary transition-all"
             onClick={() => onSelectEntityRef(token.target_ref!)}
           >
             {token.text}
@@ -69,7 +69,7 @@ function renderInlineTokens(
             href={token.href}
             target={token.external ? '_blank' : undefined}
             rel={token.external ? 'noreferrer' : undefined}
-            className="text-primary underline decoration-primary/40 underline-offset-4 hover:text-primary/80"
+            className="font-bold text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-primary transition-all"
           >
             {token.text}
           </a>
@@ -88,19 +88,19 @@ export function MarkdownBlocks({ blocks, onSelectEntityRef }: MarkdownBlocksProp
         switch (block.type) {
           case 'heading':
             return (
-              <div key={index} className="font-semibold text-slate-900">
+              <div key={index} className="font-black text-foreground tracking-tight">
                 {renderInlineTokens(block.tokens, onSelectEntityRef) || block.text}
               </div>
             );
           case 'paragraph':
             return (
-              <p key={index} className="text-sm leading-7 text-slate-700">
+              <p key={index} className="text-[15px] leading-7 text-foreground/90 font-medium">
                 {renderInlineTokens(block.tokens, onSelectEntityRef) || block.text}
               </p>
             );
           case 'list':
             return (
-              <ul key={index} className="list-disc space-y-2 pl-5 text-sm leading-7 text-slate-700">
+              <ul key={index} className="list-disc space-y-2.5 pl-5 text-[15px] leading-7 text-foreground/90 font-medium marker:text-primary/40">
                 {(block.items || []).map((item, itemIndex) => (
                   <li key={itemIndex}>
                     {renderInlineTokens(item.tokens, onSelectEntityRef) || item.text}
@@ -110,7 +110,7 @@ export function MarkdownBlocks({ blocks, onSelectEntityRef }: MarkdownBlocksProp
             );
           case 'ordered_list':
             return (
-              <ol key={index} className="list-decimal space-y-2 pl-5 text-sm leading-7 text-slate-700">
+              <ol key={index} className="list-decimal space-y-2.5 pl-5 text-[15px] leading-7 text-foreground/90 font-medium marker:text-primary/40">
                 {(block.items || []).map((item, itemIndex) => (
                   <li key={itemIndex}>
                     {renderInlineTokens(item.tokens, onSelectEntityRef) || item.text}
@@ -120,10 +120,10 @@ export function MarkdownBlocks({ blocks, onSelectEntityRef }: MarkdownBlocksProp
             );
           case 'checklist':
             return (
-              <div key={index} className="space-y-2">
+              <div key={index} className="space-y-2.5">
                 {(block.items || []).map((item, itemIndex) => (
-                  <div key={itemIndex} className="flex items-start gap-2 rounded-xl border bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                    <span className={`mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded border text-[10px] ${item.checked ? 'border-emerald-500 bg-emerald-100 text-emerald-700' : 'border-slate-300 bg-white text-slate-400'}`}>
+                  <div key={itemIndex} className="flex items-start gap-3 rounded-xl border border-border/40 bg-muted/10 px-4 py-3 text-[15px] text-foreground font-medium">
+                    <span className={`mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded border transition-colors ${item.checked ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background'}`}>
                       {item.checked ? '✓' : ''}
                     </span>
                     <span>{renderInlineTokens(item.tokens, onSelectEntityRef) || item.text}</span>
@@ -133,7 +133,7 @@ export function MarkdownBlocks({ blocks, onSelectEntityRef }: MarkdownBlocksProp
             );
           case 'quote':
             return (
-              <blockquote key={index} className="rounded-r-xl border-l-4 border-slate-300 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-700">
+              <blockquote key={index} className="rounded-r-xl border-l-4 border-primary/40 bg-primary/5 px-6 py-4 text-[15px] leading-7 text-foreground italic shadow-sm">
                 {renderInlineTokens(block.tokens, onSelectEntityRef) || block.text}
               </blockquote>
             );

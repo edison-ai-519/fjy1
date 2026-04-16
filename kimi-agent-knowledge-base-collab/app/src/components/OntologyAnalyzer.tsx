@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { fetchAnalysis, type AnalysisResult } from '@/lib/api';
+import { fetchAnalysis, type AnalysisResult } from '@/features/ontology/api';
 import type { Entity, KnowledgeLayer } from '@/types/ontology';
 
 interface OntologyAnalyzerProps {
@@ -307,3 +307,4 @@ export function OntologyAnalyzer({ entities, selectedEntity, onSelectEntity }: O
     </div>
   );
 }
+

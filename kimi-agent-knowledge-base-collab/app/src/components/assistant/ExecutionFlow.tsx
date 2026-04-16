@@ -1,7 +1,7 @@
 import React from 'react';
-import { Terminal, Activity, CheckCircle2, Clock, ChevronDown, ChevronRight, Info, AlertTriangle, Sparkles, BrainCircuit, Eye } from 'lucide-react';
+import { Terminal, Activity, CheckCircle2, Clock, ChevronDown, ChevronRight, AlertTriangle, Sparkles, BrainCircuit, Eye, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ui/button';
 import {
   Collapsible,
   CollapsibleContent,
@@ -12,39 +12,56 @@ import { clampExecutionFlowText } from './executionFlowText';
 interface ExecutionFlowProps {
   executionStages: ConversationExecutionStage[];
   layoutMode?: 'split' | 'stacked';
+  onClose?: () => void;
 }
 
 export function ExecutionFlow({
   executionStages,
   layoutMode = 'split',
+  onClose,
 }: ExecutionFlowProps) {
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [executionStages]);
+
   return (
-    <div className={cn(
-      'flex h-full min-h-0 flex-col overflow-hidden bg-slate-50/30',
-      layoutMode === 'split' ? 'border-l' : 'border-t',
-    )}>
-      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b bg-white px-3 py-3">
-        <Activity className="w-4 h-4 text-blue-500" />
-        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
-          <span className="truncate">执行流</span>
-          <span className="hidden 2xl:inline"> (Execution Flow)</span>
-        </h3>
-        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">
-          {executionStages.length} Steps
-        </span>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background border-l border-border">
+      <div className="flex min-w-0 shrink-0 items-center justify-between gap-2 border-b bg-card px-4 py-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="min-w-0 truncate text-sm font-semibold tracking-tight text-foreground/90">
+            执行流程
+          </h3>
+          <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+            {executionStages.length}
+          </span>
+        </div>
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="h-7 w-7 rounded-lg text-slate-400 hover:text-slate-600"
+          >
+            <X className="w-4 h-4" />
+          </Button>
+        )}
       </div>
 
-      <ScrollArea className="flex-1 min-h-0 overflow-hidden">
-        <div className="space-y-3 p-3">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth custom-scrollbar-thin">
+        <div className="flex min-h-full flex-col justify-end space-y-3 p-3">
           {executionStages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center opacity-30">
+            <div className="flex flex-col items-center justify-center py-20 text-center opacity-30 my-auto">
               <Terminal className="w-8 h-8 mb-2" />
               <p className="text-xs">暂无执行阶段</p>
             </div>
           ) : (
             <div className="relative pl-1 space-y-3">
               {/* Timeline Connector */}
-              <div className="absolute left-3.5 top-2 bottom-2 w-0.5 bg-slate-200" />
+              <div className="absolute left-3 top-2 bottom-2 w-0.5 bg-border/20 dark:bg-zinc-800" />
 
               {executionStages.map((stage, index) => (
                 <StepItem key={stage.id || index} stage={stage} />
@@ -52,7 +69,7 @@ export function ExecutionFlow({
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -72,7 +89,7 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
       case 'reasoning': return <BrainCircuit className="w-4 h-4 text-indigo-500 fill-white" />;
       case 'observing': return <Eye className="w-4 h-4 text-cyan-500 fill-white" />;
       case 'completed': return <CheckCircle2 className="w-4 h-4 text-green-500 fill-white" />;
-      case 'interrupted': return <Info className="w-4 h-4 text-amber-500 fill-white" />;
+      case 'interrupted': return <AlertTriangle className="w-4 h-4 text-amber-500 fill-white" />;
       default: return <Clock className="w-4 h-4 text-slate-400 fill-white" />;
     }
   };
@@ -80,90 +97,48 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
   return (
     <div className="relative pl-7 group">
       {/* Node Dot */}
-      <div className="absolute left-1.5 top-1 z-10 -translate-x-1/2 bg-slate-50 p-0.5 rounded-full">
+      <div className="absolute left-3 top-1 z-10 -translate-x-1/2 bg-background p-0.5 rounded-full border border-border/20 shadow-sm">
         {getStatusIcon()}
       </div>
 
-      <Collapsible open={isOpen} onOpenChange={setIsOpen} className="space-y-2">
-        <div
-          className={cn(
-            "relative h-[78px] overflow-hidden rounded-xl border bg-white p-2.5 shadow-sm transition-all duration-200 cursor-pointer hover:shadow-md",
-            stage.semanticStatus === 'interrupted' ? 'border-amber-100' : 'border-slate-100',
-            isOpen ? 'ring-2 ring-blue-500/10' : ''
-          )}
-          onClick={() => setIsOpen(!isOpen)}
-        >
-          <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className={cn(
-                "max-w-[5rem] truncate rounded px-1.5 text-[10px] font-bold tracking-wider",
-                stage.semanticStatus === 'completed' ? 'bg-green-100 text-green-700' :
-                  stage.semanticStatus === 'interrupted' ? 'bg-amber-100 text-amber-700' :
-                    stage.phaseState === 'active' ? 'bg-blue-100 text-blue-700' :
-                      'bg-slate-100 text-slate-600'
-              )}>
-                {compactLabel}
-              </span>
-              <span className="shrink-0 text-[10px] font-mono text-slate-400">
-                {stage.startedAt
-                  ? new Date(stage.startedAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                  : '--:--:--'}
-              </span>
-            </div>
-            {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
+      <div
+        className={cn(
+          "relative h-auto min-h-[78px] overflow-hidden rounded-xl border bg-card p-2.5 shadow-sm transition-all duration-200",
+          stage.semanticStatus === 'interrupted' ? 'border-red-500/20' : 'border-border/40'
+        )}
+      >
+        <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={cn(
+              "max-w-[5rem] truncate rounded px-1.5 text-[10px] font-black tracking-wider uppercase",
+              stage.semanticStatus === 'completed' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' :
+                stage.semanticStatus === 'interrupted' ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' :
+                  stage.phaseState === 'active' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' :
+                    'bg-muted/50 text-muted-foreground'
+            )}>
+              {compactLabel}
+            </span>
+            <span className="shrink-0 text-[10px] font-mono font-bold text-muted-foreground/50">
+              {stage.startedAt
+                ? new Date(stage.startedAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                : '--:--:--'}
+            </span>
           </div>
-
-          {stage.detail ? (
-            <div className="max-w-full truncate whitespace-nowrap text-[11px] font-medium leading-tight text-slate-700">
-              {compactDetail}
-            </div>
-          ) : null}
-
-          {toolRun?.durationMs ? (
-            <div className="mt-2 text-[10px] text-slate-400 flex items-center gap-1">
-              <Clock className="w-2.5 h-2.5" />
-              <span>{(toolRun.durationMs / 1000).toFixed(2)}s</span>
-            </div>
-          ) : null}
         </div>
 
-        <CollapsibleContent forceMount className={cn("space-y-2 animate-in slide-in-from-top-1 duration-200", !isOpen && "hidden")}>
-          {toolRun && (
-            <div className="max-w-full overflow-auto rounded-xl border border-slate-800 bg-slate-900 p-3 font-mono text-[10px] leading-relaxed shadow-inner">
-              {toolRun.command && (
-                <div className="text-slate-300 mb-2">
-                  <div className="text-[9px] uppercase tracking-widest font-bold text-slate-500 mb-1">Command</div>
-                  <pre className="whitespace-pre-wrap">{toolRun.command}</pre>
-                </div>
-              )}
-              {toolRun.stdout && (
-                <div className="text-slate-300">
-                  <div className="text-[9px] uppercase tracking-widest font-bold text-slate-500 mb-1">Stdout</div>
-                  <pre className="whitespace-pre-wrap">{toolRun.stdout}</pre>
-                </div>
-              )}
-              {toolRun.stderr && (
-                <div className="text-red-400 mt-2">
-                  <div className="text-[9px] uppercase tracking-widest font-bold text-red-900 mb-1">Stderr</div>
-                  <pre className="whitespace-pre-wrap">{toolRun.stderr}</pre>
-                </div>
-              )}
-              {(toolRun.exitCode !== null || toolRun.cwd) && (
-                <div className="text-slate-400 mt-2 border-t border-white/5 pt-2 space-y-1">
-                  {toolRun.exitCode !== null ? <div>exitCode: {toolRun.exitCode}</div> : null}
-                  {toolRun.cwd ? <div>cwd: {toolRun.cwd}</div> : null}
-                </div>
-              )}
-              {toolRun.truncated && (
-                <div className="text-amber-500 mt-2 border-t border-white/5 pt-1 text-[9px] italic flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" />
-                  日志过长已截断
-                </div>
-              )}
-            </div>
-          )}
-        </CollapsibleContent>
-      </Collapsible>
+        {stage.detail ? (
+          <div className="max-w-full text-[11px] font-bold leading-relaxed text-foreground/80 dark:text-zinc-400">
+            {stage.detail}
+          </div>
+        ) : null}
+
+        {toolRun?.durationMs ? (
+          <div className="mt-2 text-[10px] font-black text-muted-foreground/60 flex items-center gap-1">
+            <Clock className="w-2.5 h-2.5" />
+            <span>{(toolRun.durationMs / 1000).toFixed(2)}s</span>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -171,7 +146,7 @@ function StepItem({ stage }: { stage: ConversationExecutionStage }) {
 function LoaderIcon() {
   return (
     <div className="w-4 h-4 flex items-center justify-center">
-      <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      <div className="w-2.5 h-2.5 bg-foreground/60 rounded-full animate-pulse" />
     </div>
   );
 }

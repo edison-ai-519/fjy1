@@ -10,12 +10,13 @@ test("问答助手主内容区使用聊天区与执行流两栏布局", async ()
 
   assert.deepEqual(ASSISTANT_PANEL_LAYOUT, {
     chat: {
-      defaultSize: 72,
-      minSize: 42,
+      defaultSize: 'calc(100% - 18rem)',
+      minSize: '16rem',
     },
     flow: {
-      defaultSize: 28,
-      minSize: 16,
+      defaultSize: '18rem',
+      minSize: '14rem',
+      maxSize: '22rem',
     },
   });
 });

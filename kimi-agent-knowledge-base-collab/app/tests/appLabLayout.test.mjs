@@ -5,13 +5,10 @@ import path from "node:path";
 
 test("本体实验室主容器保持满宽布局，不使用 inline-flex 收缩", async () => {
   const appRoot = "D:/code/FJY/kimi-agent-knowledge-base-collab/app";
-  const appSourcePath = path.join(appRoot, "src/App.tsx");
+  const appSourcePath = path.join(appRoot, "src/app/pages/LabPage.tsx");
   const source = await fs.readFile(appSourcePath, "utf8");
 
   assert.match(source, /className="[^"]*w-full[^"]*rounded-3xl[^"]*shadow-inner[^"]*"/);
-  assert.doesNotMatch(
-    source,
-    /rounded-3xl border bg-slate-50 p-1 shadow-inner inline-flex/,
-  );
+  assert.doesNotMatch(source, /rounded-3xl border bg-slate-50 p-1 shadow-inner inline-flex/);
   assert.match(source, /className="[^"]*flex-col[^"]*lg:flex-row[^"]*lg:justify-between[^"]*"/);
 });

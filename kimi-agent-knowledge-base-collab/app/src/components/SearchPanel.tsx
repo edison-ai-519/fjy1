@@ -60,7 +60,7 @@ export function SearchPanel({ onSearch, onSelectEntity }: SearchPanelProps) {
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
           <Input
             type="text"
-            placeholder="搜索实体、定义、领域、存储层..."
+            placeholder="搜索..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="pl-10 pr-10"

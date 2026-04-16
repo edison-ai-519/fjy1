@@ -58,7 +58,7 @@ export function Sidebar({
               type="button"
               onClick={onNewSession}
               disabled={isBusy}
-              className="h-11 w-full justify-start gap-2 rounded-2xl bg-white border border-slate-200 text-slate-900 hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all"
+              className="h-11 w-full justify-start gap-2 rounded-2xl bg-background border border-border text-foreground hover:bg-muted/50 hover:border-border/80 shadow-sm transition-all"
             >
               <MessageSquarePlus className="h-4 w-4 text-blue-600" />
               新对话
@@ -71,7 +71,7 @@ export function Sidebar({
               </div>
               <div className="space-y-2">
                 {filteredSessions.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/20 px-4 py-10 text-center text-sm text-muted-foreground">
                     <MessageSquareText className="mb-3 h-5 w-5 text-slate-300" />
                     <p>没有匹配的对话</p>
                   </div>
@@ -85,8 +85,8 @@ export function Sidebar({
                         className={cn(
                           'relative rounded-xl border pl-2 pr-11 py-2 transition-all duration-200',
                           isActive
-                            ? 'border-blue-500 bg-blue-50/50 shadow-[0_0_0_1px_rgba(59,130,246,0.22)]'
-                            : 'border-slate-100 bg-white hover:border-slate-300 hover:shadow-sm',
+                            ? 'border-primary/50 bg-primary/5 shadow-[0_0_0_1px_rgba(76,141,255,0.2)]'
+                            : 'border-border/40 bg-card hover:border-border/80 hover:shadow-sm',
                         )}
                       >
                         <button
@@ -98,7 +98,7 @@ export function Sidebar({
                           <div className="min-w-0">
                             <div className={cn(
                               'truncate text-[13px] font-bold',
-                              isActive ? 'text-blue-700' : 'text-slate-800',
+                              isActive ? 'text-primary' : 'text-foreground/90',
                             )}>
                               {session.title}
                             </div>
@@ -106,13 +106,13 @@ export function Sidebar({
                         </button>
                         <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center">
                           {session.loading ? (
-                            <Loader2 className={cn('h-4 w-4 animate-spin', isActive ? 'text-blue-500' : 'text-slate-400')} />
+                            <Loader2 className={cn('h-4 w-4 animate-spin', isActive ? 'text-primary' : 'text-muted-foreground')} />
                           ) : (
                             <button
                               type="button"
                               onClick={() => setPendingDeleteSession(session)}
                               disabled={isBusy}
-                              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
                               title="删除会话"
                               aria-label={`删除会话：${session.title}`}
                             >

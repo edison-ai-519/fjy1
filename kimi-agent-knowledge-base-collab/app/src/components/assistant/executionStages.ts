@@ -2,7 +2,7 @@ import type {
   PersistedOntologyAssistantExecutionStage,
   PersistedOntologyAssistantMessage,
   PersistedOntologyAssistantToolRun,
-} from '@/lib/api';
+} from '@/features/assistant/api';
 
 export interface ExecutionFlowStage extends PersistedOntologyAssistantExecutionStage {
   toolRun?: PersistedOntologyAssistantToolRun | null;
@@ -296,3 +296,4 @@ export function buildExecutionFlowStages(messages: PersistedOntologyAssistantMes
     }));
   });
 }
+

@@ -46,35 +46,35 @@ export function StatsPanel({ statistics }: StatsPanelProps) {
       title: '实体总数',
       value: statistics.total_entities,
       icon: <Database className="w-5 h-5" />,
-      color: 'bg-blue-500/10 text-blue-600',
+      color: 'bg-primary/20 text-primary',
       description: '知识库中的概念和实例'
     },
     {
       title: '关系总数',
       value: statistics.total_relations,
       icon: <Network className="w-5 h-5" />,
-      color: 'bg-green-500/10 text-green-600',
+      color: 'bg-emerald-500/20 text-emerald-400',
       description: '实体间的关联'
     },
     {
       title: '领域覆盖',
       value: statistics.domains.length,
       icon: <Layers className="w-5 h-5" />,
-      color: 'bg-purple-500/10 text-purple-600',
+      color: 'bg-violet-500/20 text-violet-400',
       description: '不同知识领域'
     },
     {
       title: '层次深度',
       value: statistics.levels.length,
       icon: <GitBranch className="w-5 h-5" />,
-      color: 'bg-orange-500/10 text-orange-600',
+      color: 'bg-amber-500/20 text-amber-400',
       description: '本体论层次'
     },
     {
       title: '存储层',
       value: statistics.layers.length,
       icon: <FolderTree className="w-5 h-5" />,
-      color: 'bg-rose-500/10 text-rose-600',
+      color: 'bg-rose-500/20 text-rose-400',
       description: 'Common / Domain / Private'
     }
   ];
