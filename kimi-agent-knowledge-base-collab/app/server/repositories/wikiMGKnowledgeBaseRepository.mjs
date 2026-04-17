@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { promisify } from "node:util";
 import path from "node:path";
 
@@ -21,7 +23,11 @@ export class WikiMGKnowledgeBaseRepository {
     this.workspaceRoot = options.workspaceRoot;
     this.profile = options.profile || "kimi";
     this.wikimgScriptPath = options.wikimgScriptPath;
-    this.pythonBin = options.pythonBin || "python3";
+    this.pythonBin = options.pythonBin || (process.platform === "win32" ? "python" : "python3");
+    this.cache = null;
+  }
+
+  invalidateCache() {
     this.cache = null;
   }
 
@@ -36,17 +42,66 @@ export class WikiMGKnowledgeBaseRepository {
   }
 
   async runWikiMG(args) {
-    const { stdout } = await execFileAsync(
-      this.pythonBin,
-      [this.wikimgScriptPath, "--root", this.workspaceRoot, ...args],
-      {
-        cwd: this.workspaceRoot,
-        env: process.env,
-        maxBuffer: 20 * 1024 * 1024,
-      }
-    );
+    try {
+      const { stdout } = await execFileAsync(
+        this.pythonBin,
+        [this.wikimgScriptPath, "--root", this.workspaceRoot, ...args],
+        {
+          cwd: this.workspaceRoot,
+          env: process.env,
+          maxBuffer: 20 * 1024 * 1024,
+        }
+      );
 
-    return JSON.parse(stdout);
+      return JSON.parse(stdout);
+    } catch (error) {
+      const stdout = typeof error?.stdout === "string" ? error.stdout.trim() : "";
+      if (stdout) {
+        try {
+          const payload = JSON.parse(stdout);
+          const normalizedError = new Error(payload?.error || error?.stderr || "wikimg command failed");
+          normalizedError.payload = payload;
+          throw normalizedError;
+        } catch (parseError) {
+          if (parseError instanceof SyntaxError) {
+            // 保持原始异常。
+          } else {
+            throw parseError;
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
+  async ingestSource({ mode, layer, slug, source }) {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "wikimg-ingest-"));
+    const extension = mode === "json" ? ".json" : ".md";
+    const tempFile = path.join(tempDir, `source${extension}`);
+    const raw = mode === "json"
+      ? `${JSON.stringify(source, null, 2)}\n`
+      : String(source ?? "");
+
+    await writeFile(tempFile, raw, "utf8");
+
+    try {
+      return await this.runWikiMG([
+        "ingest",
+        "--profile",
+        this.profile,
+        "--mode",
+        mode,
+        "--layer",
+        layer,
+        "--slug",
+        slug,
+        "--input-file",
+        tempFile,
+        "--json",
+      ]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   }
 
   async getKnowledgeGraph() {

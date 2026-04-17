@@ -14,5 +14,7 @@ export interface OntologyContextValue {
   setSelectedLayer: Dispatch<SetStateAction<'all' | KnowledgeLayer>>;
   selectedEntityId: string | null;
   selectEntity: (entity: Entity) => void;
+  selectEntityById: (entityId: string | null) => void;
   searchInLayer: (query: string) => Promise<Entity[]>;
+  refreshKnowledgeGraph: () => Promise<void>;
 }

@@ -13,8 +13,8 @@ interface OntologyBrowserProps {
 export function OntologyBrowser({
   entities,
   crossReferences,
-  onSelectEntity,
-  selectedEntityId,
+  onSelectEntity: _onSelectEntity,
+  selectedEntityId: _selectedEntityId,
 }: OntologyBrowserProps) {
   const domainCount = new Set(entities.map((entity) => entity.domain)).size;
   const layerCount = new Set(entities.map((entity) => entity.layer)).size;
@@ -29,16 +29,8 @@ export function OntologyBrowser({
               概念快报
             </CardTitle>
             <CardDescription className="text-[10px]">
-              实时分析当前 WiKiMG 存储层模型的状态与规模。
+              实时分析当前 本体知识库 存储层模型的状态与规模。
             </CardDescription>
-          </div>
-          <div className="relative group flex-1 max-w-[180px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 group-focus-within:text-primary transition-colors" />
-            <Input
-              placeholder="搜索实体..."
-              disabled
-              className="h-8 pl-8 rounded-xl bg-muted/50 border-border text-xs focus:bg-muted transition-all shadow-none cursor-not-allowed opacity-50"
-            />
           </div>
         </div>
 

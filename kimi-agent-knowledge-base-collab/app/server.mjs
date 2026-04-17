@@ -23,7 +23,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(JSON.stringify(payload));
@@ -33,7 +33,7 @@ function sendText(res, status, text, contentType = "text/plain; charset=utf-8") 
   res.writeHead(status, {
     "Content-Type": contentType,
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(text);
@@ -45,7 +45,7 @@ function openSse(res) {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.write(": connected\n\n");
@@ -294,12 +294,24 @@ const server = createServer(async (req, res) => {
       const body = await parseBody(req);
       sendJson(res, 200, await knowledgeBaseService.previewEditorDraft({
         entityId: typeof body.entityId === "string" ? body.entityId : undefined,
-        name: typeof body.name === "string" ? body.name : "",
-        type: typeof body.type === "string" ? body.type : "",
-        domain: typeof body.domain === "string" ? body.domain : "",
-        source: typeof body.source === "string" ? body.source : "",
-        definition: typeof body.definition === "string" ? body.definition : "",
-        propertiesText: typeof body.propertiesText === "string" ? body.propertiesText : "",
+        mode: typeof body.mode === "string" ? body.mode : "json",
+        layer: typeof body.layer === "string" ? body.layer : "domain",
+        slug: typeof body.slug === "string" ? body.slug : "",
+        source: body.source,
+      }));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/editor/commit") {
+      const body = await parseBody(req);
+      sendJson(res, 200, await knowledgeBaseService.commitEditorDraft({
+        entityId: typeof body.entityId === "string" ? body.entityId : undefined,
+        mode: typeof body.mode === "string" ? body.mode : "json",
+        projectId: typeof body.projectId === "string" ? body.projectId : "demo",
+        layer: typeof body.layer === "string" ? body.layer : "domain",
+        slug: typeof body.slug === "string" ? body.slug : "",
+        message: typeof body.message === "string" ? body.message : "",
+        source: body.source,
       }));
       return;
     }

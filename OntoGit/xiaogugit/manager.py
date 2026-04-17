@@ -393,6 +393,18 @@ class XiaoGuGitManager:
             "commit_id": commit_id,
             "project": self.get_project_info(project_id),
         }
+    def delete_project(self, project_id):
+        path = self._project_path(project_id)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"项目 {project_id} 不存在")
+        import shutil
+
+        shutil.rmtree(path)
+        # 清理星星元数据
+        stars_path = self._stars_path(project_id)
+        if os.path.exists(stars_path):
+            os.remove(stars_path)
+        return {"status": "success", "action": "deleted", "project_id": project_id}
 
     # 1. 写入 (Write) - 核心：接收 AI 生成的 data 和 message
     def write_version(self, project_id, filename, data, message, agent_name, committer_name, basevision):

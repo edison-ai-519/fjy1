@@ -10,28 +10,29 @@ export function useOntologyData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const refreshKnowledgeGraph = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const [kgData, ontologies] = await Promise.all([
+        fetchKnowledgeGraph(),
+        fetchOntologies(),
+      ]);
+
+      setKnowledgeGraph(kgData);
+      setPhilosophicalOntology(ontologies.philosophicalOntology);
+      setFormalOntology(ontologies.formalOntology);
+      setScientificOntology(ontologies.scientificOntology);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        setLoading(true);
-
-        const [kgData, ontologies] = await Promise.all([
-          fetchKnowledgeGraph(),
-          fetchOntologies(),
-        ]);
-
-        setKnowledgeGraph(kgData);
-        setPhilosophicalOntology(ontologies.philosophicalOntology);
-        setFormalOntology(ontologies.formalOntology);
-        setScientificOntology(ontologies.scientificOntology);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
+    void refreshKnowledgeGraph();
   }, []);
 
   const getEntityById = (id: string): Entity | undefined => {
@@ -76,5 +77,6 @@ export function useOntologyData() {
     getEntitiesByDomain,
     getEntitiesByLevel,
     getRelatedEntities,
+    refreshKnowledgeGraph,
   };
 }

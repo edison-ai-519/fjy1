@@ -38,5 +38,9 @@ export async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(text || `Request failed with status ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  if (!text) {
+    return {} as T;
+  }
+  return JSON.parse(text) as T;
 }

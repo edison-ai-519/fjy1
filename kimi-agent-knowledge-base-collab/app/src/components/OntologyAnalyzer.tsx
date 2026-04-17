@@ -104,7 +104,7 @@ export function OntologyAnalyzer({ entities, selectedEntity, onSelectEntity }: O
           <div className="rounded-2xl border bg-muted/30 p-4">
             <div className="flex flex-wrap items-center gap-2">
               <Database className="w-4 h-4 text-primary" />
-              <span className="text-sm font-medium">当前分析上下文来自 WiKiMG 导出的节点与关系</span>
+              <span className="text-sm font-medium">当前分析上下文来自 本体知识库 导出的节点与关系</span>
             </div>
             {selectedEntity ? (
               <div className="mt-3 flex flex-wrap gap-2">
@@ -132,7 +132,7 @@ export function OntologyAnalyzer({ entities, selectedEntity, onSelectEntity }: O
 
           <div className="flex gap-2">
             <Input
-              placeholder="输入当前 WiKiMG 知识库中的节点名称"
+              placeholder="输入当前 本体知识库 知识库中的节点名称"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void handleAnalyze()}
@@ -144,7 +144,7 @@ export function OntologyAnalyzer({ entities, selectedEntity, onSelectEntity }: O
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <span className="text-sm text-muted-foreground">当前 WiKiMG 节点:</span>
+            <span className="text-sm text-muted-foreground">当前 本体知识库 节点:</span>
             {exampleEntities.map((entity) => (
               <Badge
                 key={entity.id}

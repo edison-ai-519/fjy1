@@ -343,6 +343,14 @@ async def project_detail(project_id: str):
         _handle_error(exc)
 
 
+@app.delete("/projects/{project_id}")
+async def delete_project_route(project_id: str):
+    try:
+        return xg.delete_project(project_id)
+    except Exception as exc:
+        _handle_error(exc)
+
+
 @app.post("/projects/status")
 async def update_project_status(req: ProjectStatusReq):
     try:

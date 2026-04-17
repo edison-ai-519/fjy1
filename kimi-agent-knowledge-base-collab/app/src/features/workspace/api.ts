@@ -9,7 +9,7 @@ import {
 } from '@/lib/xgApi';
 import { buildApiUrl, parseJson } from '@/shared/api/http';
 
-export type { XgProject, XgTimeline, XgWriteResult } from '@/lib/xgApi';
+export type { XgProject, XgTimeline, XgTimelineCommit, XgWriteResult } from '@/lib/xgApi';
 
 export interface ProbabilityResult {
   probability: number;

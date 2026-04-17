@@ -16,7 +16,7 @@ function createRepository() {
     workspaceRoot,
     profile: "kimi",
     wikimgScriptPath,
-    pythonBin: process.env.PYTHON_BIN || "python3",
+    pythonBin: process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3"),
   });
 }
 
@@ -89,4 +89,44 @@ test("KnowledgeBaseService keeps existing response shapes on top of wikimg provi
       process.env.KNOWLEDGE_BASE_PROVIDER = previousProvider;
     }
   }
+});
+
+test("WikiMG repository can normalize JSON drafts through ingest", async () => {
+  const repository = createRepository();
+
+  const payload = await repository.ingestSource({
+    mode: "json",
+    layer: "domain",
+    slug: "kimi-demo/salinity-monitoring",
+    source: {
+      title: "盐度监测",
+      page_kind: "entity",
+      type: "监测能力",
+      domain: "智能养鱼",
+      level: 2,
+      source: "unit-test",
+      summary: "用于持续跟踪水体盐度变化。",
+      properties: {
+        指标: ["salinity"],
+      },
+      relations: [
+        {
+          target: "domain:kimi-demo/智能养鱼系统概览",
+          type: "组成部分",
+          description: "盐度监测属于系统环境感知的一部分。",
+        },
+      ],
+      sections: {
+        定义与定位: "用于持续跟踪水体盐度变化，并为告警提供依据。",
+        属性: ["指标: salinity"],
+        证据来源: ["单元测试样例。"],
+        关联主题: ["智能养鱼系统概览"],
+      },
+    },
+  });
+
+  assert.equal(payload.ref, "domain:kimi-demo/salinity-monitoring");
+  assert.equal(payload.title, "盐度监测");
+  assert.match(payload.markdown, /## 定义与定位/);
+  assert.deepEqual(payload.warnings, []);
 });

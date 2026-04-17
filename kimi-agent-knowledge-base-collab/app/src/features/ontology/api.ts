@@ -126,6 +126,7 @@ export interface AboutContent {
 }
 
 export interface EditorWorkspace {
+  project_id: string;
   entity_id?: string;
   name: string;
   type: string;
@@ -133,6 +134,14 @@ export interface EditorWorkspace {
   source: string;
   definition: string;
   properties_text: string;
+  layer: 'common' | 'domain' | 'private';
+  slug: string;
+  json_draft: Record<string, unknown>;
+  markdown_draft: string;
+  source_filenames: {
+    json: string;
+    markdown: string;
+  };
   suggestions: {
     recommended_type: string;
     suggested_relations: string[];
@@ -146,6 +155,30 @@ export interface EditorPreview {
   rdf: string;
   owl: string;
   warnings: string[];
+  normalized_markdown: string;
+  target_ref: string;
+}
+
+export interface EditorCommitResult {
+  status: 'success' | 'partial';
+  sourceWrite: {
+    filename: string;
+    path?: string;
+    version_id?: number;
+    commit_id?: string;
+  };
+  wikiWrite?: {
+    path: string;
+    ref?: string;
+  } | null;
+  exportSummary?: {
+    totalEntities: number;
+    totalRelations: number;
+    documentCount: number;
+  };
+  updatedEntityId?: string;
+  warnings: string[];
+  error?: string;
 }
 
 export async function fetchKnowledgeGraph(): Promise<KnowledgeGraphData> {
@@ -216,12 +249,10 @@ export async function fetchEditorWorkspace(entityId?: string): Promise<EditorWor
 
 export async function previewEditorDraft(input: {
   entityId?: string;
-  name: string;
-  type: string;
-  domain: string;
-  source: string;
-  definition: string;
-  propertiesText: string;
+  mode: 'json' | 'markdown';
+  layer: 'common' | 'domain' | 'private';
+  slug: string;
+  source: unknown;
 }): Promise<EditorPreview> {
   const response = await fetch(buildApiUrl('/api/editor/preview'), {
     method: 'POST',
@@ -232,4 +263,24 @@ export async function previewEditorDraft(input: {
   });
 
   return parseJson<EditorPreview>(response);
+}
+
+export async function commitEditorDraft(input: {
+  entityId?: string;
+  mode: 'json' | 'markdown';
+  projectId: string;
+  layer: 'common' | 'domain' | 'private';
+  slug: string;
+  message: string;
+  source: unknown;
+}): Promise<EditorCommitResult> {
+  const response = await fetch(buildApiUrl('/api/editor/commit'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  return parseJson<EditorCommitResult>(response);
 }

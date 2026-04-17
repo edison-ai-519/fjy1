@@ -41,7 +41,7 @@ export function ProbabilityPanel({ probInput, setProbInput, probResult, analyzin
         
         <Dialog open={isOpen} onOpenChange={setIsOpen}>
           <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-6 w-6 rounded-md hover:bg-amber-500/10 text-muted-foreground hover:text-amber-500 transition-all opacity-0 group-hover:opacity-100">
+            <Button variant="ghost" size="icon" className="h-6 w-6 rounded-md hover:bg-amber-500/10 text-muted-foreground hover:text-amber-500 transition-all">
               <Maximize2 className="h-3 w-3" />
             </Button>
           </DialogTrigger>

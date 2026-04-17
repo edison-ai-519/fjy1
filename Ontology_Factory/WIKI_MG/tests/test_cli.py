@@ -16,11 +16,64 @@ if os.environ.get("PYTHONPATH"):
 ENV = os.environ | {"PYTHONPATH": os.pathsep.join(PYTHONPATH)}
 
 
-def run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str, cwd: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    env = dict(ENV)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-m", "wikimg", *args],
         cwd=cwd,
-        env=ENV,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def create_minimal_kimi_workspace(workspace: Path) -> None:
+    result = run_cli("init", cwd=workspace)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+
+    system_doc = workspace / "wiki" / "domain" / "kimi-demo" / "system.md"
+    system_doc.parent.mkdir(parents=True, exist_ok=True)
+    system_doc.write_text(
+        """---
+{
+  "profile": "kimi",
+  "page_kind": "entity",
+  "title": "系统概览",
+  "type": "系统概念",
+  "domain": "智能养鱼",
+  "level": 1,
+  "source": "unit-test",
+  "properties": {
+    "目标": "验证 export"
+  },
+  "relations": []
+}
+---
+# 系统概览
+
+> 系统级入口页面。
+
+## 定义与定位
+用于验证 WiKiMG 的结构化导出。
+
+## 属性
+- 目标: 验证 export
+
+## 证据来源
+- 单元测试自建样例。
+""",
+        encoding="utf-8",
+    )
+
+
+def run_git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
@@ -386,6 +439,318 @@ class WikiCliTests(unittest.TestCase):
             codes = {issue["code"] for issue in payload["issues"]}
             self.assertIn("bad-relation-target", codes)
             self.assertIn("bad-markdown-link", codes)
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_export_json_appends_snapshot_to_ontogit_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as storage_dir:
+            workspace = Path(temp_dir)
+            create_minimal_kimi_workspace(workspace)
+            extra_env = {
+                "WIKIMG_ONTOGIT_STORAGE_ROOT": storage_dir,
+                "WIKIMG_ONTOGIT_PROJECT_ID": "demo",
+                "WIKIMG_ONTOGIT_FILENAME": "wikimg_export.json",
+            }
+
+            export_result = run_cli("export", "--profile", "kimi", "--json", cwd=workspace, extra_env=extra_env)
+            self.assertEqual(export_result.returncode, 0, export_result.stdout)
+
+            project_dir = Path(storage_dir) / "demo"
+            self.assertTrue((project_dir / ".git").exists())
+
+            export_file = project_dir / "wikimg_export.json"
+            self.assertTrue(export_file.exists())
+            stored_payload = json.loads(export_file.read_text(encoding="utf-8"))
+            self.assertEqual(stored_payload["project_id"], "demo")
+            self.assertEqual(stored_payload["filename"], "wikimg_export.json")
+            self.assertEqual(len(stored_payload["history"]), 1)
+            self.assertEqual(stored_payload["history"][0]["sequence"], 1)
+            self.assertEqual(stored_payload["history"][0]["profile"], "kimi")
+            self.assertEqual(
+                stored_payload["history"][0]["payload"]["knowledgeGraph"]["statistics"]["total_entities"],
+                1,
+            )
+
+            log_result = run_git("log", "--format=%B", "-1", cwd=project_dir)
+            self.assertEqual(log_result.returncode, 0, log_result.stderr)
+            self.assertIn("XG-Filename: wikimg_export.json", log_result.stdout)
+            self.assertIn("XG-VersionId: 1", log_result.stdout)
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_export_json_keeps_existing_history_and_increments_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as storage_dir:
+            workspace = Path(temp_dir)
+            create_minimal_kimi_workspace(workspace)
+            extra_env = {
+                "WIKIMG_ONTOGIT_STORAGE_ROOT": storage_dir,
+                "WIKIMG_ONTOGIT_PROJECT_ID": "demo",
+                "WIKIMG_ONTOGIT_FILENAME": "wikimg_export.json",
+            }
+
+            first_export = run_cli("export", "--profile", "kimi", "--json", cwd=workspace, extra_env=extra_env)
+            self.assertEqual(first_export.returncode, 0, first_export.stdout)
+
+            second_export = run_cli("export", "--profile", "kimi", "--json", cwd=workspace, extra_env=extra_env)
+            self.assertEqual(second_export.returncode, 0, second_export.stdout)
+
+            export_file = Path(storage_dir) / "demo" / "wikimg_export.json"
+            stored_payload = json.loads(export_file.read_text(encoding="utf-8"))
+            self.assertEqual(len(stored_payload["history"]), 2)
+            self.assertEqual(stored_payload["history"][0]["sequence"], 1)
+            self.assertEqual(stored_payload["history"][1]["sequence"], 2)
+            self.assertEqual(
+                stored_payload["history"][0]["payload"]["knowledgeGraph"]["statistics"]["total_entities"],
+                stored_payload["history"][1]["payload"]["knowledgeGraph"]["statistics"]["total_entities"],
+            )
+
+            log_result = run_git("log", "--format=%B", "-1", cwd=Path(storage_dir) / "demo")
+            self.assertEqual(log_result.returncode, 0, log_result.stderr)
+            self.assertIn("XG-VersionId: 2", log_result.stdout)
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_export_json_does_not_overwrite_invalid_ontogit_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as storage_dir:
+            workspace = Path(temp_dir)
+            create_minimal_kimi_workspace(workspace)
+            project_dir = Path(storage_dir) / "demo"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            export_file = project_dir / "wikimg_export.json"
+            export_file.write_text('{"broken": true}\n', encoding="utf-8")
+            extra_env = {
+                "WIKIMG_ONTOGIT_STORAGE_ROOT": storage_dir,
+                "WIKIMG_ONTOGIT_PROJECT_ID": "demo",
+                "WIKIMG_ONTOGIT_FILENAME": "wikimg_export.json",
+            }
+
+            export_result = run_cli("export", "--profile", "kimi", "--json", cwd=workspace, extra_env=extra_env)
+            self.assertEqual(export_result.returncode, 0, export_result.stdout)
+            export_payload = json.loads(export_result.stdout)
+            self.assertEqual(export_payload["knowledgeGraph"]["statistics"]["total_entities"], 1)
+            self.assertEqual(export_file.read_text(encoding="utf-8"), '{"broken": true}\n')
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_export_summary_output_still_syncs_to_ontogit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as storage_dir:
+            workspace = Path(temp_dir)
+            create_minimal_kimi_workspace(workspace)
+            extra_env = {
+                "WIKIMG_ONTOGIT_STORAGE_ROOT": storage_dir,
+                "WIKIMG_ONTOGIT_PROJECT_ID": "demo",
+                "WIKIMG_ONTOGIT_FILENAME": "wikimg_export.json",
+            }
+
+            export_result = run_cli("export", "--profile", "kimi", cwd=workspace, extra_env=extra_env)
+            self.assertEqual(export_result.returncode, 0, export_result.stdout)
+            self.assertIn("Exported profile=kimi entities=1 relations=0 docs=1", export_result.stdout)
+
+            export_file = Path(storage_dir) / "demo" / "wikimg_export.json"
+            stored_payload = json.loads(export_file.read_text(encoding="utf-8"))
+            self.assertEqual(len(stored_payload["history"]), 1)
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_ingest_json_normalizes_to_standard_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            result = run_cli("init", cwd=workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_path = workspace / "ingest-input.json"
+            source_path.write_text(
+                json.dumps(
+                    {
+                        "title": "盐度监测",
+                        "page_kind": "entity",
+                        "type": "监测能力",
+                        "domain": "智能养鱼",
+                        "level": 2,
+                        "source": "unit-test",
+                        "summary": "用于持续跟踪水体盐度变化。",
+                        "properties": {
+                            "指标": ["salinity"],
+                            "采样频率": "60s",
+                        },
+                        "relations": [
+                            {
+                                "target": "domain:kimi-demo/system",
+                                "type": "组成部分",
+                                "description": "盐度监测属于系统环境感知的一部分。",
+                            }
+                        ],
+                        "sections": {
+                            "定义与定位": "用于持续跟踪水体盐度变化，并为告警提供依据。",
+                            "属性": [
+                                "指标: salinity",
+                                "采样频率: 60s",
+                            ],
+                            "证据来源": [
+                                "单元测试样例。",
+                            ],
+                            "关联主题": [
+                                "智能养鱼系统概览",
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            ingest_result = run_cli(
+                "ingest",
+                "--profile",
+                "kimi",
+                "--mode",
+                "json",
+                "--layer",
+                "domain",
+                "--slug",
+                "kimi-demo/salinity-monitoring",
+                "--input-file",
+                str(source_path),
+                "--json",
+                cwd=workspace,
+            )
+            self.assertEqual(ingest_result.returncode, 0, ingest_result.stderr)
+            payload = json.loads(ingest_result.stdout)
+            self.assertEqual(payload["ref"], "domain:kimi-demo/salinity-monitoring")
+            self.assertEqual(payload["title"], "盐度监测")
+            self.assertEqual(payload["layer"], "domain")
+            self.assertEqual(payload["slug"], "kimi-demo/salinity-monitoring")
+            self.assertEqual(payload["warnings"], [])
+            self.assertIn('"profile": "kimi"', payload["markdown"])
+            self.assertIn('"title": "盐度监测"', payload["markdown"])
+            self.assertIn("## 定义与定位", payload["markdown"])
+            self.assertIn("## 属性", payload["markdown"])
+            self.assertIn("## 证据来源", payload["markdown"])
+            self.assertIn("## 关联主题", payload["markdown"])
+            self.assertIn("盐度监测属于系统环境感知的一部分。", payload["markdown"])
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_ingest_markdown_validates_and_returns_normalized_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            result = run_cli("init", cwd=workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_path = workspace / "ingest-input.md"
+            source_path.write_text(
+                """---
+{
+  "profile": "kimi",
+  "page_kind": "entity",
+  "title": "温度监测",
+  "type": "监测能力",
+  "domain": "智能养鱼",
+  "level": 2,
+  "source": "unit-test",
+  "properties": {
+    "指标": ["temperature"]
+  },
+  "relations": [
+    {
+      "target": "domain:kimi-demo/system",
+      "type": "组成部分",
+      "description": "温度监测属于系统环境感知的一部分。"
+    }
+  ]
+}
+---
+# 温度监测
+
+> 用于持续感知水温变化。
+
+## 定义与定位
+用于持续感知水温变化，并为阈值告警提供依据。
+
+## 属性
+- 指标: temperature
+
+## 证据来源
+- 单元测试样例。
+
+## 关联主题
+- 智能养鱼系统概览
+""",
+                encoding="utf-8",
+            )
+
+            ingest_result = run_cli(
+                "ingest",
+                "--profile",
+                "kimi",
+                "--mode",
+                "markdown",
+                "--layer",
+                "domain",
+                "--slug",
+                "kimi-demo/temperature-monitoring",
+                "--input-file",
+                str(source_path),
+                "--json",
+                cwd=workspace,
+            )
+            self.assertEqual(ingest_result.returncode, 0, ingest_result.stderr)
+            payload = json.loads(ingest_result.stdout)
+            self.assertEqual(payload["ref"], "domain:kimi-demo/temperature-monitoring")
+            self.assertEqual(payload["title"], "温度监测")
+            self.assertEqual(payload["warnings"], [])
+            self.assertIn("# 温度监测", payload["markdown"])
+            self.assertIn("## 证据来源", payload["markdown"])
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_ingest_json_rejects_missing_required_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            result = run_cli("init", cwd=workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_path = workspace / "bad-ingest-input.json"
+            source_path.write_text(
+                json.dumps(
+                    {
+                        "title": "不完整节点",
+                        "page_kind": "entity",
+                        "type": "监测能力",
+                        "domain": "智能养鱼",
+                        "level": 2,
+                        "source": "unit-test",
+                        "properties": {
+                            "指标": ["unknown"],
+                        },
+                        "sections": {
+                            "属性": [
+                                "指标: unknown",
+                            ],
+                            "证据来源": [
+                                "单元测试样例。",
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            ingest_result = run_cli(
+                "ingest",
+                "--profile",
+                "kimi",
+                "--mode",
+                "json",
+                "--layer",
+                "domain",
+                "--slug",
+                "kimi-demo/incomplete-node",
+                "--input-file",
+                str(source_path),
+                "--json",
+                cwd=workspace,
+            )
+            self.assertNotEqual(ingest_result.returncode, 0)
+            payload = json.loads(ingest_result.stdout)
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("定义与定位", payload["error"])
 
 
 if __name__ == "__main__":

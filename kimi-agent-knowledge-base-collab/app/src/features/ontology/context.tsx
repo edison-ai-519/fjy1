@@ -7,7 +7,7 @@ import { OntologyContext } from '@/features/ontology/context.shared';
 import type { OntologyContextValue } from '@/features/ontology/context.types';
 
 export function OntologyProvider({ children }: { children: React.ReactNode }) {
-  const { knowledgeGraph, loading, error, searchEntities } = useOntologyData();
+  const { knowledgeGraph, loading, error, searchEntities, refreshKnowledgeGraph } = useOntologyData();
   const [selectedLayer, setSelectedLayer] = React.useState<'all' | KnowledgeLayer>('all');
   const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(null);
 
@@ -19,6 +19,10 @@ export function OntologyProvider({ children }: { children: React.ReactNode }) {
 
   const selectEntity = React.useCallback((entity: Entity) => {
     setSelectedEntityId(entity.id);
+  }, []);
+
+  const selectEntityById = React.useCallback((entityId: string | null) => {
+    setSelectedEntityId(entityId);
   }, []);
 
   const searchInLayer = React.useCallback(async (query: string) => {
@@ -34,8 +38,10 @@ export function OntologyProvider({ children }: { children: React.ReactNode }) {
     setSelectedLayer,
     selectedEntityId: appState.selectedEntity?.id ?? selectedEntityId,
     selectEntity,
+    selectEntityById,
     searchInLayer,
-  }), [appState, error, loading, searchInLayer, selectEntity, selectedEntityId, selectedLayer]);
+    refreshKnowledgeGraph,
+  }), [appState, error, loading, refreshKnowledgeGraph, searchInLayer, selectEntity, selectEntityById, selectedEntityId, selectedLayer]);
 
   return <OntologyContext.Provider value={value}>{children}</OntologyContext.Provider>;
 }

@@ -8,7 +8,9 @@ import { DatabaseKnowledgeBaseRepository } from "./repositories/databaseKnowledg
 import { WikiMGKnowledgeBaseRepository } from "./repositories/wikiMGKnowledgeBaseRepository.mjs";
 import { KnowledgeBaseService } from "./services/knowledgeBaseService.mjs";
 import { AssistantSessionStateService } from "./services/assistantSessionStateService.mjs";
+import { OntoGitLocalCommitService } from "./services/ontoGitLocalCommitService.mjs";
 import { QAgentService } from "./services/qagentService.mjs";
+import { WikiWorkspaceWriterService } from "./services/wikiWorkspaceWriterService.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,6 +20,7 @@ const workspaceRoot = path.resolve(projectRoot, "..");
 const qagentRuntimeRoot = path.join(projectRoot, ".qagent-web-runtime");
 const defaultWikiMGRoot = path.resolve(workspaceRoot, "Ontology_Factory");
 const defaultWikiMGScriptPath = path.join(defaultWikiMGRoot, "WIKI_MG", "wikimg");
+const defaultOntoGitStorageRoot = path.resolve(workspaceRoot, "OntoGit", "xiaogugit", "storage", "prod");
 
 function resolveQAgentRoot() {
   const candidates = [
@@ -73,7 +76,7 @@ export function createAppServices() {
       workspaceRoot: wikimgRoot,
       profile: process.env.WIKIMG_PROFILE || "kimi",
       wikimgScriptPath: process.env.WIKIMG_BIN || defaultWikiMGScriptPath,
-      pythonBin: process.env.PYTHON_BIN || "python3",
+      pythonBin: process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3"),
     });
   } else {
     repository = new JsonKnowledgeBaseRepository({
@@ -82,8 +85,30 @@ export function createAppServices() {
     });
   }
 
+  const ontoGitCommitService = new OntoGitLocalCommitService({
+    storageRoot: process.env.ONTOGIT_STORAGE_ROOT || defaultOntoGitStorageRoot,
+  });
+  const wikiWorkspaceWriter = new WikiWorkspaceWriterService({
+    docsRoot: path.join(process.env.WIKIMG_ROOT || defaultWikiMGRoot, "wiki"),
+  });
+
   return {
-    knowledgeBaseService: new KnowledgeBaseService(repository),
+    knowledgeBaseService: new KnowledgeBaseService(repository, {
+      projectId: process.env.ONTOGIT_PROJECT_ID || "demo",
+      sourceCommitter: ({ projectId, filename, data, message, agentName, committerName }) => (
+        ontoGitCommitService.writeVersion({
+          projectId,
+          filename,
+          data,
+          message,
+          agentName,
+          committerName,
+        })
+      ),
+      wikiWriter: ({ layer, slug, markdown }) => (
+        wikiWorkspaceWriter.writeDocument({ layer, slug, markdown })
+      ),
+    }),
     assistantSessionStateService: new AssistantSessionStateService({
       runtimeRoot: qagentRuntimeRoot,
     }),

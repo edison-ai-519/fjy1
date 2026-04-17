@@ -84,13 +84,20 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
         <ScrollArea className="flex-1 min-h-0 mb-4">
           <div className="space-y-1.5 pr-2">
             {projects.map((project) => (
-              <button
+              <div
                 key={project.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelectProject(project.id)}
-                className={`group w-full flex items-center justify-between px-4 py-3 text-[13px] rounded-xl transition-all font-black uppercase tracking-tight ${
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    onSelectProject(project.id);
+                  }
+                }}
+                className={`group w-full flex items-center justify-between px-4 py-3 text-[13px] rounded-xl transition-all font-black uppercase tracking-tight cursor-pointer outline-none ${
                   selectedProjectId === project.id 
                     ? 'bg-zinc-200 dark:bg-primary text-zinc-900 dark:text-primary-foreground shadow-sm ring-1 ring-zinc-300 dark:ring-primary-foreground/20' 
-                    : 'text-muted-foreground hover:bg-zinc-100 dark:hover:bg-primary/5 hover:text-foreground'
+                    : 'text-muted-foreground hover:bg-zinc-100 dark:hover:bg-primary/5 hover:text-foreground focus-visible:bg-muted/10'
                 }`}
               >
                 <span>{project.name || project.id}</span>
@@ -108,7 +115,7 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </ScrollArea>

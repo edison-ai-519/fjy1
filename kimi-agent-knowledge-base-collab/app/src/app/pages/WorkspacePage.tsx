@@ -3,7 +3,6 @@ import { GitBranch, Activity, LayoutDashboard } from 'lucide-react';
 
 import { WorkspaceDashboard } from '@/features/workspace/WorkspaceDashboard';
 import { SystemHubPage } from '@/app/pages/SystemHubPage';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 

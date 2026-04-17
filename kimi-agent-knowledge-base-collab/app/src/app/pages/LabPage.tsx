@@ -17,8 +17,8 @@ export function LabPage({ onSelectEntity }: LabPageProps) {
   const { filteredEntities, filteredCrossReferences, selectedEntity } = useOntologyContext();
 
   return (
-    <ScrollArea className="h-full">
-      <div className="p-6 space-y-8">
+    <div className="h-full overflow-y-auto scrollbar-thin">
+      <div className="p-6 space-y-8 pb-32">
         {/* 1. 概念快报面板 (Fig 2) - 始终显示在顶部作为数据概览 */}
         <div className="w-full animate-in fade-in slide-in-from-top-4 duration-500">
           <OntologyBrowser
@@ -50,28 +50,28 @@ export function LabPage({ onSelectEntity }: LabPageProps) {
               </TabsList>
             </div>
 
-            <div className="mt-0">
-              <TabsContent value="analyzer" className="mt-0">
+            <div className="mt-0 min-h-[800px] flex flex-col">
+              <TabsContent value="analyzer" className="mt-0 flex-1">
                 <OntologyAnalyzer
                   entities={filteredEntities}
                   selectedEntity={selectedEntity}
                   onSelectEntity={onSelectEntity}
                 />
               </TabsContent>
-              <TabsContent value="systems" className="mt-0">
+              <TabsContent value="systems" className="mt-0 flex-1">
                 <SystemsOntologyView
                   entities={filteredEntities}
                   selectedEntity={selectedEntity}
                   onSelectEntity={onSelectEntity}
                 />
               </TabsContent>
-              <TabsContent value="education" className="mt-0">
+              <TabsContent value="education" className="mt-0 flex-1">
                 <EducationHub selectedEntity={selectedEntity} />
               </TabsContent>
             </div>
           </Tabs>
         </div>
       </div>
-    </ScrollArea>
+    </div>
   );
 }

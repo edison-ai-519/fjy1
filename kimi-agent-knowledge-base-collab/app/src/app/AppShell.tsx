@@ -45,6 +45,7 @@ const GlobalSidebar = ({
   selectedLayer,
   setSelectedLayer,
   onSearch,
+  onSelectEntity,
   filteredEntityCount,
   filteredRelationCount
 }: {
@@ -57,6 +58,7 @@ const GlobalSidebar = ({
   selectedLayer: string;
   setSelectedLayer: (layer: any) => void;
   onSearch: (query: string) => Promise<any[]>;
+  onSelectEntity: (entity: any) => void;
 }) => (
   <div className="flex flex-col gap-4">
     {/* 1. 标题与搜索 */}
@@ -66,15 +68,10 @@ const GlobalSidebar = ({
         <h3 className="text-[11px] font-black uppercase tracking-widest text-foreground/70">视图工厂控制台</h3>
       </div>
 
-      <div className="relative group mx-0.5">
-        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 group-focus-within:text-primary/70 transition-colors">
-          <Search className="w-3.5 h-3.5" />
-        </div>
-        <input
-          type="text"
-          placeholder="快速搜索实体..."
-          className="w-full h-10 pl-9 pr-4 rounded-xl bg-muted/30 border border-border/40 text-[11px] focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary/40 focus:bg-background transition-all"
-          onChange={(e) => onSearch(e.target.value)}
+      <div className="mx-0.5">
+        <SearchPanel
+          onSearch={onSearch}
+          onSelectEntity={onSelectEntity}
         />
       </div>
     </div>
@@ -217,6 +214,7 @@ function AppShellContent() {
     selectedLayer,
     setSelectedLayer,
     onSearch: searchInLayer,
+    onSelectEntity: handleSelectEntity,
   };
 
   if (loading) {
@@ -224,7 +222,7 @@ function AppShellContent() {
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4" />
-          <p className="text-muted-foreground">正在加载 WiKiMG 多层知识图谱...</p>
+          <p className="text-muted-foreground">正在加载 本体知识库 多层知识图谱...</p>
         </div>
       </div>
     );
@@ -371,7 +369,7 @@ function AppShellContent() {
             />
           </TabsContent>
           <TabsContent value="lab" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
-            <LabPage onSelectEntity={handleSelectEntity} />
+            <LabPage onSelectEntity={(e) => selectEntity(e)} />
           </TabsContent>
           <TabsContent value="explorer" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
             <ExplorerPage onSelectEntity={handleSelectEntity} />

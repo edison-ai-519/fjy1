@@ -40,7 +40,7 @@ export function BrowsePage({ onSelectEntity }: BrowsePageProps) {
                 <div>
                   <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[10px] uppercase tracking-wider font-bold">
                     <BookOpen className="w-3.5 h-3.5" />
-                    WiKiMG 知识全景
+                    本体知识库 知识全景
                   </div>
                   <h2 className="mt-6 text-3xl font-bold lg:text-5xl leading-tight">
                     从左侧侧栏选取概念<br />开启深度语义阅读

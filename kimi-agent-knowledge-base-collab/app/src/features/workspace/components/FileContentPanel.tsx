@@ -45,7 +45,7 @@ export function FileContentPanel({ selectedFile, fileContent, onRefresh }: FileC
 
           <Dialog open={isOpen} onOpenChange={setIsOpen}>
             <DialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full hover:bg-muted/50 opacity-0 group-hover:opacity-100 transition-all">
+              <Button variant="ghost" size="icon" className="rounded-full hover:bg-muted/50 transition-all">
                 <Maximize2 className="h-4 w-4 text-muted-foreground" />
               </Button>
             </DialogTrigger>

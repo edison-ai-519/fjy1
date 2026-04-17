@@ -118,7 +118,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
           <div className="rounded-2xl border bg-muted/30 p-4">
             <div className="flex flex-wrap items-center gap-2">
               <Database className="w-4 h-4 text-primary" />
-              <span className="text-sm font-medium">当前系统视图来自 WiKiMG 节点、关系和派生分析结果</span>
+              <span className="text-sm font-medium">当前系统视图来自 本体知识库 节点、关系和派生分析结果</span>
             </div>
             {selectedEntity ? (
               <div className="mt-3 flex flex-wrap gap-2">
@@ -146,7 +146,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
 
           <div className="flex gap-2">
             <Input
-              placeholder="输入当前 WiKiMG 知识库中的节点名称"
+              placeholder="输入当前 本体知识库 中的节点名称"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => event.key === 'Enter' && void handleAnalyze()}
@@ -158,7 +158,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <span className="text-sm text-muted-foreground">当前 WiKiMG 节点:</span>
+            <span className="text-sm text-muted-foreground">当前 本体知识库 节点:</span>
             {exampleEntities.map((entity) => (
               <Badge
                 key={entity.id}
@@ -188,7 +188,7 @@ export function SystemsOntologyView({ entities, selectedEntity, onSelectEntity }
                 系统本体分析：{analysis.entity}
               </CardTitle>
               <p className="text-muted-foreground mt-1">
-                基于 WiKiMG 文档节点与关联语境派生出的动态系统视图
+                基于 本体知识库 文档节点与关联语境派生出的动态系统视图
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">

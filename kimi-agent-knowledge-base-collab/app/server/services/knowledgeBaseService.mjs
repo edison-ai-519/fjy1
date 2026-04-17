@@ -1,6 +1,9 @@
 export class KnowledgeBaseService {
-  constructor(repository) {
+  constructor(repository, options = {}) {
     this.repository = repository;
+    this.projectId = options.projectId || "demo";
+    this.sourceCommitter = options.sourceCommitter || null;
+    this.wikiWriter = options.wikiWriter || null;
   }
 
   async getKnowledgeGraph() {
@@ -100,8 +103,23 @@ export class KnowledgeBaseService {
     const related = fallbackEntity
       ? (await this.repository.getRelatedEntities(fallbackEntity.id)).slice(0, 4)
       : [];
+    const reference = deriveEditorReference(fallbackEntity?.id, fallbackEntity?.name || template.defaults.name);
+    const jsonDraft = buildJsonDraft({
+      entity: fallbackEntity,
+      template,
+      related,
+    });
+    const markdownDraft = typeof this.repository.ingestSource === "function"
+      ? (await this.repository.ingestSource({
+          mode: "json",
+          layer: reference.layer,
+          slug: reference.slug,
+          source: jsonDraft,
+        })).markdown
+      : buildFallbackMarkdownDraft(jsonDraft);
 
     return {
+      project_id: this.projectId,
       entity_id: fallbackEntity?.id,
       name: fallbackEntity?.name || template.defaults.name,
       type: fallbackEntity?.type || template.defaults.type,
@@ -109,6 +127,14 @@ export class KnowledgeBaseService {
       source: fallbackEntity?.source || template.defaults.source,
       definition: fallbackEntity?.definition || template.defaults.definition,
       properties_text: JSON.stringify(fallbackEntity?.properties || template.defaults.properties, null, 2),
+      layer: reference.layer,
+      slug: reference.slug,
+      json_draft: jsonDraft,
+      markdown_draft: markdownDraft,
+      source_filenames: {
+        json: `graph-source/${reference.layer}/${reference.slug}.json`,
+        markdown: `graph-source/${reference.layer}/${reference.slug}.md`,
+      },
       suggestions: {
         recommended_type: fallbackEntity?.type || template.suggestions.recommended_type,
         suggested_relations: related.length > 0
@@ -121,25 +147,87 @@ export class KnowledgeBaseService {
   }
 
   async previewEditorDraft(input) {
-    const warnings = [];
-    if (!input.definition || input.definition.trim().length < 20) {
-      warnings.push("定义太短，建议至少说明对象是什么、属于哪个层级、和什么对象相关。");
+    if (typeof this.repository.ingestSource !== "function") {
+      throw new Error("当前知识库 provider 不支持图谱入库预览");
     }
 
-    if (!input.domain || !input.type) {
-      warnings.push("领域和类型最好都明确，否则后续很难接入真实数据库检索。");
-    }
-
-    const safeName = input.name?.trim() || "未命名概念";
-    const safeType = input.type?.trim() || "待定义类";
-    const safeDomain = input.domain?.trim() || "待定义领域";
+    const normalized = await this.repository.ingestSource({
+      mode: input.mode,
+      layer: input.layer,
+      slug: input.slug,
+      source: input.source,
+    });
+    const safeTitle = normalized.title?.trim() || "未命名概念";
 
     return {
-      summary: `${safeName} 将作为 ${safeDomain} 下的 ${safeType} 被记录，当前定义会被用于检索、展示和问答上下文。`,
-      rdf: `<${safeName}> rdf:type <${safeType}> .\n<${safeName}> <belongsToDomain> <${safeDomain}> .`,
-      owl: `Class: ${safeName}\n  SubClassOf: ${safeDomain}\n  Annotations: rdfs:comment "${(input.definition || "").replaceAll('"', '\\"')}"`,
-      warnings,
+      summary: `${safeTitle} 将写入 ${normalized.ref}，提交成功后会进入当前 WiKiMG 图谱与问答上下文。`,
+      rdf: `<${safeTitle}> rdf:type <待定义类型> .`,
+      owl: `Class: ${safeTitle}`,
+      warnings: normalized.warnings || [],
+      normalized_markdown: normalized.markdown,
+      target_ref: normalized.ref,
     };
+  }
+
+  async commitEditorDraft(input) {
+    if (typeof this.repository.ingestSource !== "function") {
+      throw new Error("当前知识库 provider 不支持图谱入库");
+    }
+    if (!this.sourceCommitter || !this.wikiWriter) {
+      throw new Error("图谱入库依赖未配置完整");
+    }
+
+    const normalized = await this.repository.ingestSource({
+      mode: input.mode,
+      layer: input.layer,
+      slug: input.slug,
+      source: input.source,
+    });
+    const sourceFilename = `graph-source/${input.layer}/${input.slug}.${input.mode === "json" ? "json" : "md"}`;
+    const sourceWrite = await this.sourceCommitter({
+      projectId: input.projectId || this.projectId,
+      filename: sourceFilename,
+      data: input.source,
+      message: input.message || `Graph editor update: ${normalized.title}`,
+      agentName: "ontology-editor",
+      committerName: "ontology-editor",
+    });
+
+    let wikiWrite = null;
+    try {
+      wikiWrite = await this.wikiWriter({
+        layer: input.layer,
+        slug: input.slug,
+        markdown: normalized.markdown,
+      });
+
+      if (typeof this.repository.invalidateCache === "function") {
+        this.repository.invalidateCache();
+      }
+      const dataset = await this.repository.loadDataset();
+
+      return {
+        status: "success",
+        sourceWrite,
+        wikiWrite,
+        exportSummary: {
+          totalEntities: dataset?.knowledgeGraph?.statistics?.total_entities || 0,
+          totalRelations: dataset?.knowledgeGraph?.statistics?.total_relations || 0,
+          documentCount: Array.isArray(dataset?.documents) ? dataset.documents.length : 0,
+        },
+        updatedEntityId: normalized.ref,
+        warnings: normalized.warnings || [],
+      };
+    } catch (error) {
+      return {
+        status: "partial",
+        sourceWrite,
+        wikiWrite,
+        updatedEntityId: normalized.ref,
+        warnings: normalized.warnings || [],
+        error: error instanceof Error ? error.message : "未知错误",
+      };
+    }
   }
 
   async resolveEntityName(query, entityId) {
@@ -256,4 +344,95 @@ export class KnowledgeBaseService {
       ],
     };
   }
+}
+
+function deriveEditorReference(entityId, fallbackName) {
+  const rawId = String(entityId || "").trim();
+  if (rawId.includes(":")) {
+    const [layer, ...rest] = rawId.split(":");
+    const slug = rest.join(":");
+    if (layer && slug) {
+      return { layer, slug };
+    }
+  }
+
+  const seed = String(fallbackName || "untitled")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s/-]/gu, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return {
+    layer: "domain",
+    slug: `draft/${seed || "untitled"}`,
+  };
+}
+
+function buildJsonDraft({ entity, template, related }) {
+  const properties = entity?.properties || template.defaults.properties || {};
+  return {
+    title: entity?.name || template.defaults.name,
+    page_kind: entity?.page_kind || "entity",
+    type: entity?.type || template.defaults.type,
+    domain: entity?.domain || template.defaults.domain,
+    level: entity?.level || 2,
+    source: entity?.source || template.defaults.source,
+    summary: entity?.summary || entity?.definition || template.defaults.definition,
+    properties,
+    relations: related.map((item) => ({
+      target: item.id || item.name,
+      type: "相关",
+      description: item.definition || `${item.name} 与当前概念存在图谱关联。`,
+    })),
+    sections: {
+      定义与定位: entity?.definition || template.defaults.definition,
+      属性: Object.entries(properties).map(([key, value]) => {
+        if (Array.isArray(value)) {
+          return `${key}: ${value.join(", ")}`;
+        }
+        if (value && typeof value === "object") {
+          return `${key}: ${JSON.stringify(value)}`;
+        }
+        return `${key}: ${String(value)}`;
+      }),
+      证据来源: [entity?.source || template.defaults.source],
+      关联主题: related.map((item) => item.name),
+    },
+  };
+}
+
+function buildFallbackMarkdownDraft(jsonDraft) {
+  const sections = jsonDraft.sections || {};
+  return [
+    "---",
+    JSON.stringify({
+      profile: "kimi",
+      page_kind: jsonDraft.page_kind,
+      title: jsonDraft.title,
+      type: jsonDraft.type,
+      domain: jsonDraft.domain,
+      level: jsonDraft.level,
+      source: jsonDraft.source,
+      properties: jsonDraft.properties || {},
+      relations: jsonDraft.relations || [],
+    }, null, 2),
+    "---",
+    `# ${jsonDraft.title}`,
+    "",
+    `> ${jsonDraft.summary || ""}`,
+    "",
+    "## 定义与定位",
+    sections["定义与定位"] || "",
+    "",
+    "## 属性",
+    ...(Array.isArray(sections["属性"]) ? sections["属性"].map((item) => `- ${item}`) : []),
+    "",
+    "## 证据来源",
+    ...(Array.isArray(sections["证据来源"]) ? sections["证据来源"].map((item) => `- ${item}`) : []),
+    "",
+    "## 关联主题",
+    ...(Array.isArray(sections["关联主题"]) ? sections["关联主题"].map((item) => `- ${item}`) : []),
+    "",
+  ].join("\n");
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 from wikimg.core import (
     WikiError,
@@ -21,7 +22,9 @@ from wikimg.core import (
     scan_documents,
     search_documents,
 )
+from wikimg.ingest import ingest_source
 from wikimg.kimi_profile import export_profile, show_document_json, validate_profile
+from wikimg.ontogit_sync import sync_export_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +71,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate", help="校验 profile 文档的结构与链接。支持 JSON 输出。")
     validate_parser.add_argument("--profile", required=True, help="要校验的 profile 名称，例如 'kimi'。")
     validate_parser.add_argument("--json", action="store_true", dest="json", help="以 JSON 格式输出结果。")
+
+    ingest_parser = subparsers.add_parser("ingest", help="将 JSON/Markdown 输入归一化为 WiKiMG 文档。支持 JSON 输出。")
+    ingest_parser.add_argument("--profile", required=True, help="归一化使用的 profile 名称，例如 'kimi'。")
+    ingest_parser.add_argument("--mode", required=True, choices=("json", "markdown"), help="输入模式。")
+    ingest_parser.add_argument("--layer", required=True, help="目标层级：'common'、'domain' 或 'private'。")
+    ingest_parser.add_argument("--slug", required=True, help="目标文档 slug，例如 'kimi-demo/lighting'。")
+    ingest_parser.add_argument("--input-file", required=True, help="待归一化的源文件路径。")
+    ingest_parser.add_argument("--json", action="store_true", dest="json", help="以 JSON 格式输出结果。")
 
     edit_parser = subparsers.add_parser("edit", help="在编辑器中打开现有文档。")
     edit_parser.add_argument("reference", help="文档引用标识。")
@@ -162,6 +173,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "export":
             payload = export_profile(workspace, args.profile)
+            try:
+                sync_export_payload(
+                    workspace_root=workspace.root,
+                    profile=args.profile,
+                    payload=payload,
+                )
+            except Exception as error:
+                print(f"Warning: OntoGit sync failed: {error}", file=sys.stderr)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
@@ -184,6 +203,22 @@ def main(argv: list[str] | None = None) -> int:
                     for issue in payload["issues"]:
                         print(f"- [{issue['ref']}] {issue['message']}")
             return 1 if not payload["healthy"] else 0
+
+        if args.command == "ingest":
+            source_text = Path(args.input_file).read_text(encoding="utf-8")
+            payload = ingest_source(
+                workspace,
+                profile=args.profile,
+                mode=args.mode,
+                layer=args.layer,
+                slug=args.slug,
+                source_text=source_text,
+            )
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(f"Normalized {payload['ref']} -> {payload['title']}")
+            return 0
 
         if args.command == "edit":
             document = resolve_document(workspace, args.reference)
@@ -254,7 +289,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"Unsupported command: {args.command}")
         return 2
     except WikiError as error:
-        print(f"Error: {error}")
+        if getattr(args, "json", False):
+            print(json.dumps({"status": "error", "error": str(error)}, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: {error}")
         return 1
 
 

@@ -70,7 +70,7 @@ export function WriteBackPanel({
             <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/60">JSON 内容</label>
             <Dialog open={isOpen} onOpenChange={setIsOpen}>
               <DialogTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all opacity-0 group-hover:opacity-100">
+                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all">
                   <Maximize2 className="h-3 w-3" />
                 </Button>
               </DialogTrigger>
@@ -134,7 +134,17 @@ export function WriteBackPanel({
             </DialogContent>
             </Dialog>
           </div>
-          <Textarea value={writeData} onChange={(event) => setWriteData(event.target.value)} className="flex-1 font-mono text-[13px] resize-none bg-muted/10 border-border/40 focus:bg-muted/20 transition-all leading-relaxed p-4 rounded-xl" placeholder='{ "id": "001", ... }' />
+          <Textarea 
+            value={writeData} 
+            onChange={(event) => setWriteData(event.target.value)} 
+            className={cn(
+              "flex-1 font-mono text-[13px] resize-none transition-all leading-relaxed p-4 rounded-xl",
+              isInvalid 
+                ? "bg-red-500/5 border-red-500/50 focus:bg-red-500/10" 
+                : "bg-muted/10 border-border/40 focus:bg-muted/20"
+            )} 
+            placeholder='{ "id": "001", ... }' 
+          />
         </div>
 
         <div className="space-y-2">

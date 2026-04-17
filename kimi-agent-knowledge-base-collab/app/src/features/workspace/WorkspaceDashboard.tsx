@@ -1,11 +1,11 @@
 import { FileContentPanel } from '@/features/workspace/components/FileContentPanel';
 import { FileListPanel } from '@/features/workspace/components/FileListPanel';
+import { GraphIngestPanel } from '@/features/workspace/components/GraphIngestPanel';
 import { ProbabilityPanel } from '@/features/workspace/components/ProbabilityPanel';
 import { ProjectListPanel } from '@/features/workspace/components/ProjectListPanel';
 import { RecommendationPanel } from '@/features/workspace/components/RecommendationPanel';
 import { TimelinePanel } from '@/features/workspace/components/TimelinePanel';
 import { DiffDialog } from '@/features/workspace/components/DiffDialog';
-import { WriteBackPanel } from '@/features/workspace/components/WriteBackPanel';
 import { useWorkspaceState } from '@/features/workspace/useWorkspaceState';
 
 export function WorkspaceDashboard() {
@@ -14,6 +14,13 @@ export function WorkspaceDashboard() {
   const handleSelectFile = async (filename: string) => {
     workspace.setSelectedFile(filename);
     await workspace.loadContent(workspace.selectedProjectId, filename);
+  };
+
+  const handleSourceCommitted = async (projectId: string, filename: string) => {
+    workspace.setSelectedProjectId(projectId);
+    await workspace.loadTimelines(projectId);
+    workspace.setSelectedFile(filename);
+    await workspace.loadContent(projectId, filename);
   };
 
   return (
@@ -41,17 +48,7 @@ export function WorkspaceDashboard() {
         <div className="lg:col-span-9 space-y-6">
           <div className="grid gap-6 md:grid-cols-2">
             <FileContentPanel selectedFile={workspace.selectedFile} fileContent={workspace.fileContent} onRefresh={() => workspace.loadContent(workspace.selectedProjectId, workspace.selectedFile)} />
-            <WriteBackPanel
-              selectedProjectId={workspace.selectedProjectId}
-              writeFilename={workspace.writeFilename}
-              setWriteFilename={workspace.setWriteFilename}
-              writeData={workspace.writeData}
-              setWriteData={workspace.setWriteData}
-              writeMessage={workspace.writeMessage}
-              setWriteMessage={workspace.setWriteMessage}
-              writing={workspace.writing}
-              onWrite={workspace.handleWrite}
-            />
+            <GraphIngestPanel onSourceCommitted={handleSourceCommitted} />
           </div>
           <div className="grid gap-6 md:grid-cols-2">
             <TimelinePanel selectedFile={workspace.selectedFile} timelines={workspace.timelines} onViewDiff={workspace.handleViewDiff} onSetOfficial={workspace.handleSetOfficial} onRollback={workspace.handleRollback} />

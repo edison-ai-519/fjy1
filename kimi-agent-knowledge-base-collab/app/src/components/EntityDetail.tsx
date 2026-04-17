@@ -104,7 +104,7 @@ export function EntityDetail({ entity, relatedEntities = [], onSelectRelated }: 
               <div>
                 <CardTitle className="text-3xl font-black tracking-tight">{entity.name}</CardTitle>
                 <CardDescription className="mt-2 text-sm font-medium text-muted-foreground max-w-2xl leading-relaxed">
-                  当前节点的定义、属性、关联和来源都来自 WiKiMG 文档导出的结构化内容。
+                  当前节点的定义、属性、关联和来源都来自 本体知识库 文档导出的结构化内容。
                 </CardDescription>
                 <div className="flex items-center gap-2 mt-4">
                   <Badge variant="outline" className="rounded-lg font-bold">{entity.type}</Badge>

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Sparkles, AlertCircle, Copy, Check, ArrowUp, Square, X, FileIcon, Plus } from 'lucide-react';
+import { Sparkles, AlertCircle, Copy, Check, ArrowUp, ArrowDown, Square, X, FileIcon, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { AssistantMarkdown, copyCodeToClipboard } from './AssistantMarkdown';
@@ -52,8 +52,27 @@ export function ChatArea({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
+  const [showScrollButton, setShowScrollButton] = React.useState(false);
   const { messages, draftQuestion, loading, error, statusMessage } = activeSession;
   const lastMessage = messages[messages.length - 1];
+
+  const handleScroll = () => {
+    if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      // Show button if we are more than one viewport away from bottom
+      const isScrolledUp = scrollHeight - scrollTop - clientHeight > clientHeight;
+      setShowScrollButton(isScrolledUp);
+    }
+  };
+
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  };
 
   const handleFileClick = () => {
     fileInputRef.current?.click();
@@ -109,7 +128,8 @@ export function ChatArea({
       {/* Messages Area */}
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+        onScroll={handleScroll}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scroll-smooth"
       >
         <div className="flex min-h-full flex-col justify-end">
           {messages.length === 0 && !loading && (
@@ -194,32 +214,24 @@ export function ChatArea({
       </div>
 
       <div className="absolute bottom-0 left-0 right-0 pointer-events-none">
+        {/* Scroll to Bottom Button */}
+        <div className="absolute bottom-[190px] left-1/2 -translate-x-1/2 z-30 flex justify-center pointer-events-auto">
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={scrollToBottom}
+            className={cn(
+              "w-10 h-10 rounded-full bg-background/80 backdrop-blur-md border border-border shadow-xl transition-all duration-300 transform",
+              showScrollButton ? "translate-y-0 opacity-100 scale-100" : "translate-y-4 opacity-0 scale-90"
+            )}
+          >
+            <ArrowDown className="w-4 h-4 text-muted-foreground" />
+          </Button>
+        </div>
+
         <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-background via-background/80 to-transparent z-10" />
         <div className="relative w-full max-w-3xl mx-auto px-4 sm:px-6 pb-6 pt-0 text-center z-20">
           <div className="relative flex flex-col bg-background/95 backdrop-blur-xl rounded-[28px] border border-border p-1.5 shadow-2xl pointer-events-auto transition-all">
-            {/* File List Chips */}
-            {selectedFiles.length > 0 && (
-              <div className="absolute bottom-full left-0 right-0 mb-4 flex flex-wrap gap-2 px-2 animate-in slide-in-from-bottom-2 duration-300">
-                {selectedFiles.map((file, i) => (
-                  <div key={i} className="flex items-center gap-2 bg-card/90 backdrop-blur-md border border-border rounded-2xl pl-3 pr-2 py-2 shadow-lg group/file ring-1 ring-white/5">
-                    <div className="w-6 h-6 rounded-lg bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center font-bold">
-                      <FileIcon className="w-3.5 h-3.5 text-blue-500" />
-                    </div>
-                    <div className="flex flex-col items-start min-w-0 pr-1">
-                      <span className="text-[11px] font-bold text-foreground max-w-[120px] truncate leading-none mb-0.5">{file.name}</span>
-                      <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-tighter">{(file.size / 1024).toFixed(0)} KB</span>
-                    </div>
-                    <button
-                      onClick={() => removeFile(i)}
-                      className="w-5 h-5 rounded-full flex items-center justify-center hover:bg-muted text-muted-foreground hover:text-destructive transition-all"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
             {/* Input Row */}
             <div className="flex-1 w-full px-2">
               <Textarea
@@ -233,26 +245,7 @@ export function ChatArea({
             </div>
 
             {/* Toolbar Row */}
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center">
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  className="hidden"
-                  multiple
-                  onChange={handleFileChange}
-                />
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={handleFileClick}
-                  className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-all active:scale-90"
-                  title="添加附件"
-                >
-                  <Plus className="w-6 h-6" />
-                </Button>
-              </div>
-
+            <div className="flex items-center justify-end px-1">
               <div className="flex items-center gap-2">
                 <Button
                   size="icon"

@@ -258,6 +258,7 @@ export function useWorkspaceState() {
     setIsDiffOpen,
     compareTarget,
     loadProjects,
+    loadTimelines,
     loadContent,
     handleWrite,
     handleProbAnalysis,
@@ -268,4 +269,3 @@ export function useWorkspaceState() {
     handleDeleteProject,
   };
 }
-
