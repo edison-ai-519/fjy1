@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Sparkles, AlertCircle, Copy, Check, ArrowUp, ArrowDown, Square, X, FileIcon, Plus } from 'lucide-react';
+import { Sparkles, AlertCircle, Copy, Check, ArrowUp, ArrowDown, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { AssistantMarkdown, copyCodeToClipboard } from './AssistantMarkdown';
@@ -50,8 +50,6 @@ export function ChatArea({
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFiles, setSelectedFiles] = React.useState<File[]>([]);
   const [showScrollButton, setShowScrollButton] = React.useState(false);
   const { messages, draftQuestion, loading, error, statusMessage } = activeSession;
   const lastMessage = messages[messages.length - 1];
@@ -72,21 +70,6 @@ export function ChatArea({
         behavior: 'smooth'
       });
     }
-  };
-
-  const handleFileClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const newFiles = Array.from(e.target.files);
-      setSelectedFiles(prev => [...prev, ...newFiles]);
-    }
-  };
-
-  const removeFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   // Auto-scroll logic

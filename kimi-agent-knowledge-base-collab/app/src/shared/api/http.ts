@@ -33,12 +33,27 @@ export function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 export async function parseJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
+    if (text) {
+      try {
+        const payload = JSON.parse(text) as { error?: unknown; detail?: unknown };
+        const message = typeof payload.error === 'string'
+          ? payload.error
+          : typeof payload.detail === 'string'
+            ? payload.detail
+            : text;
+        throw new Error(message);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          throw new Error(text);
+        }
+        throw error;
+      }
+    }
+    throw new Error(`Request failed with status ${response.status}`);
   }
 
-  const text = await response.text();
   if (!text) {
     return {} as T;
   }

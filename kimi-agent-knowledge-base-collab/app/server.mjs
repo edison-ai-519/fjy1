@@ -295,7 +295,7 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, await knowledgeBaseService.previewEditorDraft({
         entityId: typeof body.entityId === "string" ? body.entityId : undefined,
         mode: typeof body.mode === "string" ? body.mode : "json",
-        layer: typeof body.layer === "string" ? body.layer : "domain",
+        layer: typeof body.layer === "string" ? body.layer : undefined,
         slug: typeof body.slug === "string" ? body.slug : "",
         source: body.source,
       }));
@@ -308,7 +308,7 @@ const server = createServer(async (req, res) => {
         entityId: typeof body.entityId === "string" ? body.entityId : undefined,
         mode: typeof body.mode === "string" ? body.mode : "json",
         projectId: typeof body.projectId === "string" ? body.projectId : "demo",
-        layer: typeof body.layer === "string" ? body.layer : "domain",
+        layer: typeof body.layer === "string" ? body.layer : undefined,
         slug: typeof body.slug === "string" ? body.slug : "",
         message: typeof body.message === "string" ? body.message : "",
         source: body.source,

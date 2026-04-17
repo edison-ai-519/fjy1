@@ -20,7 +20,6 @@ const workspaceRoot = path.resolve(projectRoot, "..");
 const qagentRuntimeRoot = path.join(projectRoot, ".qagent-web-runtime");
 const defaultWikiMGRoot = path.resolve(workspaceRoot, "Ontology_Factory");
 const defaultWikiMGScriptPath = path.join(defaultWikiMGRoot, "WIKI_MG", "wikimg");
-const defaultOntoGitStorageRoot = path.resolve(workspaceRoot, "OntoGit", "xiaogugit", "storage", "prod");
 
 function resolveQAgentRoot() {
   const candidates = [
@@ -63,6 +62,9 @@ function resolveQAgentCommand(qagentRoot) {
 export function createAppServices() {
   const repositoryMode = process.env.KNOWLEDGE_BASE_PROVIDER || "json";
   const qagentRoot = resolveQAgentRoot();
+  const wikimgRoot = process.env.WIKIMG_ROOT || defaultWikiMGRoot;
+  const wikiDocsRoot = path.join(wikimgRoot, "wiki");
+  const ontoGitStorageRoot = process.env.ONTOGIT_STORAGE_ROOT || wikiDocsRoot;
 
   let repository;
 
@@ -71,7 +73,6 @@ export function createAppServices() {
       databaseUrl: process.env.DATABASE_URL,
     });
   } else if (repositoryMode === "wikimg") {
-    const wikimgRoot = process.env.WIKIMG_ROOT || defaultWikiMGRoot;
     repository = new WikiMGKnowledgeBaseRepository({
       workspaceRoot: wikimgRoot,
       profile: process.env.WIKIMG_PROFILE || "kimi",
@@ -86,10 +87,10 @@ export function createAppServices() {
   }
 
   const ontoGitCommitService = new OntoGitLocalCommitService({
-    storageRoot: process.env.ONTOGIT_STORAGE_ROOT || defaultOntoGitStorageRoot,
+    storageRoot: ontoGitStorageRoot,
   });
   const wikiWorkspaceWriter = new WikiWorkspaceWriterService({
-    docsRoot: path.join(process.env.WIKIMG_ROOT || defaultWikiMGRoot, "wiki"),
+    docsRoot: wikiDocsRoot,
   });
 
   return {

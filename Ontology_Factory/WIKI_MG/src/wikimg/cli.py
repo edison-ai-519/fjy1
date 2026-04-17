@@ -75,8 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser = subparsers.add_parser("ingest", help="将 JSON/Markdown 输入归一化为 WiKiMG 文档。支持 JSON 输出。")
     ingest_parser.add_argument("--profile", required=True, help="归一化使用的 profile 名称，例如 'kimi'。")
     ingest_parser.add_argument("--mode", required=True, choices=("json", "markdown"), help="输入模式。")
-    ingest_parser.add_argument("--layer", required=True, help="目标层级：'common'、'domain' 或 'private'。")
-    ingest_parser.add_argument("--slug", required=True, help="目标文档 slug，例如 'kimi-demo/lighting'。")
+    ingest_parser.add_argument("--layer", help="目标层级：'common'、'domain' 或 'private'。省略时由 WiKiMG 自动推断。")
+    ingest_parser.add_argument("--slug", help="目标文档 slug，例如 'kimi-demo/lighting'。批量 items 入库时可作为路径前缀。")
     ingest_parser.add_argument("--input-file", required=True, help="待归一化的源文件路径。")
     ingest_parser.add_argument("--json", action="store_true", dest="json", help="以 JSON 格式输出结果。")
 
@@ -120,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

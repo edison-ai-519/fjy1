@@ -1,6 +1,5 @@
-import { Atom, BookOpen, Layers, Link2, Search, TreePine } from 'lucide-react';
+import { Atom, BookOpen, Layers, Link2, TreePine } from 'lucide-react';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import type { CrossReference, Entity } from '@/types/ontology';
 
 interface OntologyBrowserProps {

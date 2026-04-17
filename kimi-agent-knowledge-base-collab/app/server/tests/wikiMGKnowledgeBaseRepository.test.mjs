@@ -130,3 +130,94 @@ test("WikiMG repository can normalize JSON drafts through ingest", async () => {
   assert.match(payload.markdown, /## 定义与定位/);
   assert.deepEqual(payload.warnings, []);
 });
+
+test("WikiMG repository lets wikimg infer layer when omitted", async () => {
+  const repository = createRepository();
+
+  const payload = await repository.ingestSource({
+    mode: "json",
+    slug: "kimi-demo/control-safety-rules",
+    source: {
+      title: "控制安全规则",
+      page_kind: "entity",
+      type: "共享规则",
+      domain: "远程控制",
+      level: 1,
+      source: "unit-test",
+      summary: "远程控制命令需要确认、授权和回滚流程。",
+      properties: {
+        职责: "约束远程控制命令的授权流程",
+      },
+      sections: {
+        定义与定位: "用于定义远程控制命令的安全边界。",
+        证据来源: ["单元测试样例。"],
+      },
+    },
+  });
+
+  assert.equal(payload.ref, "common:kimi-demo/control-safety-rules");
+  assert.equal(payload.layer, "common");
+  assert.match(payload.warnings.join("\n"), /common/);
+});
+
+test("WikiMG repository can normalize batch JSON items into multiple layers", async () => {
+  const repository = createRepository();
+
+  const payload = await repository.ingestSource({
+    mode: "json",
+    slug: "kimi-demo",
+    source: {
+      items: [
+        {
+          title: "遥测字段规范",
+          layer: "common",
+          page_kind: "entity",
+          type: "共享规范",
+          domain: "平台接入",
+          level: 1,
+          source: "unit-test",
+          sections: {
+            定义与定位: "统一遥测字段命名。",
+            证据来源: ["单元测试样例。"],
+          },
+        },
+        {
+          title: "远程控制规则",
+          page_kind: "entity",
+          type: "控制规则",
+          domain: "远程控制",
+          level: 2,
+          source: "unit-test",
+          sections: {
+            定义与定位: "约束远程控制命令。",
+            证据来源: ["单元测试样例。"],
+          },
+        },
+        {
+          title: "内部演练记录",
+          visibility: "private",
+          page_kind: "entity",
+          type: "实验记录",
+          domain: "远程控制",
+          level: 3,
+          source: "unit-test",
+          sections: {
+            定义与定位: "记录内部演练过程。",
+            证据来源: ["单元测试样例。"],
+          },
+        },
+      ],
+    },
+  });
+
+  assert.equal(payload.batch, true);
+  assert.deepEqual(payload.layer_counts, { common: 1, domain: 1, private: 1 });
+  assert.deepEqual(
+    payload.items.map((item) => item.ref),
+    [
+      "common:kimi-demo/遥测字段规范",
+      "domain:kimi-demo/远程控制规则",
+      "private:kimi-demo/内部演练记录",
+    ],
+  );
+});

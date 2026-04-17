@@ -69,7 +69,7 @@ def _resolve_target(workspace_root: Path) -> dict[str, Any]:
     if storage_root:
         resolved_storage_root = Path(storage_root).resolve()
     else:
-        resolved_storage_root = (workspace_root.parent / "OntoGit" / "xiaogugit" / "storage" / "prod").resolve()
+        resolved_storage_root = (workspace_root / "wiki").resolve()
 
     project_id = os.environ.get("WIKIMG_ONTOGIT_PROJECT_ID", DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
     filename = os.environ.get("WIKIMG_ONTOGIT_FILENAME", DEFAULT_FILENAME).strip() or DEFAULT_FILENAME

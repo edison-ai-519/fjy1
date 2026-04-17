@@ -25,6 +25,7 @@ def run_cli(*args: str, cwd: Path, extra_env: dict[str, str] | None = None) -> s
         cwd=cwd,
         env=env,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
@@ -624,6 +625,142 @@ class WikiCliTests(unittest.TestCase):
             self.assertIn("## 证据来源", payload["markdown"])
             self.assertIn("## 关联主题", payload["markdown"])
             self.assertIn("盐度监测属于系统环境感知的一部分。", payload["markdown"])
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_ingest_json_infers_layer_when_layer_argument_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            result = run_cli("init", cwd=workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_path = workspace / "ingest-input.json"
+            source_path.write_text(
+                json.dumps(
+                    {
+                        "title": "控制安全规则",
+                        "page_kind": "entity",
+                        "type": "共享规则",
+                        "domain": "远程控制",
+                        "level": 1,
+                        "source": "unit-test",
+                        "summary": "远程控制命令需要确认、授权和回滚流程。",
+                        "properties": {
+                            "职责": "约束远程控制命令的授权流程",
+                        },
+                        "sections": {
+                            "定义与定位": "用于定义远程控制命令的安全边界。",
+                            "证据来源": ["单元测试样例。"],
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            ingest_result = run_cli(
+                "ingest",
+                "--profile",
+                "kimi",
+                "--mode",
+                "json",
+                "--slug",
+                "kimi-demo/control-safety-rules",
+                "--input-file",
+                str(source_path),
+                "--json",
+                cwd=workspace,
+            )
+            self.assertEqual(ingest_result.returncode, 0, ingest_result.stderr)
+            payload = json.loads(ingest_result.stdout)
+            self.assertEqual(payload["ref"], "common:kimi-demo/control-safety-rules")
+            self.assertEqual(payload["layer"], "common")
+            self.assertTrue(any("common" in warning for warning in payload["warnings"]))
+
+    @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
+    def test_ingest_json_items_batch_infers_layer_and_slug_per_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            result = run_cli("init", cwd=workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_path = workspace / "batch-ingest-input.json"
+            source_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "title": "遥测字段规范",
+                                "layer": "common",
+                                "page_kind": "entity",
+                                "type": "共享规范",
+                                "domain": "平台接入",
+                                "level": 1,
+                                "source": "unit-test",
+                                "sections": {
+                                    "定义与定位": "统一遥测字段命名。",
+                                    "证据来源": ["单元测试样例。"],
+                                },
+                            },
+                            {
+                                "title": "远程控制规则",
+                                "page_kind": "entity",
+                                "type": "控制规则",
+                                "domain": "远程控制",
+                                "level": 2,
+                                "source": "unit-test",
+                                "sections": {
+                                    "定义与定位": "约束远程控制命令。",
+                                    "证据来源": ["单元测试样例。"],
+                                },
+                            },
+                            {
+                                "title": "内部演练记录",
+                                "visibility": "private",
+                                "page_kind": "entity",
+                                "type": "实验记录",
+                                "domain": "远程控制",
+                                "level": 3,
+                                "source": "unit-test",
+                                "sections": {
+                                    "定义与定位": "记录内部演练过程。",
+                                    "证据来源": ["单元测试样例。"],
+                                },
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            ingest_result = run_cli(
+                "ingest",
+                "--profile",
+                "kimi",
+                "--mode",
+                "json",
+                "--slug",
+                "kimi-demo",
+                "--input-file",
+                str(source_path),
+                "--json",
+                cwd=workspace,
+            )
+            self.assertEqual(ingest_result.returncode, 0, ingest_result.stderr)
+            payload = json.loads(ingest_result.stdout)
+            self.assertTrue(payload["batch"])
+            self.assertEqual(payload["total"], 3)
+            self.assertEqual(payload["layer_counts"], {"common": 1, "domain": 1, "private": 1})
+            self.assertEqual(
+                [item["ref"] for item in payload["items"]],
+                [
+                    "common:kimi-demo/遥测字段规范",
+                    "domain:kimi-demo/远程控制规则",
+                    "private:kimi-demo/内部演练记录",
+                ],
+            )
 
     @unittest.skipIf(sys.version_info[:2] < (3, 10), "wikimg requires Python 3.10+")
     def test_ingest_markdown_validates_and_returns_normalized_payload(self) -> None:

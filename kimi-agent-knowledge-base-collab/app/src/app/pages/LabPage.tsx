@@ -5,7 +5,6 @@ import { OntologyAnalyzer } from '@/components/OntologyAnalyzer';
 import { SystemsOntologyView } from '@/components/SystemsOntologyView';
 import { OntologyBrowser } from '@/components/OntologyBrowser';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import type { Entity } from '@/types/ontology';
 
