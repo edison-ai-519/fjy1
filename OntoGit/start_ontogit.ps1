@@ -1,55 +1,155 @@
-﻿$ErrorActionPreference = "Stop"
-$WorkingDir = "D:\code\FJY\OntoGit"
+[CmdletBinding()]
+param(
+    [string]$PythonBin = $env:PYTHON_BIN,
+    [string]$StorageRoot = $env:XG_STORAGE_ROOT
+)
 
-# Ensure log directory exists
-$LogDir = Join-Path $WorkingDir ".run-logs"
-if (-not (Test-Path $LogDir)) {
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-}
+$ErrorActionPreference = "Stop"
 
-Write-Host "正在关闭旧的 OntoGit 进程..."
-# 查杀占用 8000（XiaoGuGit），5000（Probability），8080（Gateway）的进程
-$ports = @(8000, 5000, 8080)
-foreach ($port in $ports) {
-    try {
-        $pids = (Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue).OwningProcess
-        foreach ($p in $pids) {
-            if ($p -and $p -ne 0) {
-                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-                Write-Host "已关闭占用端口 $port 的进程 (PID: $p)"
-            }
+function Resolve-PythonCommand {
+    param([AllowNull()][string]$ExplicitPythonBin)
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPythonBin)) {
+        return $ExplicitPythonBin
+    }
+
+    foreach ($candidate in @("python", "python3", "py")) {
+        if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+            return $candidate
         }
-    } catch {}
+    }
+
+    return "python"
 }
 
-Write-Host "正在启动服务集群..."
+function Set-Utf8ProcessEnvironment {
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:LC_ALL = "C.UTF-8"
+    $env:LANG = "C.UTF-8"
 
-Write-Host "  -> 启动 Probability 推理引擎 (端口 5000)..."
-Start-Process -FilePath "python" -ArgumentList "app/main.py" -WorkingDirectory (Join-Path $WorkingDir "probability") -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "probability.log") -RedirectStandardError (Join-Path $LogDir "probability_err.log")
+    try {
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+    } catch {
+        # Python env vars above are enough for child-process output encoding.
+    }
+}
 
-Write-Host "  -> 启动 XiaoGuGit 版本管理引擎 (端口 8000)..."
-Start-Process -FilePath "python" -ArgumentList "server.py" -WorkingDirectory (Join-Path $WorkingDir "xiaogugit") -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "xiaogugit.log") -RedirectStandardError (Join-Path $LogDir "xiaogugit_err.log")
+function Stop-PortListeners {
+    param([Parameter(Mandatory)][int]$Port)
 
-Write-Host "  -> 启动 Gateway 统一安全网关 (端口 8080)..."
+    $connections = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    if (-not $connections) {
+        return
+    }
+
+    $ownerPids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique)
+    foreach ($ownerPid in $ownerPids) {
+        if ($ownerPid -and $ownerPid -ne $PID) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped process on port $Port (PID: $ownerPid)"
+        }
+    }
+}
+
+function Start-OntoGitProcess {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$FilePath,
+        [AllowEmptyString()][string]$ArgumentList,
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][string]$StdoutPath,
+        [Parameter(Mandatory)][string]$StderrPath
+    )
+
+    if (-not (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) {
+        throw "$Name working directory not found: $WorkingDirectory"
+    }
+
+    if ($FilePath -like "*.exe" -and -not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        throw "$Name executable not found: $FilePath"
+    }
+
+    Write-Host "  -> Starting $Name..."
+    $startProcessArguments = @{
+        FilePath = $FilePath
+        WorkingDirectory = $WorkingDirectory
+        WindowStyle = "Hidden"
+        RedirectStandardOutput = $StdoutPath
+        RedirectStandardError = $StderrPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ArgumentList)) {
+        $startProcessArguments.ArgumentList = $ArgumentList
+    }
+
+    Start-Process @startProcessArguments | Out-Null
+}
+
+Set-Utf8ProcessEnvironment
+$WorkingDir = Split-Path -Parent $PSCommandPath
+$Python = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
+$LogDir = Join-Path $WorkingDir ".run-logs"
+$RepoRoot = Split-Path -Parent $WorkingDir
+$SharedStorageRoot = if ([string]::IsNullOrWhiteSpace($StorageRoot)) {
+    Join-Path $RepoRoot "Ontology_Factory\wiki"
+} else {
+    $StorageRoot
+}
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SharedStorageRoot | Out-Null
+
+Write-Host "Stopping old OntoGit processes..."
+foreach ($port in @(8000, 5000, 8080)) {
+    Stop-PortListeners -Port $port
+}
+
+Write-Host "Starting OntoGit service stack from $WorkingDir"
+Write-Host "XiaoGuGit storage root: $SharedStorageRoot"
+
+Start-OntoGitProcess `
+    -Name "Probability service (port 5000)" `
+    -FilePath $Python `
+    -ArgumentList "app/main.py" `
+    -WorkingDirectory (Join-Path $WorkingDir "probability") `
+    -StdoutPath (Join-Path $LogDir "probability.log") `
+    -StderrPath (Join-Path $LogDir "probability_err.log")
+
+$env:XG_STORAGE_ROOT = $SharedStorageRoot
+
+Start-OntoGitProcess `
+    -Name "XiaoGuGit service (port 8000)" `
+    -FilePath $Python `
+    -ArgumentList "server.py" `
+    -WorkingDirectory (Join-Path $WorkingDir "xiaogugit") `
+    -StdoutPath (Join-Path $LogDir "xiaogugit.log") `
+    -StderrPath (Join-Path $LogDir "xiaogugit_err.log")
+
 $env:GATEWAY_SERVICE_API_KEY = "change-me"
 $env:GATEWAY_ADDR = ":8080"
 $env:GATEWAY_XIAOGUGIT_URL = "http://127.0.0.1:8000"
 $env:GATEWAY_PROBABILITY_URL = "http://127.0.0.1:5000"
 
-Start-Process -FilePath (Join-Path $WorkingDir "gateway\gateway.exe") -WorkingDirectory (Join-Path $WorkingDir "gateway") -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "gateway.log") -RedirectStandardError (Join-Path $LogDir "gateway_err.log")
+Start-OntoGitProcess `
+    -Name "Gateway service (port 8080)" `
+    -FilePath (Join-Path $WorkingDir "gateway\gateway.exe") `
+    -ArgumentList "" `
+    -WorkingDirectory (Join-Path $WorkingDir "gateway") `
+    -StdoutPath (Join-Path $LogDir "gateway.log") `
+    -StderrPath (Join-Path $LogDir "gateway_err.log")
 
-# 简单等待进程稍作启动
 Start-Sleep -Seconds 3
 
 Write-Host "============================="
-Write-Host " OntoGit 服务栈启动完成！"
+Write-Host "OntoGit service stack started"
 Write-Host "============================="
-Write-Host "统一访问网关: http://127.0.0.1:8080"
-Write-Host "中台可视化版: http://127.0.0.1:8080/ui-dashboard"
+Write-Host "Gateway: http://127.0.0.1:8080"
+Write-Host "Dashboard: http://127.0.0.1:8080/ui-dashboard"
 Write-Host "XiaoGuGit API: http://127.0.0.1:8000"
 Write-Host "Probability API: http://127.0.0.1:5000"
 Write-Host ""
-Write-Host "如果需要调试，可以通过以下命令查看对应模块的实时日志："
-Write-Host "  查看网关日志: Get-Content -Wait '$LogDir\gateway.log'"
-Write-Host "  查看版本引擎: Get-Content -Wait '$LogDir\xiaogugit.log'"
-Write-Host "  查看推理服务: Get-Content -Wait '$LogDir\probability.log'"
+Write-Host "Logs:"
+Write-Host "  Gateway: Get-Content -Wait '$LogDir\gateway.log'"
+Write-Host "  XiaoGuGit: Get-Content -Wait '$LogDir\xiaogugit.log'"
+Write-Host "  Probability: Get-Content -Wait '$LogDir\probability.log'"

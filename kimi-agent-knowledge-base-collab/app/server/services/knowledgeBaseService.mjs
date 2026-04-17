@@ -157,6 +157,17 @@ export class KnowledgeBaseService {
       slug: input.slug,
       source: input.source,
     });
+    if (normalized.batch) {
+      const layerCounts = normalized.layer_counts || buildLayerCounts(normalized.items || []);
+      return {
+        summary: `本次将入库 ${normalized.total || 0} 条：common ${layerCounts.common || 0}、domain ${layerCounts.domain || 0}、private ${layerCounts.private || 0}。`,
+        rdf: "",
+        owl: "",
+        warnings: normalized.warnings || [],
+        normalized_markdown: (normalized.items || []).map((item) => item.markdown).join("\n---\n"),
+        target_ref: `batch:${normalized.slug || input.slug || "batch-ingest"}`,
+      };
+    }
     const safeTitle = normalized.title?.trim() || "未命名概念";
 
     return {
@@ -183,7 +194,14 @@ export class KnowledgeBaseService {
       slug: input.slug,
       source: input.source,
     });
-    const sourceFilename = `graph-source/${input.layer}/${input.slug}.${input.mode === "json" ? "json" : "md"}`;
+    if (normalized.batch) {
+      return this.commitBatchEditorDraft(input, normalized);
+    }
+
+    const resolvedLayer = normalized.layer || input.layer;
+    const resolvedSlug = normalized.slug || input.slug;
+    const resolvedRef = normalized.ref || `${resolvedLayer}:${resolvedSlug}`;
+    const sourceFilename = `graph-source/${resolvedLayer}/${resolvedSlug}.${input.mode === "json" ? "json" : "md"}`;
     const sourceWrite = await this.sourceCommitter({
       projectId: input.projectId || this.projectId,
       filename: sourceFilename,
@@ -196,8 +214,8 @@ export class KnowledgeBaseService {
     let wikiWrite = null;
     try {
       wikiWrite = await this.wikiWriter({
-        layer: input.layer,
-        slug: input.slug,
+        layer: resolvedLayer,
+        slug: resolvedSlug,
         markdown: normalized.markdown,
       });
 
@@ -215,7 +233,10 @@ export class KnowledgeBaseService {
           totalRelations: dataset?.knowledgeGraph?.statistics?.total_relations || 0,
           documentCount: Array.isArray(dataset?.documents) ? dataset.documents.length : 0,
         },
-        updatedEntityId: normalized.ref,
+        updatedEntityId: resolvedRef,
+        layer: resolvedLayer,
+        slug: resolvedSlug,
+        ref: resolvedRef,
         warnings: normalized.warnings || [],
       };
     } catch (error) {
@@ -223,11 +244,87 @@ export class KnowledgeBaseService {
         status: "partial",
         sourceWrite,
         wikiWrite,
-        updatedEntityId: normalized.ref,
+        updatedEntityId: resolvedRef,
+        layer: resolvedLayer,
+        slug: resolvedSlug,
+        ref: resolvedRef,
         warnings: normalized.warnings || [],
         error: error instanceof Error ? error.message : "未知错误",
       };
     }
+  }
+
+  async commitBatchEditorDraft(input, normalized) {
+    const batchSlug = normalized.slug || input.slug || "batch-ingest";
+    const sourceFilename = `graph-source/batch/${batchSlug}.${input.mode === "json" ? "json" : "md"}`;
+    const sourceWrite = await this.sourceCommitter({
+      projectId: input.projectId || this.projectId,
+      filename: sourceFilename,
+      data: input.source,
+      message: input.message || `Graph editor batch update: ${normalized.total || normalized.items?.length || 0} items`,
+      agentName: "ontology-editor",
+      committerName: "ontology-editor",
+    });
+
+    const wikiWrites = [];
+    const failedWrites = [];
+    const items = Array.isArray(normalized.items) ? normalized.items : [];
+
+    for (const item of items) {
+      try {
+        const wikiWrite = await this.wikiWriter({
+          layer: item.layer,
+          slug: item.slug,
+          markdown: item.markdown,
+        });
+        wikiWrites.push({
+          ref: item.ref,
+          layer: item.layer,
+          slug: item.slug,
+          title: item.title,
+          wikiWrite,
+          warnings: item.warnings || [],
+        });
+      } catch (error) {
+        failedWrites.push({
+          ref: item.ref,
+          layer: item.layer,
+          slug: item.slug,
+          title: item.title,
+          warnings: item.warnings || [],
+          error: error instanceof Error ? error.message : "未知错误",
+        });
+      }
+    }
+
+    if (typeof this.repository.invalidateCache === "function") {
+      this.repository.invalidateCache();
+    }
+    const dataset = await this.repository.loadDataset();
+    const firstRef = wikiWrites[0]?.ref || failedWrites[0]?.ref || items[0]?.ref;
+    const layerCounts = normalized.layer_counts || buildLayerCounts(items);
+    const status = failedWrites.length > 0 ? "partial" : "success";
+
+    return {
+      status,
+      batch: true,
+      total: items.length,
+      layerCounts,
+      sourceWrite,
+      wikiWrites,
+      failedWrites,
+      updatedEntityId: firstRef,
+      ref: firstRef,
+      warnings: normalized.warnings || [],
+      exportSummary: {
+        totalEntities: dataset?.knowledgeGraph?.statistics?.total_entities || 0,
+        totalRelations: dataset?.knowledgeGraph?.statistics?.total_relations || 0,
+        documentCount: Array.isArray(dataset?.documents) ? dataset.documents.length : 0,
+      },
+      error: failedWrites.length > 0
+        ? `${failedWrites.length} 个条目写入失败`
+        : undefined,
+    };
   }
 
   async resolveEntityName(query, entityId) {
@@ -344,6 +441,16 @@ export class KnowledgeBaseService {
       ],
     };
   }
+}
+
+function buildLayerCounts(items) {
+  const counts = { common: 0, domain: 0, private: 0 };
+  for (const item of items) {
+    if (item?.layer && Object.prototype.hasOwnProperty.call(counts, item.layer)) {
+      counts[item.layer] += 1;
+    }
+  }
+  return counts;
 }
 
 function deriveEditorReference(entityId, fallbackName) {

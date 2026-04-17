@@ -161,6 +161,16 @@ export interface EditorPreview {
 
 export interface EditorCommitResult {
   status: 'success' | 'partial';
+  batch?: boolean;
+  total?: number;
+  layerCounts?: {
+    common: number;
+    domain: number;
+    private: number;
+  };
+  layer?: 'common' | 'domain' | 'private';
+  slug?: string;
+  ref?: string;
   sourceWrite: {
     filename: string;
     path?: string;
@@ -171,6 +181,25 @@ export interface EditorCommitResult {
     path: string;
     ref?: string;
   } | null;
+  wikiWrites?: Array<{
+    ref: string;
+    layer: 'common' | 'domain' | 'private';
+    slug: string;
+    title?: string;
+    warnings?: string[];
+    wikiWrite?: {
+      path: string;
+      ref?: string;
+    };
+  }>;
+  failedWrites?: Array<{
+    ref: string;
+    layer: 'common' | 'domain' | 'private';
+    slug: string;
+    title?: string;
+    warnings?: string[];
+    error: string;
+  }>;
   exportSummary?: {
     totalEntities: number;
     totalRelations: number;
@@ -250,7 +279,7 @@ export async function fetchEditorWorkspace(entityId?: string): Promise<EditorWor
 export async function previewEditorDraft(input: {
   entityId?: string;
   mode: 'json' | 'markdown';
-  layer: 'common' | 'domain' | 'private';
+  layer?: 'common' | 'domain' | 'private';
   slug: string;
   source: unknown;
 }): Promise<EditorPreview> {
@@ -269,7 +298,7 @@ export async function commitEditorDraft(input: {
   entityId?: string;
   mode: 'json' | 'markdown';
   projectId: string;
-  layer: 'common' | 'domain' | 'private';
+  layer?: 'common' | 'domain' | 'private';
   slug: string;
   message: string;
   source: unknown;

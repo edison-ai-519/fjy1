@@ -4,7 +4,7 @@ import { Braces, FileCode2, Maximize2, RefreshCw, Sparkles, Upload } from 'lucid
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogTrigger, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -13,13 +13,17 @@ import { cn } from '@/lib/utils';
 import {
   commitEditorDraft,
   fetchEditorWorkspace,
-  previewEditorDraft,
   type EditorCommitResult,
 } from '@/features/ontology/api';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 
 type EditorMode = 'json' | 'markdown';
-type KnowledgeLayer = 'common' | 'domain' | 'private';
+type CommitState = {
+  status: 'idle' | 'saving' | 'success' | 'partial' | 'error';
+  message: string;
+  ref?: string;
+  refs?: string[];
+};
 
 interface GraphIngestPanelProps {
   onSourceCommitted: (projectId: string, filename: string) => Promise<void> | void;
@@ -30,28 +34,96 @@ function formatJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function formatBatchSummary(result: EditorCommitResult): string {
+  const counts = result.layerCounts || { common: 0, domain: 0, private: 0 };
+  return `本次入库 ${result.total || result.wikiWrites?.length || 0} 条：common ${counts.common || 0}、domain ${counts.domain || 0}、private ${counts.private || 0}`;
+}
+
+function hasBatchItems(source: unknown): boolean {
+  if (Array.isArray(source)) {
+    return true;
+  }
+  return Boolean(
+    source
+    && typeof source === 'object'
+    && !Array.isArray(source)
+    && Array.isArray((source as { items?: unknown }).items)
+  );
+}
+
+function dirnameSlug(value: string): string {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+  if (!normalized.includes('/')) {
+    return normalized;
+  }
+  return normalized.split('/').slice(0, -1).join('/');
+}
+
+function CommitStatus({ state, className }: { state: CommitState; className?: string }) {
+  if (state.status === 'idle') {
+    return null;
+  }
+
+  return (
+    <div className={cn(
+      "rounded-lg border px-3 py-2 font-bold leading-relaxed",
+      state.status === 'success' && "border-emerald-500/30 bg-emerald-500/5 text-emerald-700",
+      state.status === 'partial' && "border-amber-500/30 bg-amber-500/5 text-amber-700",
+      state.status === 'error' && "border-destructive/30 bg-destructive/5 text-destructive",
+      state.status === 'saving' && "border-primary/20 bg-primary/5 text-primary",
+      className,
+    )}>
+      <div>{state.message}</div>
+      {state.refs && state.refs.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {state.refs.slice(0, 8).map((ref) => (
+            <Badge key={ref} variant="outline" className="h-5 rounded-md bg-background/60 px-1.5 text-[9px] font-mono">
+              {ref}
+            </Badge>
+          ))}
+          {state.refs.length > 8 && (
+            <Badge variant="outline" className="h-5 rounded-md bg-background/60 px-1.5 text-[9px]">
+              +{state.refs.length - 8}
+            </Badge>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
   const {
     selectedEntity,
     refreshKnowledgeGraph,
     selectEntityById,
+    setSelectedLayer,
   } = useOntologyContext();
 
   const [projectId, setProjectId] = useState('demo');
-  const [layer, setLayer] = useState<KnowledgeLayer>('domain');
   const [slug, setSlug] = useState('');
+  const [suggestedSlug, setSuggestedSlug] = useState('');
   const [mode, setMode] = useState<EditorMode>('json');
   const [message, setMessage] = useState('');
   const [jsonSource, setJsonSource] = useState('');
   const [markdownSource, setMarkdownSource] = useState('');
-  const [previewMarkdown, setPreviewMarkdown] = useState('');
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
   const [previewTargetRef, setPreviewTargetRef] = useState('');
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [isEnlarged, setIsEnlarged] = useState(false);
   const [isJsonValid, setIsJsonValid] = useState(true);
+  const [commitState, setCommitState] = useState<CommitState>({ status: 'idle', message: '' });
+  const targetLabel = previewTargetRef || (slug.trim() ? `auto:${slug.trim()}` : 'WiKiMG auto layer/slug');
+  const slugPlaceholder = suggestedSlug
+    ? `${suggestedSlug}（默认路径）`
+    : '留空自动生成，或填写 kimi-demo 作为批量前缀';
+
+  const resetCommitState = () => {
+    if (commitState.status !== 'idle') {
+      setCommitState({ status: 'idle', message: '' });
+    }
+  };
 
   useEffect(() => {
     if (mode === 'json') {
@@ -75,14 +147,14 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
       if (!workspace) throw new Error('Empty workspace data');
       
       setProjectId(workspace.project_id || 'demo');
-      if (workspace.layer) setLayer(workspace.layer);
-      setSlug(workspace.slug || '');
+      setSlug('');
+      setSuggestedSlug(workspace.slug || '');
        setJsonSource(workspace.json_draft ? formatJson(workspace.json_draft) : '');
        setMarkdownSource(workspace.markdown_draft || '');
       setMessage('');
-      setPreviewMarkdown(workspace.markdown_draft || '');
       setPreviewWarnings([]);
       setPreviewTargetRef(workspace.layer && workspace.slug ? `${workspace.layer}:${workspace.slug}` : '');
+      setCommitState({ status: 'idle', message: '' });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '载入编辑工作区失败');
     } finally {
@@ -106,73 +178,74 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
     }
   };
 
-  const handlePreview = async () => {
-    if (!slug.trim()) {
-      toast.error('请输入 Slug (Concept ID)');
-      return;
-    }
+  const handleCommit = async (): Promise<boolean> => {
     if (!isJsonValid) {
-      toast.error('JSON 格式有误，请检查');
-      return;
-    }
-
-    setPreviewing(true);
-    try {
-      const preview = await previewEditorDraft({
-        entityId: selectedEntity?.id,
-        mode,
-        layer,
-        slug,
-        source: getCurrentSource(),
-      });
-      setPreviewMarkdown(preview.normalized_markdown);
-      setPreviewWarnings(preview.warnings);
-      setPreviewTargetRef(preview.target_ref);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : '预览失败');
-    } finally {
-      setPreviewing(false);
-    }
-  };
-
-  const handleCommit = async () => {
-    if (!slug.trim()) {
-       toast.error('请输入 Slug (Concept ID)');
-       return;
-    }
-    if (!isJsonValid) {
-       toast.error('JSON 格式有误，无法入库');
-       return;
+      const errorMessage = 'JSON 格式有误，无法入库';
+      setCommitState({ status: 'error', message: errorMessage });
+      toast.error(errorMessage);
+      return false;
     }
 
     setSaving(true);
+    setCommitState({ status: 'saving', message: '正在提交并等待 WiKiMG 判断 layer/slug...' });
     try {
+      const source = getCurrentSource();
+      const submitSlug = slug.trim()
+        || (hasBatchItems(source) ? dirnameSlug(suggestedSlug) : suggestedSlug.trim());
       const result: EditorCommitResult = await commitEditorDraft({
         entityId: selectedEntity?.id,
         mode,
         projectId,
-        layer,
-        slug,
-        message: message.trim() || `Update ${slug}`,
-        source: getCurrentSource(),
+        slug: submitSlug,
+        message: message.trim() || `Update ${submitSlug || 'auto-ingest'}`,
+        source,
       });
 
       setPreviewWarnings(result.warnings || []);
+      const resolvedRef = result.ref || result.updatedEntityId || result.wikiWrite?.ref || result.wikiWrites?.[0]?.ref || previewTargetRef;
+      if (resolvedRef) {
+        setPreviewTargetRef(result.batch ? `batch:${result.total || 0}` : resolvedRef);
+      }
       if (result.sourceWrite?.filename) {
         await onSourceCommitted(projectId, result.sourceWrite.filename);
       }
       await refreshKnowledgeGraph();
+      setSelectedLayer('all');
       if (result.updatedEntityId) {
         selectEntityById(result.updatedEntityId);
       }
 
       if (result.status === 'partial') {
-        toast.warning(result.error || '源文件已入库，但图谱刷新未完成');
+        const warningMessage = result.batch
+          ? `${formatBatchSummary(result)}，其中 ${result.failedWrites?.length || 0} 条失败`
+          : result.error
+            ? `源文件已入库，但图谱刷新未完成：${result.error}`
+            : '源文件已入库，但图谱刷新未完成';
+        setCommitState({
+          status: 'partial',
+          message: warningMessage,
+          ref: resolvedRef,
+          refs: result.wikiWrites?.map((item) => item.ref),
+        });
+        toast.warning(warningMessage);
       } else {
-        toast.success(`入库完成：${result.updatedEntityId || previewTargetRef}`);
+        const successMessage = result.batch
+          ? formatBatchSummary(result)
+          : `入库完成：${resolvedRef || submitSlug || 'auto'}`;
+        setCommitState({
+          status: 'success',
+          message: successMessage,
+          ref: resolvedRef,
+          refs: result.batch ? result.wikiWrites?.map((item) => item.ref) : resolvedRef ? [resolvedRef] : undefined,
+        });
+        toast.success(successMessage);
       }
+      return result.status !== 'partial';
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '入库失败');
+      const errorMessage = error instanceof Error ? error.message : '入库失败';
+      setCommitState({ status: 'error', message: errorMessage });
+      toast.error(errorMessage);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -190,7 +263,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
               </CardTitle>
               <div className="flex items-center gap-2 text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest">
                 <span>Target:</span>
-                <Badge variant="outline" className="h-4 border-border/20 px-1 py-0 text-[8px] bg-background/50">{previewTargetRef || `${layer}:${slug}`}</Badge>
+                <Badge variant="outline" className="h-4 border-border/20 px-1 py-0 text-[8px] bg-background/50">{targetLabel}</Badge>
               </div>
             </div>
           </div>
@@ -213,21 +286,19 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
           <div className="flex items-center gap-3 px-1 py-1 bg-muted/5 rounded-2xl border border-border/10 shrink-0">
              <div className="flex items-center gap-2 px-2 border-r border-border/20">
                 <span className="text-[9px] font-black uppercase text-muted-foreground/40 tracking-tighter">Layer</span>
-                <Tabs value={layer} onValueChange={(v) => setLayer(v as KnowledgeLayer)} className="h-7">
-                  <TabsList className="bg-muted/40 h-7 p-0.5 rounded-lg border border-border/20">
-                    <TabsTrigger value="common" className="h-6 text-[8px] px-2 rounded-md transition-all data-[state=active]:bg-background">COMMON</TabsTrigger>
-                    <TabsTrigger value="domain" className="h-6 text-[8px] px-2 rounded-md transition-all data-[state=active]:bg-background">DOMAIN</TabsTrigger>
-                    <TabsTrigger value="private" className="h-6 text-[8px] px-2 rounded-md transition-all data-[state=active]:bg-background">PRIVATE</TabsTrigger>
-                  </TabsList>
-                </Tabs>
+                <Badge variant="outline" className="h-6 rounded-md border-primary/20 bg-primary/5 px-2 text-[8px] font-black uppercase tracking-widest text-primary">AUTO</Badge>
              </div>
              <div className="flex-1 flex items-center gap-2 min-w-0">
                 <span className="text-[9px] font-black uppercase text-muted-foreground/40 tracking-tighter shrink-0">Slug</span>
-                <Input 
+                <Input
                   value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  className="h-7 text-[11px] bg-transparent border-none focus-visible:ring-0 p-0 font-mono font-bold tracking-tight text-primary placeholder:text-muted-foreground/20"
-                  placeholder="concept-slug..."
+                  onChange={(event) => {
+                    setSlug(event.target.value);
+                    setPreviewTargetRef('');
+                    resetCommitState();
+                  }}
+                  className="h-8 min-w-0 flex-1 rounded-lg border-border/30 bg-background/70 px-3 font-mono text-[12px] font-bold text-primary placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/30"
+                  placeholder={slugPlaceholder}
                 />
              </div>
              <div className="flex items-center gap-2 px-2 shrink-0">
@@ -289,21 +360,19 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                                   <div className="flex items-center gap-3 h-10 px-4 bg-background/50 rounded-2xl border border-border/10 shadow-inner text-foreground">
                                      <div className="flex items-center gap-2 border-r border-border/20 pr-4">
                                         <span className="text-[10px] font-black uppercase text-muted-foreground/30">Layer</span>
-                                        <Tabs value={layer} onValueChange={(v) => setLayer(v as KnowledgeLayer)} className="h-8">
-                                          <TabsList className="h-8 bg-muted/20 border-none p-1">
-                                            <TabsTrigger value="common" className="h-6 text-[9px] font-black data-[state=active]:bg-primary/10 data-[state=active]:text-primary">COMMON</TabsTrigger>
-                                            <TabsTrigger value="domain" className="h-6 text-[9px] font-black data-[state=active]:bg-primary/10 data-[state=active]:text-primary">DOMAIN</TabsTrigger>
-                                            <TabsTrigger value="private" className="h-6 text-[9px] font-black data-[state=active]:bg-primary/10 data-[state=active]:text-primary">PRIVATE</TabsTrigger>
-                                          </TabsList>
-                                        </Tabs>
+                                        <Badge variant="outline" className="h-7 rounded-md border-primary/20 bg-primary/5 px-3 text-[9px] font-black uppercase tracking-widest text-primary">AUTO</Badge>
                                      </div>
                                      <div className="flex items-center gap-2">
-                                        <span className="text-[10px] font-black uppercase text-muted-foreground/30">Target Slug</span>
-                                        <Input 
+                                        <span className="text-[10px] font-black uppercase text-muted-foreground/30">Slug</span>
+                                        <Input
                                           value={slug}
-                                          onChange={(e) => setSlug(e.target.value)}
-                                          className="h-8 w-48 text-[12px] bg-transparent border-none focus-visible:ring-0 font-mono font-black text-primary p-0"
-                                          placeholder="Enter slug..."
+                                          onChange={(event) => {
+                                            setSlug(event.target.value);
+                                            setPreviewTargetRef('');
+                                            resetCommitState();
+                                          }}
+                                          className="h-8 w-80 rounded-lg border-border/30 bg-background/80 px-3 font-mono text-[12px] font-bold text-primary placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/30"
+                                          placeholder={slugPlaceholder}
                                         />
                                      </div>
                                   </div>
@@ -326,7 +395,10 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                              {mode === 'json' ? (
                                 <Textarea
                                   value={jsonSource}
-                                  onChange={(event) => setJsonSource(event.target.value)}
+                                  onChange={(event) => {
+                                    setJsonSource(event.target.value);
+                                    resetCommitState();
+                                  }}
                                   className="flex-1 w-full font-mono text-[16px] resize-none border-none bg-transparent p-12 focus-visible:ring-0 leading-relaxed scrollbar-thin placeholder:text-muted-foreground/50 text-foreground"
                                   placeholder={`{
   "title": ""
@@ -335,7 +407,10 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                              ) : (
                                 <Textarea
                                   value={markdownSource}
-                                  onChange={(event) => setMarkdownSource(event.target.value)}
+                                  onChange={(event) => {
+                                    setMarkdownSource(event.target.value);
+                                    resetCommitState();
+                                  }}
                                   className="flex-1 w-full font-mono text-[16px] resize-none border-none bg-transparent p-12 focus-visible:ring-0 leading-relaxed scrollbar-thin placeholder:text-muted-foreground/50 text-foreground"
                                   placeholder="# 新概念标题"
                                 />
@@ -357,7 +432,9 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                           </div>
 
                           <div className="p-6 border-t border-border/20 bg-muted/5 shrink-0">
-                            <div className="flex items-center gap-4 max-w-4xl mx-auto">
+                            <div className="flex flex-col gap-3 max-w-4xl mx-auto">
+                              <CommitStatus state={commitState} className="text-[12px]" />
+                              <div className="flex items-center gap-4">
                               <div className="flex-1 relative group">
                                 <Input
                                   value={message}
@@ -371,12 +448,15 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                                 type="button" 
                                 size="lg"
                                 className="rounded-2xl gap-3 font-black text-xs uppercase tracking-widest px-8 h-12 shadow-xl shadow-primary/20 transition-all hover:scale-105 active:scale-95" 
-                                disabled={saving || !slug.trim() || !isJsonValid} 
-                                onClick={() => void handleCommit().then(() => setIsEnlarged(false))}
+                                disabled={saving || !isJsonValid} 
+                                onClick={() => void handleCommit().then((success) => {
+                                  if (success) setIsEnlarged(false);
+                                })}
                               >
                                 {saving ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                                 确认变更并入库
                               </Button>
+                              </div>
                             </div>
                           </div>
                         </DialogContent>
@@ -386,7 +466,10 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
               <TabsContent value="json" className="m-0 flex-1 overflow-hidden">
                 <Textarea
                   value={jsonSource}
-                  onChange={(event) => setJsonSource(event.target.value)}
+                  onChange={(event) => {
+                    setJsonSource(event.target.value);
+                    resetCommitState();
+                  }}
                   className="w-full h-full font-mono text-[13px] resize-none border-none bg-transparent p-6 focus-visible:ring-0 leading-relaxed scrollbar-thin placeholder:text-muted-foreground/50 text-foreground"
                   placeholder={`{
   "title": ""
@@ -396,7 +479,10 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
               <TabsContent value="markdown" className="m-0 flex-1 overflow-hidden">
                 <Textarea
                   value={markdownSource}
-                  onChange={(event) => setMarkdownSource(event.target.value)}
+                  onChange={(event) => {
+                    setMarkdownSource(event.target.value);
+                    resetCommitState();
+                  }}
                   className="w-full h-full font-mono text-[13px] resize-none border-none bg-transparent p-6 focus-visible:ring-0 leading-relaxed scrollbar-thin placeholder:text-muted-foreground/50 text-foreground"
                   placeholder="# 新概念标题"
                 />
@@ -421,6 +507,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
 
         {/* Action Footer: Compacted */}
         <div className="flex flex-col gap-3 pt-2 border-t border-border/20 shrink-0">
+          <CommitStatus state={commitState} className="text-[11px]" />
           <div className="flex items-center gap-3">
              <div className="flex-1 relative group">
                 <Input
@@ -447,11 +534,11 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                   size="sm"
                   className={cn(
                     "rounded-xl gap-2 font-black text-[10px] uppercase tracking-widest px-6 h-9 transition-all active:scale-95",
-                    (saving || !slug.trim() || !isJsonValid) 
+                    (saving || !isJsonValid) 
                       ? "bg-muted text-muted-foreground opacity-50 cursor-not-allowed" 
                       : "bg-primary text-primary-foreground shadow-lg shadow-primary/20 hover:bg-primary/90"
                   )}
-                  disabled={saving || !slug.trim() || !isJsonValid} 
+                  disabled={saving || !isJsonValid} 
                   onClick={() => void handleCommit()}
                 >
                   {saving ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}

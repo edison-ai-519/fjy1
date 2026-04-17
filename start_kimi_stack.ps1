@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
   [ValidateSet('RunStack', 'RunBackend', 'RunFrontend')]
   [string]$Mode = 'RunStack',
@@ -8,38 +8,52 @@ param(
   [string]$PythonBin = $env:PYTHON_BIN,
   [string]$WIKIMG_ROOT = $env:WIKIMG_ROOT,
   [string]$WIKIMG_PROFILE = $env:WIKIMG_PROFILE,
-  [string]$KNOWLEDGE_BASE_PROVIDER = $env:KNOWLEDGE_BASE_PROVIDER
+  [string]$SharedStorageRoot = $env:ONTOGIT_STORAGE_ROOT,
+  [string]$KNOWLEDGE_BASE_PROVIDER = $env:KNOWLEDGE_BASE_PROVIDER,
+  [switch]$SkipInstall,
+  [switch]$SkipOntoGit
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-ScriptPath {
+  $candidate = $PSCommandPath
+  if ([string]::IsNullOrWhiteSpace($candidate) -and -not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
+    $candidate = $MyInvocation.MyCommand.Path
+  }
+  if ([string]::IsNullOrWhiteSpace($candidate)) {
+    $candidate = Join-Path (Get-Location).Path 'start_kimi_stack.ps1'
+  }
+  return $candidate
+}
+
 function Resolve-PythonCommand {
-  param(
-    [AllowNull()]
-    [string]$ExplicitPythonBin
-  )
+  param([AllowNull()][string]$ExplicitPythonBin)
 
   if (-not [string]::IsNullOrWhiteSpace($ExplicitPythonBin)) {
     return $ExplicitPythonBin
   }
-
   foreach ($candidate in @('python', 'python3', 'py')) {
     if (Get-Command $candidate -ErrorAction SilentlyContinue) {
       return $candidate
     }
   }
-
   return 'python'
 }
 
-function Get-RequiredCommandNames {
-  param(
-    [Parameter(Mandatory)]
-    [string]$PythonBin
-  )
+function Set-Utf8ProcessEnvironment {
+  $env:PYTHONUTF8 = '1'
+  $env:PYTHONIOENCODING = 'utf-8'
+  $env:LC_ALL = 'C.UTF-8'
+  $env:LANG = 'C.UTF-8'
 
-  return @('npm', 'node', $PythonBin)
+  try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+  } catch {
+    # Some hosts do not allow console encoding changes; Python env vars above are the important part.
+  }
 }
 
 function Get-PowerShellExecutablePath {
@@ -47,204 +61,193 @@ function Get-PowerShellExecutablePath {
   if ($process -and -not [string]::IsNullOrWhiteSpace($process.Path)) {
     return $process.Path
   }
-
   return 'powershell.exe'
 }
 
-function Get-KimiStackConfig {
-  $rootDir = Split-Path -Parent $PSCommandPath
+function Get-Config {
+  $scriptPath = Resolve-ScriptPath
+  $rootDir = Split-Path -Parent $scriptPath
   $backendPort = if ([string]::IsNullOrWhiteSpace($Port)) { 8787 } else { [int]$Port }
   $frontendPort = if ([string]::IsNullOrWhiteSpace($VitePort)) { 5173 } else { [int]$VitePort }
-  $resolvedPython = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
   $wikiMgRoot = if ([string]::IsNullOrWhiteSpace($WIKIMG_ROOT)) {
     Join-Path $rootDir 'Ontology_Factory'
   } else {
     $WIKIMG_ROOT
   }
+  $sharedStorageRoot = if ([string]::IsNullOrWhiteSpace($SharedStorageRoot)) {
+    Join-Path $wikiMgRoot 'wiki'
+  } else {
+    $SharedStorageRoot
+  }
 
   [pscustomobject]@{
-    RootDir                 = $rootDir
-    ScriptPath              = $PSCommandPath
-    PowerShellExecutable    = Get-PowerShellExecutablePath
-    AppDir                  = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\app'
-    QAgentDir               = Join-Path $rootDir 'QAgent'
-    WebRuntimeDir           = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\.qagent-web-runtime'
-    LogDir                  = Join-Path $rootDir '.run-logs'
-    BackendLogFile          = Join-Path $rootDir '.run-logs\kimi-backend.log'
-    FrontendLogFile         = Join-Path $rootDir '.run-logs\kimi-frontend.log'
-    BackendPidFile          = Join-Path $rootDir '.run-logs\kimi-backend.pid'
-    FrontendPidFile         = Join-Path $rootDir '.run-logs\kimi-frontend.pid'
-    BackendPort             = $backendPort
-    FrontendPort            = $frontendPort
-    PythonBin               = $resolvedPython
-    WikiMgRoot              = $wikiMgRoot
-    WikiMgProfile           = if ([string]::IsNullOrWhiteSpace($WIKIMG_PROFILE)) { 'kimi' } else { $WIKIMG_PROFILE }
-    KnowledgeBaseProvider   = if ([string]::IsNullOrWhiteSpace($KNOWLEDGE_BASE_PROVIDER)) { 'wikimg' } else { $KNOWLEDGE_BASE_PROVIDER }
-    WikiMgCliPath           = Join-Path $wikiMgRoot 'WIKI_MG\wikimg'
+    RootDir = $rootDir
+    ScriptPath = $scriptPath
+    PowerShellExecutable = Get-PowerShellExecutablePath
+    AppDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\app'
+    QAgentDir = Join-Path $rootDir 'QAgent'
+    WebRuntimeDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\.qagent-web-runtime'
+    LogDir = Join-Path $rootDir '.run-logs'
+    BackendLogFile = Join-Path $rootDir '.run-logs\kimi-backend.log'
+    FrontendLogFile = Join-Path $rootDir '.run-logs\kimi-frontend.log'
+    BackendPidFile = Join-Path $rootDir '.run-logs\kimi-backend.pid'
+    FrontendPidFile = Join-Path $rootDir '.run-logs\kimi-frontend.pid'
+    BackendPort = $backendPort
+    FrontendPort = $frontendPort
+    PythonBin = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
+    WikiMgRoot = $wikiMgRoot
+    SharedStorageRoot = $sharedStorageRoot
+    WikiMgProfile = if ([string]::IsNullOrWhiteSpace($WIKIMG_PROFILE)) { 'kimi' } else { $WIKIMG_PROFILE }
+    KnowledgeBaseProvider = if ([string]::IsNullOrWhiteSpace($KNOWLEDGE_BASE_PROVIDER)) { 'wikimg' } else { $KNOWLEDGE_BASE_PROVIDER }
+    WikiMgCliPath = Join-Path $wikiMgRoot 'WIKI_MG\wikimg'
   }
 }
 
-function Assert-StartupPrerequisites {
+function Assert-Command {
+  param([Parameter(Mandatory)][string]$CommandName)
+
+  if (-not (Get-Command $CommandName -ErrorAction SilentlyContinue)) {
+    throw "Missing required command: $CommandName"
+  }
+}
+
+function Install-NpmDependenciesIfNeeded {
   param(
-    [Parameter(Mandatory)]
-    [psobject]$Config
+    [Parameter(Mandatory)][string]$Directory,
+    [Parameter(Mandatory)][string]$Name
   )
 
-  foreach ($commandName in (Get-RequiredCommandNames -PythonBin $Config.PythonBin)) {
-    if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
-      throw "缺少命令: $commandName"
+  if (Test-Path -LiteralPath (Join-Path $Directory 'node_modules') -PathType Container) {
+    return
+  }
+  if ($SkipInstall) {
+    throw "Missing node_modules for $Name. Run npm ci in $Directory or rerun without -SkipInstall."
+  }
+
+  Write-Host "Installing npm dependencies for $Name..."
+  Push-Location $Directory
+  try {
+    & npm.cmd ci
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm ci failed in $Directory"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
+function Assert-Prerequisites {
+  param([Parameter(Mandatory)][psobject]$Config)
+
+  Assert-Command -CommandName 'node'
+  Assert-Command -CommandName 'npm'
+  Assert-Command -CommandName $Config.PythonBin
+
+  foreach ($dir in @($Config.AppDir, $Config.QAgentDir, $Config.WikiMgRoot)) {
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+      throw "Required directory not found: $dir"
     }
   }
-
-  if (-not (Test-Path -LiteralPath (Join-Path $Config.AppDir 'node_modules') -PathType Container)) {
-    throw "缺少依赖目录: $($Config.AppDir)\node_modules。请先在 $($Config.AppDir) 下执行 npm ci。"
-  }
-
-  if (-not (Test-Path -LiteralPath $Config.WikiMgRoot -PathType Container)) {
-    throw "未找到 WIKIMG_ROOT: $($Config.WikiMgRoot)"
-  }
-
   if (-not (Test-Path -LiteralPath $Config.WikiMgCliPath -PathType Leaf)) {
-    throw "未找到 WiKiMG CLI: $($Config.WikiMgCliPath)"
+    throw "WiKiMG CLI not found: $($Config.WikiMgCliPath)"
   }
+
+  Install-NpmDependenciesIfNeeded -Directory $Config.QAgentDir -Name 'QAgent'
+  Install-NpmDependenciesIfNeeded -Directory $Config.AppDir -Name 'Kimi app'
 }
 
 function Get-PortOwnerPids {
-  param(
-    [Parameter(Mandatory)]
-    [int]$Port
-  )
+  param([Parameter(Mandatory)][int]$Port)
 
   $connections = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
   if (-not $connections) {
     return @()
   }
-
   return @($connections | Select-Object -ExpandProperty OwningProcess -Unique)
 }
 
+function Stop-PidFileProcess {
+  param([Parameter(Mandatory)][string]$PidFile)
+
+  if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
+    return
+  }
+
+  $rawPid = Get-Content -LiteralPath $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+  $processId = 0
+  if ([int]::TryParse([string]$rawPid, [ref]$processId) -and $processId -gt 0 -and $processId -ne $PID) {
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+}
+
 function Stop-PortListeners {
-  param(
-    [Parameter(Mandatory)]
-    [int]$Port
-  )
+  param([Parameter(Mandatory)][int]$Port)
 
   $pids = @(Get-PortOwnerPids -Port $Port)
   if ($pids.Count -eq 0) {
     return
   }
 
-  Write-Host "关闭占用端口 $Port 的旧进程: $($pids -join ', ')"
+  Write-Host "Stopping processes using port $($Port): $($pids -join ', ')"
   foreach ($pidValue in $pids) {
     if ($pidValue -and $pidValue -ne $PID) {
       Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
     }
   }
-
   Start-Sleep -Seconds 1
 }
 
 function Wait-ForHttpReady {
   param(
-    [Parameter(Mandatory)]
-    [string]$Url,
-    [Parameter(Mandatory)]
-    [string]$Name,
-    [int]$Retries = 40
+    [Parameter(Mandatory)][string]$Url,
+    [Parameter(Mandatory)][string]$Name,
+    [int]$Retries = 60
   )
 
   for ($index = 0; $index -lt $Retries; $index += 1) {
     try {
       Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 | Out-Null
-      Write-Host "$Name 已就绪: $Url"
+      Write-Host "$Name is ready: $Url"
       return
     } catch {
       Start-Sleep -Seconds 1
     }
   }
-
-  throw "$Name 启动超时: $Url"
+  throw "$Name startup timed out: $Url"
 }
 
 function Wait-ForPortReady {
   param(
-    [Parameter(Mandatory)]
-    [int]$Port,
-    [Parameter(Mandatory)]
-    [string]$Name,
-    [int]$Retries = 40
+    [Parameter(Mandatory)][int]$Port,
+    [Parameter(Mandatory)][string]$Name,
+    [int]$Retries = 60
   )
 
   for ($index = 0; $index -lt $Retries; $index += 1) {
     if (@(Get-PortOwnerPids -Port $Port).Count -gt 0) {
-      Write-Host "$Name 已监听端口 $Port"
+      Write-Host "$Name is listening on port $Port"
       return
     }
-
     Start-Sleep -Seconds 1
   }
-
-  throw "$Name 启动超时，端口未监听: $Port"
-}
-
-function Get-ChildProcessArgumentList {
-  param(
-    [Parameter(Mandatory)]
-    [string]$ScriptPath,
-    [Parameter(Mandatory)]
-    [ValidateSet('RunBackend', 'RunFrontend')]
-    [string]$Mode,
-    [Parameter(Mandatory)]
-    [int]$BackendPort,
-    [Parameter(Mandatory)]
-    [int]$FrontendPort,
-    [Parameter(Mandatory)]
-    [string]$PythonBin,
-    [Parameter(Mandatory)]
-    [string]$WikiMgRoot,
-    [Parameter(Mandatory)]
-    [string]$WikiMgProfile,
-    [Parameter(Mandatory)]
-    [string]$KnowledgeBaseProvider,
-    [Parameter(Mandatory)]
-    [string]$LogFile
-  )
-
-  return @(
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-File', $ScriptPath,
-    '-Mode', $Mode,
-    '-Port', [string]$BackendPort,
-    '-VitePort', [string]$FrontendPort,
-    '-PythonBin', $PythonBin,
-    '-WIKIMG_ROOT', $WikiMgRoot,
-    '-WIKIMG_PROFILE', $WikiMgProfile,
-    '-KNOWLEDGE_BASE_PROVIDER', $KnowledgeBaseProvider,
-    '-LogFile', $LogFile
-  )
+  throw "$Name startup timed out; port not listening: $Port"
 }
 
 function Initialize-LogFile {
-  param(
-    [Parameter(Mandatory)]
-    [string]$Path
-  )
+  param([Parameter(Mandatory)][string]$Path)
 
   $directory = Split-Path -Parent $Path
   if (-not [string]::IsNullOrWhiteSpace($directory)) {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
   }
-
   Set-Content -LiteralPath $Path -Value '' -Encoding UTF8
 }
 
 function Write-LogBanner {
   param(
-    [Parameter(Mandatory)]
-    [string]$Path,
-    [Parameter(Mandatory)]
-    [string[]]$Lines
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string[]]$Lines
   )
 
   $content = @(
@@ -252,105 +255,98 @@ function Write-LogBanner {
     $Lines
     ''
   ) -join [Environment]::NewLine
-
   Add-Content -LiteralPath $Path -Value $content -Encoding UTF8
 }
 
-function Start-DetachedKimiProcess {
+function Get-ChildArgs {
   param(
-    [Parameter(Mandatory)]
-    [psobject]$Config,
-    [Parameter(Mandatory)]
-    [ValidateSet('RunBackend', 'RunFrontend')]
-    [string]$ChildMode,
-    [Parameter(Mandatory)]
-    [string]$LogFile,
-    [Parameter(Mandatory)]
-    [string]$PidFile
+    [Parameter(Mandatory)][psobject]$Config,
+    [Parameter(Mandatory)][ValidateSet('RunBackend', 'RunFrontend')][string]$ChildMode,
+    [Parameter(Mandatory)][string]$CurrentLogFile
   )
 
-  Initialize-LogFile -Path $LogFile
+  $args = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $Config.ScriptPath,
+    '-Mode', $ChildMode,
+    '-Port', [string]$Config.BackendPort,
+    '-VitePort', [string]$Config.FrontendPort,
+    '-PythonBin', $Config.PythonBin,
+    '-WIKIMG_ROOT', $Config.WikiMgRoot,
+    '-WIKIMG_PROFILE', $Config.WikiMgProfile,
+    '-SharedStorageRoot', $Config.SharedStorageRoot,
+    '-KNOWLEDGE_BASE_PROVIDER', $Config.KnowledgeBaseProvider,
+    '-LogFile', $CurrentLogFile
+  )
+  if ($SkipInstall) {
+    $args += '-SkipInstall'
+  }
+  if ($SkipOntoGit) {
+    $args += '-SkipOntoGit'
+  }
+  return $args
+}
 
-  $arguments = Get-ChildProcessArgumentList `
-    -ScriptPath $Config.ScriptPath `
-    -Mode $ChildMode `
-    -BackendPort $Config.BackendPort `
-    -FrontendPort $Config.FrontendPort `
-    -PythonBin $Config.PythonBin `
-    -WikiMgRoot $Config.WikiMgRoot `
-    -WikiMgProfile $Config.WikiMgProfile `
-    -KnowledgeBaseProvider $Config.KnowledgeBaseProvider `
-    -LogFile $LogFile
+function Start-DetachedProcess {
+  param(
+    [Parameter(Mandatory)][psobject]$Config,
+    [Parameter(Mandatory)][ValidateSet('RunBackend', 'RunFrontend')][string]$ChildMode,
+    [Parameter(Mandatory)][string]$CurrentLogFile,
+    [Parameter(Mandatory)][string]$PidFile
+  )
 
-  $process = Start-Process `
-    -FilePath $Config.PowerShellExecutable `
-    -ArgumentList $arguments `
-    -WorkingDirectory $Config.RootDir `
-    -WindowStyle Hidden `
-    -PassThru
-
+  Initialize-LogFile -Path $CurrentLogFile
+  $arguments = Get-ChildArgs -Config $Config -ChildMode $ChildMode -CurrentLogFile $CurrentLogFile
+  $process = Start-Process -FilePath $Config.PowerShellExecutable -ArgumentList $arguments -WorkingDirectory $Config.RootDir -WindowStyle Hidden -PassThru
   Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ASCII
   return $process
 }
 
 function Stop-QAgentGateway {
-  param(
-    [Parameter(Mandatory)]
-    [psobject]$Config
-  )
+  param([Parameter(Mandatory)][psobject]$Config)
 
   if (-not (Test-Path -LiteralPath $Config.QAgentDir -PathType Container)) {
     return
   }
 
-  Write-Host '关闭旧的 QAgent web runtime gateway...'
+  Write-Host 'Stopping old QAgent web runtime gateway...'
   Push-Location $Config.QAgentDir
   try {
     & node '.\bin\qagent.js' --cwd $Config.WebRuntimeDir gateway stop *> $null
   } catch {
-    # 网关可能从未启动，忽略即可。
   } finally {
     Pop-Location
   }
-
-  # Stop OntoGit ports too
-  Stop-PortListeners -Port 8080 # Gateway
-  Stop-PortListeners -Port 8000 # XiaoGuGit
-  Stop-PortListeners -Port 5000 # Probability
 }
 
 function Start-OntoGitServices {
-  param(
-    [Parameter(Mandatory)]
-    [psobject]$Config
-  )
+  param([Parameter(Mandatory)][psobject]$Config)
 
-  $ontoGitDir = Join-Path $Config.RootDir 'OntoGit'
-  $script = Join-Path $ontoGitDir 'start_ontogit.ps1'
-  
-  if (Test-Path $script) {
-    Write-Host "正在启动 OntoGit 本体中台服务栈..."
-    Push-Location $ontoGitDir
-    try {
-      & $script
-    } finally {
-      Pop-Location
-    }
+  if ($SkipOntoGit) {
+    Write-Host 'Skipping OntoGit services.'
+    return
   }
+
+  $script = Join-Path $Config.RootDir 'OntoGit\start_ontogit.ps1'
+  if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+    Write-Host 'OntoGit startup script not found; skipping OntoGit services.'
+    return
+  }
+
+  Write-Host 'Starting OntoGit services...'
+  & $script -PythonBin $Config.PythonBin -StorageRoot $Config.SharedStorageRoot
 }
 
 function Invoke-LoggedCommand {
   param(
-    [Parameter(Mandatory)]
-    [string]$LogPath,
-    [Parameter(Mandatory)]
-    [scriptblock]$Command
+    [Parameter(Mandatory)][string]$LogPath,
+    [Parameter(Mandatory)][scriptblock]$Command
   )
 
   & $Command 2>&1 | ForEach-Object {
     Add-Content -LiteralPath $LogPath -Value ([string]$_) -Encoding UTF8
   }
-
   $exitCode = if (Test-Path Variable:\LASTEXITCODE) { $LASTEXITCODE } else { 0 }
   if ($exitCode -ne 0) {
     exit $exitCode
@@ -359,10 +355,8 @@ function Invoke-LoggedCommand {
 
 function Invoke-BackendProcess {
   param(
-    [Parameter(Mandatory)]
-    [psobject]$Config,
-    [Parameter(Mandatory)]
-    [string]$CurrentLogFile
+    [Parameter(Mandatory)][psobject]$Config,
+    [Parameter(Mandatory)][string]$CurrentLogFile
   )
 
   Push-Location $Config.AppDir
@@ -370,22 +364,12 @@ function Invoke-BackendProcess {
     $env:KNOWLEDGE_BASE_PROVIDER = $Config.KnowledgeBaseProvider
     $env:WIKIMG_ROOT = $Config.WikiMgRoot
     $env:WIKIMG_PROFILE = $Config.WikiMgProfile
+    $env:ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
+    $env:WIKIMG_ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
     $env:PYTHON_BIN = $Config.PythonBin
     $env:PORT = [string]$Config.BackendPort
-
-    Write-LogBanner -Path $CurrentLogFile -Lines @(
-      '正在启动 WiKiMG 后端（PowerShell 原生入口）',
-      "APP_DIR: $($Config.AppDir)",
-      "KNOWLEDGE_BASE_PROVIDER: $($Config.KnowledgeBaseProvider)",
-      "WIKIMG_ROOT: $($Config.WikiMgRoot)",
-      "WIKIMG_PROFILE: $($Config.WikiMgProfile)",
-      "PYTHON_BIN: $($Config.PythonBin)",
-      "PORT: $($Config.BackendPort)"
-    )
-
-    Invoke-LoggedCommand -LogPath $CurrentLogFile -Command {
-      & node '.\server.mjs'
-    }
+    Write-LogBanner -Path $CurrentLogFile -Lines @('Starting Kimi backend', "APP_DIR: $($Config.AppDir)", "PORT: $($Config.BackendPort)")
+    Invoke-LoggedCommand -LogPath $CurrentLogFile -Command { & node '.\server.mjs' }
   } finally {
     Pop-Location
   }
@@ -393,86 +377,63 @@ function Invoke-BackendProcess {
 
 function Invoke-FrontendProcess {
   param(
-    [Parameter(Mandatory)]
-    [psobject]$Config,
-    [Parameter(Mandatory)]
-    [string]$CurrentLogFile
+    [Parameter(Mandatory)][psobject]$Config,
+    [Parameter(Mandatory)][string]$CurrentLogFile
   )
 
   Push-Location $Config.AppDir
   try {
-    Write-LogBanner -Path $CurrentLogFile -Lines @(
-      '正在启动前端开发服务器（PowerShell 原生入口）',
-      "APP_DIR: $($Config.AppDir)",
-      "PORT: $($Config.FrontendPort)"
-    )
-
-    Invoke-LoggedCommand -LogPath $CurrentLogFile -Command {
-      & npm.cmd run dev -- --host 0.0.0.0 --port ([string]$Config.FrontendPort)
-    }
+    Write-LogBanner -Path $CurrentLogFile -Lines @('Starting Vite frontend', "APP_DIR: $($Config.AppDir)", "PORT: $($Config.FrontendPort)")
+    Invoke-LoggedCommand -LogPath $CurrentLogFile -Command { & npm.cmd run dev -- --host 0.0.0.0 --port ([string]$Config.FrontendPort) }
   } finally {
     Pop-Location
   }
 }
 
-function Show-StartupSummary {
-  param(
-    [Parameter(Mandatory)]
-    [psobject]$Config
-  )
+function Show-Summary {
+  param([Parameter(Mandatory)][psobject]$Config)
 
   @(
     '',
-    '启动完成',
-    "  前端: http://localhost:$($Config.FrontendPort)",
-    "  后端健康检查: http://localhost:$($Config.BackendPort)/api/health",
+    'Startup complete',
+    "  Frontend: http://localhost:$($Config.FrontendPort)",
+    "  Backend health: http://localhost:$($Config.BackendPort)/api/health",
+    "  OntoGit gateway: http://localhost:8080",
+    "  Shared storage: $($Config.SharedStorageRoot)",
     '',
-    '日志文件',
-    "  前端: $($Config.FrontendLogFile)",
-    "  后端: $($Config.BackendLogFile)",
-    '',
-    '常用命令',
-    "  查看前端日志: Get-Content -Wait '$($Config.FrontendLogFile)'",
-    "  查看后端日志: Get-Content -Wait '$($Config.BackendLogFile)'"
+    'Logs',
+    "  Frontend: $($Config.FrontendLogFile)",
+    "  Backend: $($Config.BackendLogFile)",
+    "  OntoGit:  $($Config.RootDir)\OntoGit\.run-logs"
   ) | ForEach-Object { Write-Host $_ }
 }
 
 function Start-KimiStack {
-  param(
-    [Parameter(Mandatory)]
-    [psobject]$Config
-  )
+  param([Parameter(Mandatory)][psobject]$Config)
 
   New-Item -ItemType Directory -Force -Path $Config.LogDir | Out-Null
-  Assert-StartupPrerequisites -Config $Config
-
-  Write-Host '关闭旧进程...'
+  Assert-Prerequisites -Config $Config
+  Write-Host 'Stopping old processes...'
+  Stop-PidFileProcess -PidFile $Config.BackendPidFile
+  Stop-PidFileProcess -PidFile $Config.FrontendPidFile
   Stop-QAgentGateway -Config $Config
   Stop-PortListeners -Port $Config.BackendPort
   Stop-PortListeners -Port $Config.FrontendPort
-
-  Write-Host '启动 OntoGit 服务...'
   Start-OntoGitServices -Config $Config
-
-  Write-Host '启动后端...'
-  Start-DetachedKimiProcess -Config $Config -ChildMode 'RunBackend' -LogFile $Config.BackendLogFile -PidFile $Config.BackendPidFile | Out-Null
-  Wait-ForHttpReady -Url "http://localhost:$($Config.BackendPort)/api/health" -Name '后端'
-
-  Write-Host '启动前端...'
-  Start-DetachedKimiProcess -Config $Config -ChildMode 'RunFrontend' -LogFile $Config.FrontendLogFile -PidFile $Config.FrontendPidFile | Out-Null
-  Wait-ForPortReady -Port $Config.FrontendPort -Name '前端'
-
-  Show-StartupSummary -Config $Config
+  Write-Host 'Starting backend...'
+  Start-DetachedProcess -Config $Config -ChildMode 'RunBackend' -CurrentLogFile $Config.BackendLogFile -PidFile $Config.BackendPidFile | Out-Null
+  Wait-ForHttpReady -Url "http://localhost:$($Config.BackendPort)/api/health" -Name 'Backend'
+  Write-Host 'Starting frontend...'
+  Start-DetachedProcess -Config $Config -ChildMode 'RunFrontend' -CurrentLogFile $Config.FrontendLogFile -PidFile $Config.FrontendPidFile | Out-Null
+  Wait-ForPortReady -Port $Config.FrontendPort -Name 'Frontend'
+  Show-Summary -Config $Config
 }
 
-function Invoke-KimiStackByMode {
-  $config = Get-KimiStackConfig
-
+function Invoke-ByMode {
+  Set-Utf8ProcessEnvironment
+  $config = Get-Config
   switch ($Mode) {
-    'RunStack' {
-      Start-KimiStack -Config $config
-      break
-    }
+    'RunStack' { Start-KimiStack -Config $config; break }
     'RunBackend' {
       $effectiveLogFile = if ([string]::IsNullOrWhiteSpace($LogFile)) { $config.BackendLogFile } else { $LogFile }
       Invoke-BackendProcess -Config $config -CurrentLogFile $effectiveLogFile
@@ -483,12 +444,9 @@ function Invoke-KimiStackByMode {
       Invoke-FrontendProcess -Config $config -CurrentLogFile $effectiveLogFile
       break
     }
-    default {
-      throw "不支持的模式: $Mode"
-    }
   }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-  Invoke-KimiStackByMode
+  Invoke-ByMode
 }

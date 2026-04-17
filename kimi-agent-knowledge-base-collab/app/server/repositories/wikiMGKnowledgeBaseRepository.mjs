@@ -85,20 +85,23 @@ export class WikiMGKnowledgeBaseRepository {
     await writeFile(tempFile, raw, "utf8");
 
     try {
-      return await this.runWikiMG([
+      const args = [
         "ingest",
         "--profile",
         this.profile,
         "--mode",
         mode,
-        "--layer",
-        layer,
-        "--slug",
-        slug,
         "--input-file",
         tempFile,
         "--json",
-      ]);
+      ];
+      if (typeof slug === "string" && slug.trim()) {
+        args.splice(5, 0, "--slug", slug);
+      }
+      if (typeof layer === "string" && layer.trim()) {
+        args.splice(5, 0, "--layer", layer);
+      }
+      return await this.runWikiMG(args);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

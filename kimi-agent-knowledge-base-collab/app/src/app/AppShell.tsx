@@ -14,7 +14,6 @@ import {
   Atom,
   Link2,
   TreePine,
-  Search,
 } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
