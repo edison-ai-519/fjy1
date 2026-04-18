@@ -117,6 +117,7 @@ export function createAppServices() {
     assistantSessionStateService: new AssistantSessionStateService({
       runtimeRoot: qagentRuntimeRoot,
     }),
+    localWorkspaceService: ontoGitCommitService,
     qagentService: new QAgentService({
       qagentCommand: resolveQAgentCommand(qagentRoot),
       qagentRoot,

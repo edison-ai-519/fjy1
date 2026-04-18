@@ -457,7 +457,7 @@ class XiaoGuGitManager:
         self._get_repo(project_id, create=False)
         return [
             self.get_file_version_tree(project_id, filename)
-            for filename in self._list_repo_files(project_id)
+            for filename in self._list_historical_files(project_id)
         ]
 
     def _find_version_node(self, project_id, version_id, filename=None):

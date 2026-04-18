@@ -15,6 +15,7 @@ const XG_GATEWAY_API_KEY = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY
 const {
   knowledgeBaseService,
   assistantSessionStateService,
+  localWorkspaceService,
   qagentService,
   appRoot,
 } = createAppServices();
@@ -23,7 +24,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(JSON.stringify(payload));
@@ -33,7 +34,7 @@ function sendText(res, status, text, contentType = "text/plain; charset=utf-8") 
   res.writeHead(status, {
     "Content-Type": contentType,
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(text);
@@ -45,7 +46,7 @@ function openSse(res) {
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS,DELETE",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.write(": connected\n\n");
@@ -162,6 +163,89 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/knowledge-graph") {
       sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workspace/projects") {
+      sendJson(res, 200, { projects: await localWorkspaceService.listProjects() });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workspace/projects/init") {
+      const body = await parseBody(req);
+      const projectId = typeof body.project_id === "string" ? body.project_id : "";
+      const name = typeof body.name === "string" ? body.name : undefined;
+      const description = typeof body.description === "string" ? body.description : "";
+
+      if (!projectId.trim()) {
+        sendJson(res, 400, { error: "project_id is required" });
+        return;
+      }
+
+      sendJson(res, 200, await localWorkspaceService.initProject({ projectId, name, description }));
+      return;
+    }
+
+    const localProjectMatch = url.pathname.match(/^\/api\/workspace\/projects\/([^/]+)$/);
+    if (req.method === "PATCH" && localProjectMatch) {
+      const projectId = decodeURIComponent(localProjectMatch[1]);
+      const body = await parseBody(req);
+      const name = typeof body.name === "string" ? body.name : "";
+      if (!name.trim()) {
+        sendJson(res, 400, { error: "name is required" });
+        return;
+      }
+
+      const result = await localWorkspaceService.updateProjectName(projectId, name);
+      if (!result) {
+        sendJson(res, 404, { error: `Project not found: ${projectId}` });
+        return;
+      }
+
+      sendJson(res, 200, result);
+      return;
+    }
+
+    const localDeleteProjectMatch = localProjectMatch;
+    if (req.method === "DELETE" && localDeleteProjectMatch) {
+      const projectId = decodeURIComponent(localDeleteProjectMatch[1]);
+      sendJson(res, 200, await localWorkspaceService.deleteProject(projectId));
+      return;
+    }
+
+    const localTimelinesMatch = url.pathname.match(/^\/api\/workspace\/projects\/([^/]+)\/timelines$/);
+    if (req.method === "GET" && localTimelinesMatch) {
+      const projectId = decodeURIComponent(localTimelinesMatch[1]);
+      const timelines = await localWorkspaceService.getJsonFileTimelines(projectId);
+      if (!timelines) {
+        sendJson(res, 404, { error: `Project not found: ${projectId}` });
+        return;
+      }
+
+      sendJson(res, 200, { timelines });
+      return;
+    }
+
+    const localReadMatch = url.pathname.match(/^\/api\/workspace\/projects\/([^/]+)\/read\/(.+)$/);
+    if (req.method === "GET" && localReadMatch) {
+      const projectId = decodeURIComponent(localReadMatch[1]);
+      const filename = decodeURIComponent(localReadMatch[2]);
+      const commitId = url.searchParams.get("commit_id") || undefined;
+      let data;
+      try {
+        data = await localWorkspaceService.readJsonFile(projectId, filename, commitId);
+      } catch (error) {
+        sendJson(res, 404, {
+          error: error instanceof Error ? error.message : `File not found: ${filename}`,
+        });
+        return;
+      }
+      if (data === null) {
+        sendJson(res, 404, { error: `Project not found: ${projectId}` });
+        return;
+      }
+
+      sendJson(res, 200, { data });
       return;
     }
 

@@ -677,16 +677,15 @@ class XiaoGuGitManager:
 
     def get_all_version_trees(self, project_id, min_stars=0, sort_by="version", order="asc"):
         self._get_repo(project_id, create=False)
-        trees = [
+        return [
             self._filter_and_sort_tree(
                 self.get_file_version_tree(project_id, filename),
                 min_stars=min_stars,
                 sort_by=sort_by,
                 order=order,
             )
-            for filename in self._list_repo_files(project_id)
+            for filename in self._list_historical_files(project_id)
         ]
-        return [tree for tree in trees if tree["version_count"] > 0]
 
     def _find_version_node(self, project_id, version_id, filename=None):
         normalized_version_id = str(version_id)

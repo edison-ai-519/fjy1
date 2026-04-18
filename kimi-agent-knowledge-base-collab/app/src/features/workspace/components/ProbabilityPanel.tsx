@@ -106,7 +106,7 @@ export function ProbabilityPanel({ probInput, setProbInput, probResult, analyzin
           </DialogContent>
         </Dialog>
       </CardHeader>
-      <CardContent className="p-6 flex flex-col gap-4 flex-1 overflow-hidden bg-muted/5 dark:bg-muted/10 border-t border-border/10">
+      <CardContent className="px-6 pt-1 pb-4 flex flex-col gap-3 flex-1 overflow-hidden bg-muted/5 dark:bg-muted/10 border-t border-border/10">
         <div className="flex-1 flex flex-col gap-3 min-h-0">
           <Textarea
             className="flex-1 font-mono text-[13px] resize-none border-border/40 bg-muted/10 focus:bg-muted/20 transition-all rounded-xl p-4 leading-relaxed"

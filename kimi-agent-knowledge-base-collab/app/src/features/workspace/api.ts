@@ -11,23 +11,54 @@ import { buildApiUrl, parseJson } from '@/shared/api/http';
 
 export type { XgProject, XgTimeline, XgTimelineCommit, XgWriteResult } from '@/lib/xgApi';
 
+function encodePathSegments(value: string): string {
+  return value
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
 export interface ProbabilityResult {
   probability: number;
   reason: string;
 }
 
 export async function fetchXgProjects(): Promise<XgProject[]> {
+  try {
+    const localResponse = await fetch(buildApiUrl('/api/workspace/projects'));
+    return normalizeXgProjectsResponse(await parseJson<unknown>(localResponse));
+  } catch {
+    // Keep the gateway path available for legacy projects when local workspace listing is unavailable.
+  }
+
   const response = await fetch(buildApiUrl('/api/xg/projects'));
   return normalizeXgProjectsResponse(await parseJson<unknown>(response));
 }
 
 export async function fetchXgRead(projectId: string, filename: string, commitId?: string): Promise<unknown> {
+  const localUrl = buildApiUrl(
+    `/api/workspace/projects/${encodeURIComponent(projectId)}/read/${encodePathSegments(filename)}${commitId ? `?commit_id=${commitId}` : ''}`,
+  );
+  try {
+    const localResponse = await fetch(localUrl);
+    return normalizeXgReadResponse(await parseJson<unknown>(localResponse));
+  } catch {
+    // Local graph-ingest files live under knowledge-data/store. Fall back to the gateway for legacy projects.
+  }
+
   const url = buildApiUrl(`/api/xg/read/${projectId}/${filename}${commitId ? `?commit_id=${commitId}` : ''}`);
   const response = await fetch(url);
   return normalizeXgReadResponse(await parseJson<unknown>(response));
 }
 
 export async function fetchXgTimelines(projectId: string): Promise<XgTimeline[]> {
+  try {
+    const localResponse = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}/timelines`));
+    return normalizeXgTimelinesResponse(await parseJson<unknown>(localResponse));
+  } catch {
+    // Keep the gateway path available for projects that do not exist in the local knowledge-data store.
+  }
+
   const response = await fetch(buildApiUrl(`/api/xg/timelines/${projectId}`));
   return normalizeXgTimelinesResponse(await parseJson<unknown>(response));
 }
@@ -92,10 +123,19 @@ export async function fetchXgDiff(projectId: string, filename: string, base: str
 }
 
 export async function initXgProject(projectData: { project_id: string; name?: string; description?: string }): Promise<unknown> {
-  const response = await fetch(buildApiUrl('/api/xg/projects/init'), {
+  const response = await fetch(buildApiUrl('/api/workspace/projects/init'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(projectData),
+  });
+  return parseJson(response);
+}
+
+export async function updateXgProjectName(projectId: string, name: string): Promise<unknown> {
+  const response = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
   });
   return parseJson(response);
 }
@@ -179,7 +219,7 @@ export async function fetchMe(): Promise<AuthUser> {
 // --- New Admin & Advanced Endpoints ---
 
 export async function deleteXgProject(projectId: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl(`/api/xg/projects/${projectId}`), {
+  const response = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}`), {
     method: 'DELETE',
   });
   return parseJson(response);
