@@ -12,6 +12,7 @@ import {
   initXgProject,
   rollbackXgVersion,
   setOfficialRecommend,
+  updateXgProjectName,
   writeXgAndInfer,
   type ProbabilityResult,
   type XgProject,
@@ -43,6 +44,7 @@ export function useWorkspaceState() {
   const [diffData, setDiffData] = useState<unknown>(null);
   const [isDiffOpen, setIsDiffOpen] = useState(false);
   const [compareTarget, setCompareTarget] = useState('');
+  const [fileSearch, setFileSearch] = useState('');
 
   useEffect(() => {
     void loadProjects();
@@ -199,6 +201,24 @@ export function useWorkspaceState() {
     }
   };
 
+  const handleRenameProject = async (projectId: string, name: string): Promise<boolean> => {
+    const nextName = name.trim();
+    if (!nextName) {
+      toast.error('项目名称不能为空');
+      return false;
+    }
+
+    try {
+      await updateXgProjectName(projectId, nextName);
+      toast.success('项目名称已更新');
+      await loadProjects();
+      return true;
+    } catch (error) {
+      toast.error('更新项目名称失败: ' + (error instanceof Error ? error.message : '未知错误'));
+      return false;
+    }
+  };
+
   const handleSetOfficial = async (versionId: string) => {
     if (!selectedProjectId || !selectedFile) {
       return;
@@ -257,6 +277,8 @@ export function useWorkspaceState() {
     isDiffOpen,
     setIsDiffOpen,
     compareTarget,
+    fileSearch,
+    setFileSearch,
     loadProjects,
     loadTimelines,
     loadContent,
@@ -267,5 +289,6 @@ export function useWorkspaceState() {
     handleSetOfficial,
     handleViewDiff,
     handleDeleteProject,
+    handleRenameProject,
   };
 }

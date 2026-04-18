@@ -34,30 +34,42 @@ const TimelineList = ({
   onViewDiff,
   onSetOfficial,
   onRollback,
-}: TimelineListProps) => (
-  <div className={cn('p-6 space-y-2', isFull && 'max-w-4xl mx-auto p-20')}>
-    {selectedFile ? commits.map((commit, index) => (
-      <div key={commit.id} className="relative pl-8 pb-8 group">
-        {index !== commits.length - 1 && <div className="absolute left-[11px] top-3 bottom-0 w-[1px] bg-border/20" />}
-        <div className="absolute left-0 top-1.5 h-6 w-6 rounded-full border border-border/40 bg-muted flex items-center justify-center group-hover:border-primary/50 group-hover:bg-primary/10 transition-all shadow-sm">
-          <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 group-hover:bg-primary transition-colors" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className={cn('font-mono font-black text-primary/80 uppercase tracking-tighter', isFull ? 'text-sm' : 'text-[11px]')}>
-                {commit.id.slice(0, 7)}
-              </span>
-              {index === 0 ? (
-                <Badge variant="secondary" className="text-[8px] font-black uppercase px-2 py-0 h-4 bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
-                  Current
-                </Badge>
-              ) : null}
-            </div>
-            <span className="text-[10px] uppercase font-black tracking-widest text-muted-foreground/40">
-              {new Date(commit.timestamp).toLocaleString()}
-            </span>
+}: TimelineListProps) => {
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${y}/${m}/${d} ${h}:${min}`;
+  };
+
+  return (
+    <div className={cn('px-4 pt-1 pb-6 space-y-2', isFull && 'max-w-4xl mx-auto p-20')}>
+      {selectedFile ? commits.map((commit, index) => (
+        <div key={commit.id} className="relative pl-8 pb-8 group">
+          {index !== commits.length - 1 && <div className="absolute left-[11px] top-3 bottom-0 w-[1px] bg-border/20" />}
+          <div className="absolute left-0 top-1.5 h-6 w-6 rounded-full border border-border/40 bg-muted flex items-center justify-center group-hover:border-primary/50 group-hover:bg-primary/10 transition-all shadow-sm">
+            <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 group-hover:bg-primary transition-colors" />
           </div>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-start gap-4">
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={cn('font-mono font-black text-primary/80 uppercase tracking-tighter', isFull ? 'text-sm' : 'text-[11px]')}>
+                  {commit.id.slice(0, 7)}
+                </span>
+                {index === 0 ? (
+                  <Badge variant="secondary" className="text-[8px] font-black uppercase px-2 py-0 h-4 bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
+                    Current
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="h-3 w-[1px] bg-border/20 shrink-0" />
+              <span className="text-[11px] font-black tracking-tight text-muted-foreground/40 whitespace-nowrap shrink-0">
+                {formatDate(commit.timestamp)}
+              </span>
+            </div>
           <p className={cn('leading-relaxed font-bold text-foreground/90', isFull ? 'text-lg py-2' : 'text-[13px]')}>
             {commit.message}
           </p>
@@ -94,7 +106,8 @@ const TimelineList = ({
       </div>
     )}
   </div>
-);
+  );
+};
 
 export function TimelinePanel({ selectedFile, timelines, onViewDiff, onSetOfficial, onRollback }: TimelinePanelProps) {
   const [isOpen, setIsOpen] = useState(false);

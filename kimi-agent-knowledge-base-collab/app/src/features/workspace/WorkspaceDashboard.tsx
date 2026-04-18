@@ -26,7 +26,7 @@ export function WorkspaceDashboard() {
   return (
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-12">
-        <div className="lg:col-span-3 flex flex-col h-full space-y-6">
+        <div className="lg:col-span-3 flex flex-col space-y-6">
           <ProjectListPanel
             className="h-[600px]"
             projects={workspace.projects}
@@ -42,13 +42,26 @@ export function WorkspaceDashboard() {
             onRefresh={workspace.loadProjects}
             onInitProject={workspace.handleInitProject}
             onDeleteProject={workspace.handleDeleteProject}
+            onRenameProject={workspace.handleRenameProject}
           />
-          <FileListPanel className="flex-1" timelines={workspace.timelines} selectedFile={workspace.selectedFile} onSelectFile={handleSelectFile} />
+          <FileListPanel 
+            className="h-[545px]" 
+            timelines={workspace.timelines} 
+            selectedFile={workspace.selectedFile} 
+            onSelectFile={handleSelectFile} 
+            fileSearch={workspace.fileSearch}
+            onSearchChange={workspace.setFileSearch}
+          />
         </div>
         <div className="lg:col-span-9 space-y-6">
           <div className="grid gap-6 md:grid-cols-2">
-            <FileContentPanel selectedFile={workspace.selectedFile} fileContent={workspace.fileContent} onRefresh={() => workspace.loadContent(workspace.selectedProjectId, workspace.selectedFile)} />
-            <GraphIngestPanel onSourceCommitted={handleSourceCommitted} />
+            <FileContentPanel 
+              selectedFile={workspace.selectedFile} 
+              fileContent={workspace.fileContent} 
+              onRefresh={() => workspace.loadContent(workspace.selectedProjectId, workspace.selectedFile)} 
+              onNavigate={workspace.setFileSearch}
+            />
+            <GraphIngestPanel selectedProjectId={workspace.selectedProjectId} onSourceCommitted={handleSourceCommitted} />
           </div>
           <div className="grid gap-6 md:grid-cols-2">
             <TimelinePanel selectedFile={workspace.selectedFile} timelines={workspace.timelines} onViewDiff={workspace.handleViewDiff} onSetOfficial={workspace.handleSetOfficial} onRollback={workspace.handleRollback} />

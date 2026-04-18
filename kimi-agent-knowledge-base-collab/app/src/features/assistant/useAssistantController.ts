@@ -373,6 +373,23 @@ export function useAssistantController(selectedEntity: Entity | null) {
     }
   }, [activeSession, businessPrompt, isBusy, modelName, onStop, selectedEntity?.id, updateActiveSession]);
 
+  const onDeleteSessions = React.useCallback((sessionIds: string[]) => {
+    setSessions((previous) => {
+      const filtered = previous.filter((s) => !sessionIds.includes(s.id));
+      const nextSessions = filtered.length > 0 ? filtered : [createAssistantSession()];
+      
+      let nextActiveId = activeSessionId;
+      if (sessionIds.includes(activeSessionId)) {
+        nextActiveId = nextSessions[0]?.id || '';
+      }
+      
+      if (nextActiveId !== activeSessionId) {
+        setActiveSessionId(nextActiveId);
+      }
+      return nextSessions;
+    });
+  }, [activeSessionId]);
+
   return {
     sessions,
     activeSession,
@@ -386,8 +403,10 @@ export function useAssistantController(selectedEntity: Entity | null) {
     onDraftChange,
     onNewSession,
     onDeleteSession,
+    onDeleteSessions,
     setActiveSessionId,
     setBusinessPrompt,
     setModelName,
   };
 }
+

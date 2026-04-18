@@ -26,6 +26,7 @@ type CommitState = {
 };
 
 interface GraphIngestPanelProps {
+  selectedProjectId: string;
   onSourceCommitted: (projectId: string, filename: string) => Promise<void> | void;
 }
 
@@ -92,7 +93,7 @@ function CommitStatus({ state, className }: { state: CommitState; className?: st
   );
 }
 
-export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
+export function GraphIngestPanel({ selectedProjectId, onSourceCommitted }: GraphIngestPanelProps) {
   const {
     selectedEntity,
     refreshKnowledgeGraph,
@@ -112,10 +113,9 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
   const [isEnlarged, setIsEnlarged] = useState(false);
   const [isJsonValid, setIsJsonValid] = useState(true);
   const [commitState, setCommitState] = useState<CommitState>({ status: 'idle', message: '' });
-  const targetLabel = previewTargetRef || (slug.trim() ? `auto:${slug.trim()}` : 'WiKiMG auto layer/slug');
-  const slugPlaceholder = suggestedSlug
-    ? `${suggestedSlug}（默认路径）`
-    : '留空自动生成，或填写 kimi-demo 作为批量前缀';
+  const activeProjectId = selectedProjectId || projectId;
+  const targetLabel = previewTargetRef || (slug.trim() ? `common:${slug.trim()}` : 'COMMON:文件名称');
+  const slugPlaceholder = '请输入文件名称';
 
   const resetCommitState = () => {
     if (commitState.status !== 'idle') {
@@ -138,13 +138,22 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
     }
   }, [jsonSource, mode]);
 
+  useEffect(() => {
+    if (previewWarnings.length > 0) {
+      const timer = setTimeout(() => {
+        setPreviewWarnings([]);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [previewWarnings]);
+
   const loadWorkspace = async (entityId?: string) => {
     setLoadingWorkspace(true);
     try {
       const workspace = await fetchEditorWorkspace(entityId);
       if (!workspace) throw new Error('Empty workspace data');
       
-      setProjectId(workspace.project_id || 'demo');
+      setProjectId(selectedProjectId || workspace.project_id || 'demo');
       setSlug('');
       setSuggestedSlug(workspace.slug || '');
        setJsonSource(workspace.json_draft ? formatJson(workspace.json_draft) : '');
@@ -163,6 +172,12 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
   useEffect(() => {
     void loadWorkspace();
   }, []);
+
+  useEffect(() => {
+    if (selectedProjectId && selectedProjectId !== projectId) {
+      setProjectId(selectedProjectId);
+    }
+  }, [projectId, selectedProjectId]);
 
   const getCurrentSource = (): unknown => {
     if (mode === 'markdown') {
@@ -192,12 +207,16 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
     setCommitState({ status: 'saving', message: '正在提交并等待 WiKiMG 判断 layer/slug...' });
     try {
       const source = getCurrentSource();
+      const commitProjectId = activeProjectId;
+      if (!commitProjectId) {
+        throw new Error('请选择项目后再入库');
+      }
       const submitSlug = slug.trim()
         || (hasBatchItems(source) ? dirnameSlug(suggestedSlug) : suggestedSlug.trim());
       const result: EditorCommitResult = await commitEditorDraft({
         entityId: selectedEntity?.id,
         mode,
-        projectId,
+        projectId: commitProjectId,
         slug: submitSlug,
         message: message.trim() || `Update ${submitSlug || 'auto-ingest'}`,
         source,
@@ -209,7 +228,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
         setPreviewTargetRef(result.batch ? `batch:${result.total || 0}` : resolvedRef);
       }
       if (result.sourceWrite?.filename) {
-        await onSourceCommitted(projectId, result.sourceWrite.filename);
+        await onSourceCommitted(commitProjectId, result.sourceWrite.filename);
       }
       await refreshKnowledgeGraph();
       // 注释掉可能会导致 Tab 跳转或页面重置的操作
@@ -262,11 +281,11 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
             <Sparkles className="h-5 w-5 text-primary/70" />
             <div className="space-y-0.5">
               <CardTitle className="text-xs font-black uppercase tracking-[0.2em] text-muted-foreground/80">
-                知识入库 (本体知识库 Editor)
+                知识入库
               </CardTitle>
-              <div className="flex items-center gap-2 text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest">
-                <span>Target:</span>
-                <Badge variant="outline" className="h-4 border-border/20 px-1 py-0 text-[8px] bg-background">{targetLabel}</Badge>
+              <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/40 uppercase tracking-widest">
+                <span>TARGET:</span>
+                <Badge variant="outline" className="h-4 border-border/20 px-1 py-0 text-[9px] bg-background">{targetLabel}</Badge>
               </div>
             </div>
           </div>
@@ -274,7 +293,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
             type="button"
             variant="ghost"
             size="sm"
-            className="rounded-xl gap-2 font-black text-[10px] uppercase tracking-widest h-8 bg-primary/5 hover:bg-primary/10 border border-primary/10"
+            className="rounded-xl gap-2 font-black text-[10px] uppercase tracking-widest h-7 bg-primary/5 hover:bg-primary/10 border border-primary/10"
             disabled={loadingWorkspace}
             onClick={() => void loadWorkspace(selectedEntity?.id)}
           >
@@ -284,15 +303,15 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
         </div>
       </CardHeader>
       
-      <CardContent className="p-3 flex-1 flex flex-col gap-3 overflow-hidden">
+      <CardContent className="px-6 pt-1 pb-3 flex-1 flex flex-col gap-3 overflow-hidden">
           {/* Metadata Bar: Enhanced high-density controls */}
           <div className="flex items-center gap-3 px-1 py-1 bg-muted/5 rounded-2xl border border-border/10 shrink-0">
              <div className="flex items-center gap-2 px-2 border-r border-border/20">
-                <span className="text-[9px] font-black uppercase text-muted-foreground/40 tracking-tighter">Layer</span>
-                <Badge variant="outline" className="h-6 rounded-md border-primary/20 bg-primary/10 px-2 text-[8px] font-black uppercase tracking-widest text-primary">AUTO</Badge>
+                <span className="text-[10px] font-black uppercase text-muted-foreground/40 tracking-tighter">Layer</span>
+                <Badge variant="outline" className="h-6 rounded-md border-primary/20 bg-primary/10 px-2 text-[9px] font-black uppercase tracking-widest text-primary">AUTO</Badge>
              </div>
              <div className="flex-1 flex items-center gap-2 min-w-0">
-                <span className="text-[9px] font-black uppercase text-muted-foreground/40 tracking-tighter shrink-0">Slug</span>
+                <span className="text-[10px] font-black uppercase text-muted-foreground/40 tracking-tighter shrink-0">Slug</span>
                 <Input
                   value={slug}
                   onChange={(event) => {
@@ -306,9 +325,9 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
              </div>
              <div className="flex items-center gap-2 px-2 shrink-0">
                 {isJsonValid ? (
-                  <Badge variant="outline" className="h-5 text-[8px] border-emerald-500/30 text-emerald-600 bg-emerald-500/5 font-black tracking-widest px-1.5 uppercase">Valid</Badge>
+                  <Badge variant="outline" className="h-5 text-[9px] border-emerald-500/30 text-emerald-600 bg-emerald-500/5 font-black tracking-widest px-1.5 uppercase">Valid</Badge>
                 ) : (
-                  <Badge variant="outline" className="h-5 text-[8px] border-amber-500/30 text-amber-600 bg-amber-500/5 font-black tracking-widest px-1.5 uppercase">Invalid</Badge>
+                  <Badge variant="outline" className="h-5 text-[9px] border-amber-500/30 text-amber-600 bg-amber-500/5 font-black tracking-widest px-1.5 uppercase">Invalid</Badge>
                 )}
              </div>
           </div>
@@ -321,7 +340,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                   <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2">
                       <div className={cn("w-1.5 h-1.5 rounded-full animate-pulse", isJsonValid ? "bg-emerald-500" : "bg-amber-500")} />
-                      <span className="text-[9px] font-black uppercase tracking-widest text-foreground/80">源码编辑器</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-foreground/80">源码编辑器</span>
                     </div>
                     
                     {/* Integrated Mode Switcher */}
@@ -347,26 +366,26 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                             <Maximize2 className="h-4 w-4" />
                           </Button>
                         </DialogTrigger>
-                        <DialogContent className="max-w-[95vw] w-[1400px] h-[90vh] p-0 overflow-hidden bg-card border-border/40 rounded-3xl flex flex-col shadow-2xl">
+                        <DialogContent className="max-w-[85vw] w-[85vw] h-[90vh] p-0 overflow-hidden bg-card border-border/40 rounded-3xl flex flex-col shadow-2xl sm:max-w-[85vw]">
                           <DialogHeader className="px-6 py-4 border-b border-border/20 bg-muted/10 shrink-0">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-4">
                                 <Sparkles className="h-5 w-5 text-primary" />
                                 <div className="flex items-center gap-6">
-                                  <div>
-                                    <DialogTitle className="text-sm font-black uppercase tracking-widest">全屏精修模式</DialogTitle>
-                                    <p className="text-[10px] text-muted-foreground opacity-60 uppercase mt-0.5 tracking-tight font-bold">
+                                  <div className="flex flex-col shrink-0">
+                                    <DialogTitle className="text-sm font-black uppercase tracking-widest whitespace-nowrap">全屏精修模式</DialogTitle>
+                                    <p className="text-[10px] text-muted-foreground opacity-60 uppercase mt-0.5 tracking-tight font-bold whitespace-nowrap">
                                       Ontology Git Workbench
                                     </p>
                                   </div>
 
-                                  <div className="flex items-center gap-3 h-10 px-4 bg-background rounded-2xl border border-border/10 shadow-inner text-foreground">
-                                     <div className="flex items-center gap-2 border-r border-border/20 pr-4">
+                                  <div className="flex items-center gap-3 h-10 px-4 bg-background rounded-2xl border border-border/10 shadow-inner text-foreground shrink-0">
+                                     <div className="flex items-center gap-2 border-r border-border/20 pr-4 shrink-0">
                                         <span className="text-[10px] font-black uppercase text-muted-foreground/30">Layer</span>
-                                        <Badge variant="outline" className="h-7 rounded-md border-primary/20 bg-primary/5 px-3 text-[9px] font-black uppercase tracking-widest text-primary">AUTO</Badge>
+                                        <Badge variant="outline" className="h-7 rounded-md border-primary/20 bg-primary/5 px-3 text-[9px] font-black uppercase tracking-widest text-primary shrink-0">AUTO</Badge>
                                      </div>
-                                     <div className="flex items-center gap-2">
-                                        <span className="text-[10px] font-black uppercase text-muted-foreground/30">Slug</span>
+                                     <div className="flex items-center gap-2 pr-2 shrink-0">
+                                        <span className="text-[10px] font-black uppercase text-muted-foreground/30 shrink-0">Slug</span>
                                         <Input
                                           value={slug}
                                           onChange={(event) => {
@@ -374,14 +393,14 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                                             setPreviewTargetRef('');
                                             resetCommitState();
                                           }}
-                                          className="h-8 w-80 rounded-lg border-border/30 bg-background px-3 font-mono text-[12px] font-bold text-primary placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/30"
+                                          className="h-8 w-60 rounded-lg border-border/30 bg-background px-3 font-mono text-[12px] font-bold text-primary placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/30 shrink-0"
                                           placeholder={slugPlaceholder}
                                         />
                                      </div>
                                   </div>
                                 </div>
                               </div>
-                              <div className="flex items-center gap-3 pr-8">
+                              <div className="flex items-center gap-3 pr-12 shrink-0">
                                   <TabsList className="flex w-fit rounded-xl border bg-muted/40 p-1 h-9">
                                     <TabsTrigger value="json" onClick={() => setMode('json')} className={cn("rounded-lg font-black uppercase tracking-tight text-[10px] gap-2 px-3 h-7 transition-all", mode === 'json' && "bg-background")}>
                                       <Braces className="h-3.5 w-3.5" /> JSON
@@ -419,19 +438,7 @@ export function GraphIngestPanel({ onSourceCommitted }: GraphIngestPanelProps) {
                                 />
                              )}
 
-                             {/* Floating Warnings in Modal */}
-                             {previewWarnings.length > 0 && (
-                                <div className="absolute bottom-8 right-8 z-10 max-w-[400px] rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5 backdrop-blur-md shadow-2xl animate-in fade-in slide-in-from-bottom-4">
-                                  <p className="text-xs font-black uppercase tracking-widest text-amber-600 mb-2 flex items-center gap-2">
-                                    <Sparkles className="h-4 w-4" /> 规范化建议
-                                  </p>
-                                  <div className="space-y-2 text-sm text-amber-700 font-medium leading-relaxed">
-                                    {previewWarnings.slice(0, 5).map((warning, i) => (
-                                      <p key={i}>• {warning}</p>
-                                    ))}
-                                  </div>
-                                </div>
-                             )}
+                             {/* Floating Warnings removed from fullscreen mode per user request */}
                           </div>
 
                           <div className="p-6 border-t border-border/20 bg-muted/5 shrink-0">

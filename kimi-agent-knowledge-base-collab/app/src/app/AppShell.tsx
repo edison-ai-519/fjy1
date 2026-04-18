@@ -76,14 +76,14 @@ const GlobalSidebar = ({
     </div>
 
     {/* 2. 四个功能按钮 (全部层, Common, Domain, Private) */}
-    <div className="flex items-center gap-1 bg-muted/40 p-1 rounded-2xl border border-border/40">
+    <div className="flex flex-wrap items-center gap-1 bg-muted/40 p-1 rounded-2xl border border-border/40">
       {LAYER_FILTERS.map((option) => (
         <Button
           key={option.value}
           variant={selectedLayer === option.value ? 'default' : 'ghost'}
           size="sm"
           className={cn(
-            'flex-1 h-9 rounded-xl text-[10px] font-bold transition-all px-0 active:scale-95',
+            'flex-1 min-w-[65px] h-8 rounded-xl text-[10px] font-bold transition-all px-1 active:scale-95',
             selectedLayer === option.value
               ? 'bg-background shadow-sm text-primary hover:bg-background'
               : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50',
@@ -96,14 +96,14 @@ const GlobalSidebar = ({
     </div>
 
     {/* 3. 实时状态小图标 */}
-    <div className="flex items-center gap-2 px-1">
-      <Badge variant="outline" className="flex-1 flex items-center gap-1.5 rounded-full px-2.5 py-1.5 border-border/60 text-[10px] font-bold bg-muted/20">
-        <GitBranch className="w-3 h-3 text-primary/70" />
-        {filteredEntityCount} 实体
+    <div className="flex flex-wrap items-center gap-2 px-1">
+      <Badge variant="outline" className="min-w-0 flex-1 flex items-center gap-1.5 rounded-full px-2.5 py-1.5 border-border/60 text-[10px] font-bold bg-muted/20">
+        <GitBranch className="w-3 h-3 text-primary/70 shrink-0" />
+        <span className="truncate">{filteredEntityCount} 实体</span>
       </Badge>
-      <Badge variant="outline" className="flex-1 flex items-center gap-1.5 rounded-full px-2.5 py-1.5 border-border/60 text-[10px] font-bold bg-muted/20">
-        <Network className="w-3 h-3 text-primary/70" />
-        {filteredRelationCount} 关系
+      <Badge variant="outline" className="min-w-0 flex-1 flex items-center gap-1.5 rounded-full px-2.5 py-1.5 border-border/60 text-[10px] font-bold bg-muted/20">
+        <Network className="w-3 h-3 text-primary/70 shrink-0" />
+        <span className="truncate">{filteredRelationCount} 关系</span>
       </Badge>
     </div>
 
@@ -241,7 +241,7 @@ function AppShellContent() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-background text-foreground overflow-y-auto lg:h-screen lg:overflow-hidden">
       <header className="border-b bg-card text-card-foreground sticky top-0 z-40">
         <div className="flex min-h-16 w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 sm:px-4 lg:px-6">
           <div className="flex min-w-0 max-w-full items-center gap-2 sm:gap-3">
@@ -301,6 +301,7 @@ function AppShellContent() {
                       onSelectSession={assistantState.setActiveSessionId}
                       onNewSession={assistantState.onNewSession}
                       onDeleteSession={assistantState.onDeleteSession}
+                      onDeleteSessions={assistantState.onDeleteSessions}
                       isBusy={assistantState.isBusy}
                     />
                   ) : (
@@ -313,11 +314,11 @@ function AppShellContent() {
         </div>
       </header>
 
-      <main className="w-full flex-1 min-h-0 overflow-hidden bg-background">
+      <main className="w-full flex-1 min-h-0 bg-background overflow-y-auto lg:overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full min-h-0 gap-0 lg:flex-row">
-          <div className="flex w-full shrink-0 flex-col overflow-hidden border-r bg-muted/10 lg:h-full lg:w-[208px] xl:w-[240px]">
-            <div className="p-3 sm:p-4 flex flex-col h-full min-h-0 gap-4">
-              <TabsList className="grid h-auto w-full grid-cols-1 gap-1 rounded-3xl border bg-card/10 p-2 shadow-sm sm:grid-cols-2 lg:flex lg:flex-col shrink-0">
+          <div className="flex w-full shrink-0 flex-col overflow-y-auto overflow-x-hidden border-r bg-muted/10 lg:h-full lg:w-[208px] xl:w-[240px]">
+            <div className="p-3 sm:p-4 flex flex-col min-h-full gap-4">
+              <TabsList className="flex h-auto w-full flex-col gap-1 rounded-3xl border bg-card/10 p-2 shadow-sm shrink-0 min-h-0">
                 <TabsTrigger value="lab" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <BookOpen className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">本体库</span>
@@ -336,7 +337,7 @@ function AppShellContent() {
                 </TabsTrigger>
               </TabsList>
 
-              <div className="flex-1 min-h-0 flex flex-col justify-end pb-2">
+              <div className="flex flex-col gap-6 pb-2">
                 {activeTab === 'assistant' ? (
                   <AssistantSidebar
                     sessions={assistantState.sessions}
@@ -344,6 +345,7 @@ function AppShellContent() {
                     onSelectSession={assistantState.setActiveSessionId}
                     onNewSession={assistantState.onNewSession}
                     onDeleteSession={assistantState.onDeleteSession}
+                    onDeleteSessions={assistantState.onDeleteSessions}
                     isBusy={assistantState.isBusy}
                   />
                 ) : (
