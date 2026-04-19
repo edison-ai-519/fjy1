@@ -4,8 +4,12 @@ import {
   askOntologyAssistantStream,
   fetchOntologyAssistantState,
   saveOntologyAssistantState,
+  type OntologyAssistantAssistantCompletedEvent,
   type OntologyAssistantHistoryTurn,
   type OntologyAssistantSessionState,
+  type OntologyAssistantToolFinishedEvent,
+  type OntologyAssistantToolStartedEvent,
+  type PersistedOntologyAssistantContentBlock,
 } from '@/features/assistant/api';
 import {
   applyToolFinished,
@@ -35,6 +39,140 @@ export const MODEL_PRESETS = [
   { value: 'gpt-4o', label: 'GPT-4o' },
   { value: 'o4-mini', label: 'o4-mini' },
 ];
+
+function finalizeStreamingAssistantBlocks(
+  blocks: PersistedOntologyAssistantContentBlock[],
+): PersistedOntologyAssistantContentBlock[] {
+  return blocks.map((block) => (
+    block.type === 'assistant' && block.phase === 'streaming'
+      ? {
+        ...block,
+        phase: 'completed',
+        completedAt: block.completedAt ?? block.createdAt,
+      }
+      : block
+  ));
+}
+
+function combineAssistantBlockText(
+  blocks: PersistedOntologyAssistantContentBlock[],
+): string {
+  return blocks
+    .filter((block) => block.type === 'assistant')
+    .map((block) => block.content.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function appendAssistantDeltaBlock(
+  blocks: PersistedOntologyAssistantContentBlock[],
+  delta: string,
+): PersistedOntologyAssistantContentBlock[] {
+  if (!delta) {
+    return blocks;
+  }
+
+  const nextBlocks = [...blocks];
+  const lastBlock = nextBlocks[nextBlocks.length - 1];
+  if (lastBlock?.type === 'assistant' && lastBlock.phase === 'streaming') {
+    nextBlocks[nextBlocks.length - 1] = {
+      ...lastBlock,
+      content: `${lastBlock.content}${delta}`,
+    };
+    return nextBlocks;
+  }
+
+  nextBlocks.push({
+    id: `block-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'assistant',
+    content: delta,
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+    phase: 'streaming',
+  });
+  return nextBlocks;
+}
+
+function appendAssistantCompletedBlock(
+  blocks: PersistedOntologyAssistantContentBlock[],
+  event: OntologyAssistantAssistantCompletedEvent,
+): PersistedOntologyAssistantContentBlock[] {
+  const nextBlocks = [...blocks];
+  const lastBlock = nextBlocks[nextBlocks.length - 1];
+
+  if (lastBlock?.type === 'assistant' && lastBlock.phase === 'streaming') {
+    nextBlocks[nextBlocks.length - 1] = {
+      ...lastBlock,
+      content: event.content || lastBlock.content,
+      phase: 'completed',
+      completedAt: event.createdAt,
+    };
+    return nextBlocks;
+  }
+
+  if (!event.content.trim()) {
+    return nextBlocks;
+  }
+
+  nextBlocks.push({
+    id: `block-assistant-${event.assistantMessageId || Date.now().toString(36)}`,
+    type: 'assistant',
+    content: event.content,
+    createdAt: event.createdAt,
+    completedAt: event.createdAt,
+    phase: 'completed',
+  });
+  return nextBlocks;
+}
+
+function appendToolCallBlock(
+  blocks: PersistedOntologyAssistantContentBlock[],
+  event: OntologyAssistantToolStartedEvent,
+): PersistedOntologyAssistantContentBlock[] {
+  const existing = blocks.some((block) => block.type === 'tool_call' && block.callId === event.callId);
+  if (existing) {
+    return blocks;
+  }
+
+  return [
+    ...finalizeStreamingAssistantBlocks(blocks),
+    {
+      id: `block-tool-call-${event.callId}`,
+      type: 'tool_call',
+      callId: event.callId,
+      command: event.command,
+      reasoning: event.reasoning,
+      createdAt: event.startedAt,
+    },
+  ];
+}
+
+function appendToolResultBlock(
+  blocks: PersistedOntologyAssistantContentBlock[],
+  event: OntologyAssistantToolFinishedEvent,
+): PersistedOntologyAssistantContentBlock[] {
+  const nextBlocks = blocks.filter((block) => !(
+    block.type === 'tool_result' && block.callId === event.callId
+  ));
+
+  return [
+    ...nextBlocks,
+    {
+      id: `block-tool-result-${event.callId}`,
+      type: 'tool_result',
+      callId: event.callId,
+      command: event.command,
+      status: event.status,
+      stdout: event.stdout,
+      stderr: event.stderr,
+      exitCode: event.exitCode,
+      cwd: event.cwd,
+      durationMs: event.durationMs,
+      createdAt: event.finishedAt || event.startedAt,
+      finishedAt: event.finishedAt,
+    },
+  ];
+}
 
 function readBrowserState() {
   if (typeof window === 'undefined') {
@@ -115,7 +253,7 @@ export function useAssistantController(selectedEntity: Entity | null) {
           setSessions(
             state.sessions.map((session) => ({
               ...session,
-              messages: session.messages.map((message) => normalizeAssistantMessageStages(message)),
+          messages: session.messages.map((message) => normalizeAssistantMessageStages(message)),
             })) as ConversationSession[],
           );
           setActiveSessionId(state.activeSessionId || state.sessions[0]?.id || '');
@@ -240,6 +378,7 @@ export function useAssistantController(selectedEntity: Entity | null) {
           relatedNames: [],
           executionStages: [],
           toolRuns: [],
+          contentBlocks: [],
         }),
       ],
     }));
@@ -281,7 +420,24 @@ export function useAssistantController(selectedEntity: Entity | null) {
               ...session,
               messages: session.messages.map((message) => (
                 message.id === messageId
-                  ? { ...message, answer: accumulatedAnswer }
+                  ? {
+                    ...message,
+                    answer: accumulatedAnswer,
+                    contentBlocks: appendAssistantDeltaBlock(message.contentBlocks || [], delta),
+                  }
+                  : message
+              )),
+            }));
+          },
+          onAssistantCompleted: (assistantTurn) => {
+            updateActiveSession((session) => ({
+              ...session,
+              messages: session.messages.map((message) => (
+                message.id === messageId
+                  ? {
+                    ...message,
+                    contentBlocks: appendAssistantCompletedBlock(message.contentBlocks || [], assistantTurn),
+                  }
                   : message
               )),
             }));
@@ -308,6 +464,7 @@ export function useAssistantController(selectedEntity: Entity | null) {
                   ? {
                     ...message,
                     toolRuns: applyToolStarted(message.toolRuns, event),
+                    contentBlocks: appendToolCallBlock(message.contentBlocks || [], event),
                   }
                   : message
               )),
@@ -334,6 +491,7 @@ export function useAssistantController(selectedEntity: Entity | null) {
                   ? {
                     ...message,
                     toolRuns: applyToolFinished(message.toolRuns, event),
+                    contentBlocks: appendToolResultBlock(message.contentBlocks || [], event),
                   }
                   : message
               )),
@@ -347,11 +505,15 @@ export function useAssistantController(selectedEntity: Entity | null) {
               statusMessage: null,
               messages: session.messages.map((message) => (
                 message.id === messageId
-                  ? {
-                    ...message,
-                    answer: response.answer || accumulatedAnswer,
-                    relatedNames: response.context?.related?.map((entity) => entity.name) || relatedNames,
-                  }
+                  ? (() => {
+                    const finalizedBlocks = finalizeStreamingAssistantBlocks(message.contentBlocks || []);
+                    return {
+                      ...message,
+                      answer: combineAssistantBlockText(finalizedBlocks) || response.answer || accumulatedAnswer,
+                      relatedNames: response.context?.related?.map((entity) => entity.name) || relatedNames,
+                      contentBlocks: finalizedBlocks,
+                    };
+                  })()
                   : message
               )),
             }));
@@ -409,4 +571,3 @@ export function useAssistantController(selectedEntity: Entity | null) {
     setModelName,
   };
 }
-

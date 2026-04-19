@@ -493,6 +493,9 @@ const server = createServer(async (req, res) => {
             onAnswerDelta(delta) {
               writeSse(res, "answer_delta", { delta });
             },
+            onAssistantCompleted(assistantTurn) {
+              writeSse(res, "assistant_completed", assistantTurn);
+            },
             onToolStarted(toolRun) {
               writeSse(res, "tool_started", toolRun);
             },

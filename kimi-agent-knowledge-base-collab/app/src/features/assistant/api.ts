@@ -22,6 +22,7 @@ export interface OntologyAssistantHistoryTurn {
 export interface OntologyAssistantToolStartedEvent {
   callId: string;
   command: string;
+  reasoning?: string;
   cwd: string | null;
   startedAt: string;
 }
@@ -46,6 +47,12 @@ export interface OntologyAssistantToolFinishedEvent {
   durationMs: number | null;
   startedAt: string;
   finishedAt: string;
+}
+
+export interface OntologyAssistantAssistantCompletedEvent {
+  assistantMessageId: string;
+  content: string;
+  createdAt: string;
 }
 
 export type OntologyAssistantSemanticStatus =
@@ -82,6 +89,38 @@ export interface PersistedOntologyAssistantToolRun {
   finishedAt: string | null;
 }
 
+export type PersistedOntologyAssistantContentBlock =
+  | {
+      id: string;
+      type: 'assistant';
+      content: string;
+      createdAt: string;
+      completedAt: string | null;
+      phase: 'streaming' | 'completed';
+    }
+  | {
+      id: string;
+      type: 'tool_call';
+      callId: string;
+      command: string;
+      reasoning?: string;
+      createdAt: string;
+    }
+  | {
+      id: string;
+      type: 'tool_result';
+      callId: string;
+      command: string;
+      status: 'running' | 'success' | 'error' | 'timeout' | 'cancelled' | 'rejected';
+      stdout: string;
+      stderr: string;
+      exitCode: number | null;
+      cwd: string | null;
+      durationMs: number | null;
+      createdAt: string;
+      finishedAt: string | null;
+    };
+
 export interface PersistedOntologyAssistantMessage {
   id: string;
   question: string;
@@ -89,6 +128,7 @@ export interface PersistedOntologyAssistantMessage {
   relatedNames: string[];
   executionStages: PersistedOntologyAssistantExecutionStage[];
   toolRuns: PersistedOntologyAssistantToolRun[];
+  contentBlocks: PersistedOntologyAssistantContentBlock[];
 }
 
 export type PersistedOntologyAssistantExecutionStage = OntologyAssistantExecutionStageEvent;
@@ -114,6 +154,7 @@ export interface OntologyAssistantStreamHandlers {
   onStatus?: (message: string) => void;
   onContext?: (context: OntologyAssistantContext) => void;
   onAnswerDelta?: (delta: string) => void;
+  onAssistantCompleted?: (event: OntologyAssistantAssistantCompletedEvent) => void;
   onExecutionStage?: (event: OntologyAssistantExecutionStageEvent) => void;
   onToolStarted?: (event: OntologyAssistantToolStartedEvent) => void;
   onToolOutput?: (event: OntologyAssistantToolOutputEvent) => void;
@@ -213,6 +254,8 @@ export async function askOntologyAssistantStream(
           handlers.onContext?.((parsed.data as OntologyAssistantResponse['context']) ?? {});
         } else if (parsed.event === 'answer_delta') {
           handlers.onAnswerDelta?.(typeof eventData?.delta === 'string' ? eventData.delta : '');
+        } else if (parsed.event === 'assistant_completed') {
+          handlers.onAssistantCompleted?.(parsed.data as OntologyAssistantAssistantCompletedEvent);
         } else if (parsed.event === 'execution_stage') {
           handlers.onExecutionStage?.(parsed.data as OntologyAssistantExecutionStageEvent);
         } else if (parsed.event === 'tool_started') {
@@ -243,4 +286,3 @@ export async function askOntologyAssistantStream(
 
   return finalResponse;
 }
-

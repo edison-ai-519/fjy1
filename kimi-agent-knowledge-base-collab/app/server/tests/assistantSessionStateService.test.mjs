@@ -36,6 +36,24 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
             question: "什么是本体论？",
             answer: "关于存在者及其关系的结构化描述。",
             relatedNames: ["形式本体论"],
+            contentBlocks: [
+              {
+                id: "block-assistant-1",
+                type: "assistant",
+                content: "先解释概念。",
+                createdAt: "2026-04-15T02:00:00.000Z",
+                completedAt: "2026-04-15T02:00:00.500Z",
+                phase: "completed",
+              },
+              {
+                id: "block-tool-call-1",
+                type: "tool_call",
+                callId: "call-1",
+                command: "rg ontology",
+                reasoning: "先查仓库中的相关术语",
+                createdAt: "2026-04-15T02:00:01.000Z",
+              },
+            ],
             executionStages: [
               {
                 id: "stage-1",
@@ -76,6 +94,24 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
             question: "什么是本体论？",
             answer: "关于存在者及其关系的结构化描述。",
             relatedNames: ["形式本体论"],
+            contentBlocks: [
+              {
+                id: "block-assistant-1",
+                type: "assistant",
+                content: "先解释概念。",
+                createdAt: "2026-04-15T02:00:00.000Z",
+                completedAt: "2026-04-15T02:00:00.500Z",
+                phase: "completed",
+              },
+              {
+                id: "block-tool-call-1",
+                type: "tool_call",
+                callId: "call-1",
+                command: "rg ontology",
+                reasoning: "先查仓库中的相关术语",
+                createdAt: "2026-04-15T02:00:01.000Z",
+              },
+            ],
             executionStages: [
               {
                 id: "stage-1",
@@ -119,6 +155,7 @@ test("AssistantSessionStateService derives rich compatibility stages for legacy 
             question: "列出目录",
             answer: "已列出",
             relatedNames: [],
+            contentBlocks: [],
             executionStages: [
               {
                 id: "legacy-stage-tool-legacy",
@@ -168,4 +205,5 @@ test("AssistantSessionStateService derives rich compatibility stages for legacy 
   assert.equal(executionStages.at(-1)?.semanticStatus, "completed");
   assert.equal(state.sessions[0].messages[0].toolRuns.length, 1);
   assert.equal(state.sessions[0].messages[0].toolRuns[0].callId, "tool-legacy");
+  assert.deepEqual(state.sessions[0].messages[0].contentBlocks, []);
 });

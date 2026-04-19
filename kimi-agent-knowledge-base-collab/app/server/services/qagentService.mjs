@@ -674,6 +674,13 @@ export class QAgentService {
           if (typeof content === "string" && content.length > 0) {
             lastNonEmptyAssistantCompleted = content;
           }
+          handlers.onAssistantCompleted?.({
+            assistantMessageId: typeof event.payload?.assistantMessageId === "string"
+              ? event.payload.assistantMessageId
+              : "",
+            content: typeof content === "string" ? content : "",
+            createdAt: event.createdAt || new Date().toISOString(),
+          }, event);
           void enqueueExecutionStage(event);
           return;
         }
@@ -685,6 +692,9 @@ export class QAgentService {
             handlers.onToolStarted?.({
               callId: toolCall.id,
               command,
+              reasoning: typeof toolCall?.input?.reasoning === "string"
+                ? toolCall.input.reasoning
+                : undefined,
               cwd: null,
               startedAt: toolCall.createdAt || event.createdAt,
             }, event);

@@ -144,6 +144,54 @@ function normalizeToolRun(value) {
   };
 }
 
+function normalizeContentBlock(value) {
+  const raw = asObject(value);
+  if (!raw || typeof raw.type !== "string") {
+    return null;
+  }
+
+  if (raw.type === "assistant") {
+    return {
+      id: typeof raw.id === "string" ? raw.id : "",
+      type: "assistant",
+      content: typeof raw.content === "string" ? raw.content : "",
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : null,
+      completedAt: typeof raw.completedAt === "string" ? raw.completedAt : null,
+      phase: raw.phase === "streaming" ? "streaming" : "completed",
+    };
+  }
+
+  if (raw.type === "tool_call") {
+    return {
+      id: typeof raw.id === "string" ? raw.id : "",
+      type: "tool_call",
+      callId: typeof raw.callId === "string" ? raw.callId : "",
+      command: typeof raw.command === "string" ? raw.command : "",
+      reasoning: typeof raw.reasoning === "string" ? raw.reasoning : undefined,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : null,
+    };
+  }
+
+  if (raw.type === "tool_result") {
+    return {
+      id: typeof raw.id === "string" ? raw.id : "",
+      type: "tool_result",
+      callId: typeof raw.callId === "string" ? raw.callId : "",
+      command: typeof raw.command === "string" ? raw.command : "",
+      status: typeof raw.status === "string" ? raw.status : "cancelled",
+      stdout: typeof raw.stdout === "string" ? raw.stdout : "",
+      stderr: typeof raw.stderr === "string" ? raw.stderr : "",
+      exitCode: typeof raw.exitCode === "number" ? raw.exitCode : null,
+      cwd: typeof raw.cwd === "string" ? raw.cwd : null,
+      durationMs: typeof raw.durationMs === "number" ? raw.durationMs : null,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : null,
+      finishedAt: typeof raw.finishedAt === "string" ? raw.finishedAt : null,
+    };
+  }
+
+  return null;
+}
+
 function deriveCompatibilityExecutionStages({ id, question, answer, toolRuns }) {
   const runs = Array.isArray(toolRuns) ? toolRuns : [];
   const answerText = typeof answer === "string" ? answer.trim() : "";
@@ -286,6 +334,9 @@ function normalizeMessage(value) {
       : [],
     executionStages,
     toolRuns,
+    contentBlocks: Array.isArray(raw.contentBlocks)
+      ? raw.contentBlocks.map(normalizeContentBlock).filter(Boolean)
+      : [],
   };
 }
 
