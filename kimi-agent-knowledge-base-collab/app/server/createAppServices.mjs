@@ -78,6 +78,7 @@ export function createAppServices() {
   } else if (repositoryMode === "wikimg") {
     repository = new WikiMGKnowledgeBaseRepository({
       workspaceRoot: knowledgeDataPaths.wikimgWorkspaceRoot,
+      sourceWorkspaceRoot: knowledgeDataPaths.wikimgCodeRoot,
       profile: process.env.WIKIMG_PROFILE || "kimi",
       wikimgScriptPath: knowledgeDataPaths.wikimgScriptPath,
       pythonBin: process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3"),

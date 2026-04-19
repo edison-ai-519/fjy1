@@ -205,6 +205,10 @@ function hasDisplayableAnswer(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function resolveStreamDisplayAnswer({
   assistantDeltaBuffer,
   lastNonEmptyAssistantCompleted,
@@ -340,12 +344,97 @@ function baseUrlForProvider(provider) {
     : "https://api.openai.com/v1";
 }
 
-function normalizeConversationHistory(value, limit = Number.POSITIVE_INFINITY) {
+function normalizeToolRuns(value) {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+
+      const callId = isNonEmptyString(item.callId) ? item.callId.trim() : "";
+      const command = isNonEmptyString(item.command) ? item.command.trim() : "";
+      if (!callId && !command) {
+        return null;
+      }
+
+      return {
+        callId,
+        command,
+        status: typeof item.status === "string" ? item.status : "running",
+        stdout: typeof item.stdout === "string" ? item.stdout : "",
+        stderr: typeof item.stderr === "string" ? item.stderr : "",
+        exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
+        cwd: typeof item.cwd === "string" ? item.cwd : null,
+        durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
+        startedAt: typeof item.startedAt === "string" ? item.startedAt : null,
+        finishedAt: typeof item.finishedAt === "string" ? item.finishedAt : null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeContentBlocks(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || typeof item.type !== "string") {
+        return null;
+      }
+
+      if (item.type === "assistant") {
+        return {
+          type: "assistant",
+          content: typeof item.content === "string" ? item.content : "",
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : null,
+          completedAt: typeof item.completedAt === "string" ? item.completedAt : null,
+          phase: item.phase === "streaming" ? "streaming" : "completed",
+        };
+      }
+
+      if (item.type === "tool_call") {
+        return {
+          type: "tool_call",
+          callId: typeof item.callId === "string" ? item.callId : "",
+          command: typeof item.command === "string" ? item.command : "",
+          reasoning: typeof item.reasoning === "string" ? item.reasoning : undefined,
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : null,
+        };
+      }
+
+      if (item.type === "tool_result") {
+        return {
+          type: "tool_result",
+          callId: typeof item.callId === "string" ? item.callId : "",
+          command: typeof item.command === "string" ? item.command : "",
+          status: typeof item.status === "string" ? item.status : "running",
+          stdout: typeof item.stdout === "string" ? item.stdout : "",
+          stderr: typeof item.stderr === "string" ? item.stderr : "",
+          exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
+          cwd: typeof item.cwd === "string" ? item.cwd : null,
+          durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : null,
+          finishedAt: typeof item.finishedAt === "string" ? item.finishedAt : null,
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function normalizeConversationHistory(value, limit = Number.POSITIVE_INFINITY) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized = value
     .map((item) => {
       if (!item || typeof item !== "object") {
         return null;
@@ -362,14 +451,68 @@ function normalizeConversationHistory(value, limit = Number.POSITIVE_INFINITY) {
         return null;
       }
 
-      return { question, answer };
+      return {
+        question,
+        answer,
+        toolRuns: normalizeToolRuns(item.toolRuns),
+        contentBlocks: normalizeContentBlocks(item.contentBlocks),
+      };
     })
     .filter(Boolean)
+  ;
+
   if (limit === Number.POSITIVE_INFINITY) {
     return normalized;
   }
 
   return normalized.slice(-limit);
+}
+
+function formatConversationHistoryTurn(turn, index) {
+  const lines = [
+    `轮次 ${index + 1}:`,
+    `- 用户问题：${turn.question}`,
+    `- 助手回答：${turn.answer}`,
+  ];
+
+  if (Array.isArray(turn.toolRuns) && turn.toolRuns.length > 0) {
+    lines.push("- 工具轨迹：");
+    for (const run of turn.toolRuns) {
+      lines.push(`  - [tool_result] callId=${run.callId || "unknown"} command=${JSON.stringify(run.command || "")}`);
+      lines.push(`    status=${run.status} exitCode=${run.exitCode ?? "null"} cwd=${run.cwd ?? "null"}`);
+      if (run.stdout) {
+        lines.push(`    stdout=${JSON.stringify(run.stdout)}`);
+      }
+      if (run.stderr) {
+        lines.push(`    stderr=${JSON.stringify(run.stderr)}`);
+      }
+    }
+  }
+
+  if (Array.isArray(turn.contentBlocks) && turn.contentBlocks.length > 0) {
+    lines.push("- 内容块：");
+    for (const block of turn.contentBlocks) {
+      if (block.type === "assistant") {
+        lines.push(`  - [assistant] ${JSON.stringify(block.content || "")}`);
+      } else if (block.type === "tool_call") {
+        lines.push(`  - [tool_call] callId=${block.callId || "unknown"} command=${JSON.stringify(block.command || "")}`);
+        if (block.reasoning) {
+          lines.push(`    reasoning=${JSON.stringify(block.reasoning)}`);
+        }
+      } else if (block.type === "tool_result") {
+        lines.push(`  - [tool_result] callId=${block.callId || "unknown"} command=${JSON.stringify(block.command || "")}`);
+        lines.push(`    status=${block.status} exitCode=${block.exitCode ?? "null"} cwd=${block.cwd ?? "null"}`);
+        if (block.stdout) {
+          lines.push(`    stdout=${JSON.stringify(block.stdout)}`);
+        }
+        if (block.stderr) {
+          lines.push(`    stderr=${JSON.stringify(block.stderr)}`);
+        }
+      }
+    }
+  }
+
+  return lines.join("\n");
 }
 
 export class QAgentService {
@@ -392,7 +535,7 @@ export class QAgentService {
     }
 
     return [
-      `最近对话历史（按时间顺序，越靠后越新）：\n${JSON.stringify(conversationHistory, null, 2)}`,
+      `最近对话历史（按时间顺序，越靠后越新）：\n${conversationHistory.map((turn, index) => formatConversationHistoryTurn(turn, index)).join("\n\n")}`,
       `用户问题：${question}`,
     ].join("\n\n");
   }
@@ -1322,6 +1465,7 @@ export class QAgentService {
       ...options,
       runtimeRoot: isolatedRuntimeRoot,
     });
+    await this.ensureOntologyFactorySkills(isolatedRuntimeRoot);
     await this.runControlCommand(["hook", "fetch-memory", "off"], {
       runtimeRoot: isolatedRuntimeRoot,
     });
@@ -1392,6 +1536,127 @@ exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@
     await writeFile(wrapperPath, wrapperContent, "utf8");
     await chmod(wrapperPath, 0o755);
     await writeFile(helpPath, helpContent, "utf8");
+  }
+
+  async ensureOntologyFactorySkills(targetRuntimeRoot) {
+    const skillsDir = path.join(targetRuntimeRoot, ".agent", "skills");
+    await mkdir(skillsDir, { recursive: true });
+
+    const skills = [
+      {
+        name: "ner",
+        content: `---
+name: ner
+description: Extract Chinese entities from Ontology_Factory text files with the NER CLI and use the result as structured document input.
+---
+
+# NER Skill
+
+Use this skill when you need to extract entities from Chinese source text, inspect entity mentions, or prepare structured entity data for downstream ontology work.
+
+## What This Skill Is For
+
+- Extract entities from a local text file.
+- Narrow extraction to a query-specific snippet before running NER.
+- Export \`NerDocument\` JSON for downstream document and relation processing.
+- Use the CLI output as a read-only document input for later ontology steps.
+
+## Important Paths
+
+- Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
+- NER package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner
+- CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner/src/ner/cli.py
+
+## Recommended Commands
+
+Run from the Ontology Factory root so Python module imports resolve cleanly:
+
+\`\`\`bash
+cd /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
+
+python -m ner.cli extract --input /path/to/text.txt --stdout
+python -m ner.cli extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
+python -m ner.cli extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`
+
+## Output
+
+- \`NerDocument\` JSON
+- \`entities[]\` with \`entity_id\`, \`text\`, \`normalized_text\`, \`label\`, \`source_sentence\`, and \`metadata\`
+
+## When To Use
+
+- You need to identify key entities in a document before relation extraction.
+- You want a structured, deterministic representation of mentions and normalized entities.
+- You want to inspect NER output before feeding it into a later ontology workflow.
+
+## Notes
+
+- The extractor uses HanLP first and falls back to rule-based extraction.
+- Optional OpenRouter enhancement is available when the relevant environment variables are configured.
+- Keep the input file local and prefer read-only inspection commands when debugging the pipeline.
+`,
+      },
+      {
+        name: "entity-relation",
+        content: `---
+name: entity-relation
+description: Extract entity relations from NER output or local text files with the relation CLI for ontology workflows.
+---
+
+# Entity Relation Skill
+
+Use this skill when you need to derive relations between entities from a local text file or from an existing NER document.
+
+## What This Skill Is For
+
+- Convert text into relation candidates using the relation CLI.
+- Reuse NER output as the document basis for relation extraction.
+- Export \`RelationDocument\` JSON for ontology indexing and knowledge graph workflows.
+
+## Important Paths
+
+- Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
+- Relation package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation
+- CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation/src/entity_relation/cli.py
+
+## Recommended Commands
+
+Run from the Ontology Factory root so Python module imports resolve cleanly:
+
+\`\`\`bash
+cd /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
+
+python -m entity_relation.cli extract --input /path/to/text.txt --stdout
+python -m entity_relation.cli extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
+python -m entity_relation.cli extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`
+
+## Output
+
+- \`RelationDocument\` JSON
+- \`relations[]\` with \`source_entity_id\`, \`target_entity_id\`, \`relation_type\`, \`confidence\`, and \`evidence_sentence\`
+
+## When To Use
+
+- You already have relevant text and want lightweight ontology relation candidates.
+- You want a deterministic relation layer after NER.
+- You want to inspect or export relation hints for wiki or graph workflows.
+
+## Notes
+
+- The relation extractor currently uses NER internally and applies sentence-level heuristics.
+- It is intentionally conservative and works best on focused snippets rather than large blobs of unrelated text.
+- Prefer this skill after \`ner\` when you want both entities and relations in the same workflow.
+`,
+      },
+    ];
+
+    for (const skill of skills) {
+      const skillDir = path.join(skillsDir, skill.name);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(path.join(skillDir, "SKILL.md"), skill.content, "utf8");
+    }
   }
 
   resolveWikiMGRoot() {

@@ -215,6 +215,30 @@ export async function fetchKnowledgeGraph(): Promise<KnowledgeGraphData> {
   return parseJson<KnowledgeGraphData>(response);
 }
 
+export interface KnowledgeGraphSliceResponse {
+  viewedRefs: string[];
+  missingRefs: string[];
+  entities: Entity[];
+  crossReferences: Array<{
+    source: string;
+    target: string;
+    relation: string;
+    description: string;
+  }>;
+}
+
+export async function fetchKnowledgeGraphSlice(refs: string[]): Promise<KnowledgeGraphSliceResponse> {
+  const response = await fetch(buildApiUrl('/api/knowledge-graph/slice'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ refs }),
+  });
+
+  return parseJson<KnowledgeGraphSliceResponse>(response);
+}
+
 export async function fetchOntologies(): Promise<{
   philosophicalOntology: OntologyModule;
   formalOntology: OntologyModule;

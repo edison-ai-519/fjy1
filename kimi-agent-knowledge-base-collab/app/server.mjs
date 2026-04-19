@@ -99,6 +99,8 @@ function parseConversationHistory(value) {
         ? {
             question: typeof item.question === "string" ? item.question : "",
             answer: typeof item.answer === "string" ? item.answer : "",
+            toolRuns: Array.isArray(item.toolRuns) ? item.toolRuns : [],
+            contentBlocks: Array.isArray(item.contentBlocks) ? item.contentBlocks : [],
           }
         : null
     ))
@@ -122,7 +124,12 @@ function normalizeConversationHistoryForPrompt(value, limit = Number.POSITIVE_IN
     }
 
     seen.add(signature);
-    history.push({ question, answer });
+    history.push({
+      question,
+      answer,
+      toolRuns: Array.isArray(item.toolRuns) ? item.toolRuns : [],
+      contentBlocks: Array.isArray(item.contentBlocks) ? item.contentBlocks : [],
+    });
   }
 
   if (limit === Number.POSITIVE_INFINITY) {
@@ -143,14 +150,19 @@ function extractPersistedConversationHistory(state, conversationId, limit = Numb
 
   const history = messages
     .map((message) => {
-      const question = typeof message?.question === "string" ? message.question.trim() : "";
-      const answer = typeof message?.answer === "string" ? message.answer.trim() : "";
-      if (!question || !answer) {
-        return null;
-      }
-      return { question, answer };
-    })
-    .filter(Boolean);
+    const question = typeof message?.question === "string" ? message.question.trim() : "";
+    const answer = typeof message?.answer === "string" ? message.answer.trim() : "";
+    if (!question || !answer) {
+      return null;
+    }
+    return {
+      question,
+      answer,
+      toolRuns: Array.isArray(message?.toolRuns) ? message.toolRuns : [],
+      contentBlocks: Array.isArray(message?.contentBlocks) ? message.contentBlocks : [],
+    };
+  })
+  .filter(Boolean);
 
   if (limit === Number.POSITIVE_INFINITY) {
     return history;
@@ -176,7 +188,12 @@ function mergeConversationHistories(primary, fallback, limit = Number.POSITIVE_I
     }
 
     seen.add(signature);
-    merged.push({ question, answer });
+    merged.push({
+      question,
+      answer,
+      toolRuns: Array.isArray(item?.toolRuns) ? item.toolRuns : [],
+      contentBlocks: Array.isArray(item?.contentBlocks) ? item.contentBlocks : [],
+    });
   }
 
   if (limit === Number.POSITIVE_INFINITY) {
@@ -244,6 +261,13 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/knowledge-graph") {
       sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/knowledge-graph/slice") {
+      const body = await parseBody(req);
+      const refs = Array.isArray(body?.refs) ? body.refs.filter((ref) => typeof ref === "string") : [];
+      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraphSlice(refs));
       return;
     }
 

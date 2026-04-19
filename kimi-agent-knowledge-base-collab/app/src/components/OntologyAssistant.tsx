@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Settings2,
   Layers,
   PanelRightOpen,
   PanelRightClose,
+  Network,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -21,16 +22,22 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { KnowledgeGraph } from '@/components/KnowledgeGraph';
 import {
   CUSTOM_MODEL_KEY,
   MODEL_PRESETS,
 } from '@/hooks/useOntologyAssistantState';
+import {
+  fetchKnowledgeGraphSlice,
+  type KnowledgeGraphSliceResponse,
+} from '@/features/ontology/api';
 import { cn } from '@/lib/utils';
 
 import { ChatArea } from './assistant/ChatArea';
 import { ExecutionFlow } from './assistant/ExecutionFlow';
 import { stopPointerEventPropagation } from './assistant/pointerGuards';
 import type { ConversationExecutionStage, ConversationSession } from './assistant/types';
+import { collectWikimgShowRefs } from './assistant/wikimgGraph';
 
 interface AssistantProps {
   activeSession: ConversationSession | null;
@@ -60,6 +67,49 @@ export function OntologyAssistant({
   executionStages,
 }: AssistantProps) {
   const [showFlow, setShowFlow] = useState(false);
+
+  const viewedRefs = useMemo(
+    () => collectWikimgShowRefs(activeSession?.messages),
+    [activeSession?.messages],
+  );
+  const [graphSlice, setGraphSlice] = useState<KnowledgeGraphSliceResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveRefs = async () => {
+      if (viewedRefs.length === 0) {
+        setGraphSlice(null);
+        return;
+      }
+
+      try {
+        const slice = await fetchKnowledgeGraphSlice(viewedRefs);
+        if (!cancelled) {
+          setGraphSlice(slice);
+        }
+      } catch {
+        if (!cancelled) {
+          setGraphSlice({
+            viewedRefs,
+            missingRefs: [],
+            entities: [],
+            crossReferences: [],
+          });
+        }
+      }
+    };
+
+    void resolveRefs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewedRefs]);
+
+  const showKnowledgeGraph = Boolean(graphSlice && graphSlice.entities.length > 0);
+  const hasViewCommand = viewedRefs.length > 0;
+  const sidePanelWidth = showKnowledgeGraph || hasViewCommand ? 'w-[460px]' : 'w-[340px]';
 
   if (!activeSession) {
     return null;
@@ -161,23 +211,70 @@ export function OntologyAssistant({
         />
       </div>
 
-      {/* Execution Flow Side Panel — Collapsible */}
+      {/* Right Side Panel */}
       <div
         className={cn(
-          "shrink-0 h-full transition-all duration-300 ease-in-out overflow-hidden border-l",
-          showFlow ? "w-[340px] opacity-100" : "w-0 opacity-0 border-transparent"
+          'shrink-0 h-full transition-all duration-300 ease-in-out overflow-hidden border-l',
+          (showKnowledgeGraph || showFlow) ? `${sidePanelWidth} opacity-100` : 'w-0 opacity-0 border-transparent',
         )}
       >
-        {showFlow && (
+        {showKnowledgeGraph && graphSlice ? (
+          <div
+            className="flex h-full w-[460px] flex-col bg-background"
+            onPointerDownCapture={stopPointerEventPropagation}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/40 bg-card px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <Network className="h-4 w-4 text-primary" />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-foreground/90">
+                    知识图谱
+                  </div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    命中 `./wikimg.sh show`，共 {graphSlice.viewedRefs.length} 个节点
+                  </div>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-primary">
+                弹出
+              </span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <KnowledgeGraph
+                entities={graphSlice.entities}
+                crossReferences={graphSlice.crossReferences}
+                onSelectEntity={() => {}}
+                selectedEntityId={graphSlice.entities[0]?.id}
+              />
+            </div>
+          </div>
+        ) : hasViewCommand ? (
+          <div
+            className="flex h-full w-[340px] flex-col items-center justify-center gap-3 border-border/40 bg-background px-5 text-center"
+            onPointerDownCapture={stopPointerEventPropagation}
+          >
+            <div className="rounded-full bg-muted/50 p-3">
+              <Network className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-semibold text-foreground/90">
+                已识别 `./wikimg.sh show`
+              </div>
+              <div className="text-xs leading-5 text-muted-foreground">
+                {graphSlice?.missingRefs?.length
+                  ? `这些引用在当前 markdown 源中未找到：${graphSlice.missingRefs.join('、')}`
+                  : '但当前知识库里没找到可展示的节点。'}
+              </div>
+            </div>
+          </div>
+        ) : showFlow ? (
           <div
             className="h-full w-[340px]"
             onPointerDownCapture={stopPointerEventPropagation}
           >
-            <ExecutionFlow
-              executionStages={executionStages}
-            />
+            <ExecutionFlow executionStages={executionStages} />
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

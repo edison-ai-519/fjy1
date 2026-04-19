@@ -360,6 +360,8 @@ export function useAssistantController(selectedEntity: Entity | null) {
       .map((message) => ({
         question: message.question,
         answer: message.answer,
+        toolRuns: message.toolRuns,
+        contentBlocks: message.contentBlocks,
       }));
 
     updateActiveSession((session) => ({

@@ -86,6 +86,70 @@ test("QAgentService buildPrompt includes recent conversation history when provid
   assert.equal(prompt.endsWith("用户问题：继续展开一下"), true);
 });
 
+test("QAgentService buildPrompt includes tool traces when provided", () => {
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: os.tmpdir(),
+    projectRoot: os.tmpdir(),
+  });
+
+  const prompt = service.buildPrompt(
+    "继续查看工具执行结果",
+    createEmptyContext(),
+    {
+      conversationHistory: [
+        {
+          question: "先列出目录。",
+          answer: "我先看一下仓库结构。",
+          toolRuns: [
+            {
+              callId: "call-1",
+              command: "find . -maxdepth 2",
+              status: "success",
+              stdout: "app/\nserver/\n",
+              stderr: "",
+              exitCode: 0,
+              cwd: "/repo",
+              durationMs: 12,
+              startedAt: "2026-04-15T02:00:00.000Z",
+              finishedAt: "2026-04-15T02:00:00.100Z",
+            },
+          ],
+          contentBlocks: [
+            {
+              id: "block-tool-call-1",
+              type: "tool_call",
+              callId: "call-1",
+              command: "find . -maxdepth 2",
+              reasoning: "先确认目录结构",
+              createdAt: "2026-04-15T02:00:00.000Z",
+            },
+            {
+              id: "block-tool-result-1",
+              type: "tool_result",
+              callId: "call-1",
+              command: "find . -maxdepth 2",
+              status: "success",
+              stdout: "app/\nserver/\n",
+              stderr: "",
+              exitCode: 0,
+              cwd: "/repo",
+              durationMs: 12,
+              createdAt: "2026-04-15T02:00:00.100Z",
+              finishedAt: "2026-04-15T02:00:00.100Z",
+            },
+          ],
+        },
+      ],
+    },
+  );
+
+  assert.equal(prompt.includes("tool_call"), true);
+  assert.equal(prompt.includes("tool_result"), true);
+  assert.equal(prompt.includes("find . -maxdepth 2"), true);
+  assert.equal(prompt.includes("stdout="), true);
+});
+
 test("QAgentService writes the selected model into runtime config", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-model-"));
   const runtimeRoot = path.join(tempDir, "runtime");

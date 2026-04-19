@@ -17,6 +17,8 @@ export interface OntologyAssistantResponse {
 export interface OntologyAssistantHistoryTurn {
   question: string;
   answer: string;
+  toolRuns?: PersistedOntologyAssistantToolRun[];
+  contentBlocks?: PersistedOntologyAssistantContentBlock[];
 }
 
 export interface OntologyAssistantToolStartedEvent {
