@@ -532,16 +532,28 @@ export class QAgentService {
 
   buildPrompt(question, context, options = {}) {
     void context;
-    const conversationHistory = normalizeConversationHistory(options.conversationHistory);
+    // Limit conversation history to the last 6 turns and truncate each turn if necessary to prevent ENAMETOOLONG on Windows
+    const conversationHistory = normalizeConversationHistory(options.conversationHistory, 6);
 
     if (conversationHistory.length === 0) {
       return `用户问题：${question}`;
     }
 
-    return [
-      `最近对话历史（按时间顺序，越靠后越新）：\n${conversationHistory.map((turn, index) => formatConversationHistoryTurn(turn, index)).join("\n\n")}`,
+    const historyText = conversationHistory
+      .map((turn, index) => {
+        const text = formatConversationHistoryTurn(turn, index);
+        // Truncate each turn to 1000 characters to keep total prompt length safe
+        return text.length > 1000 ? `${text.slice(0, 1000)}...` : text;
+      })
+      .join("\n\n");
+
+    const prompt = [
+      `最近对话历史（按时间顺序，越靠后越新）：\n${historyText}`,
       `用户问题：${question}`,
     ].join("\n\n");
+    
+    // Final safety truncation for Windows CLI argument limit (~8KB)
+    return prompt.length > 7000 ? `${prompt.slice(0, 7000)}...` : prompt;
   }
 
   async ask(question, context, options = {}) {

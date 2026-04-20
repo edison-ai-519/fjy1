@@ -526,7 +526,7 @@ export function OntologyAssistant({
               <KnowledgeGraph
                 entities={graphEntities}
                 crossReferences={graphCrossReferences}
-                onSelectEntity={() => {}}
+                onSelectEntity={() => { }}
                 selectedEntityId={selectedGraphEntityId}
               />
             </div>

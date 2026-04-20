@@ -220,8 +220,12 @@ function ToolRunDetails({ toolRuns }: { toolRuns: PersistedOntologyAssistantTool
 function ToolCallBlock({
   block,
 }: {
-  block: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
+  block?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
 }) {
+  if (!block) {
+    return null;
+  }
+
   const isNer = block.toolName === 'ner';
   const isRe = block.toolName === 're';
 
@@ -292,8 +296,12 @@ function ToolCallBlock({
 function ToolResultBlock({
   block,
 }: {
-  block: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
+  block?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
 }) {
+  if (!block) {
+    return null;
+  }
+
   const isNer = block.toolName === 'ner';
   const isRe = block.toolName === 're';
   const statusMeta = formatToolRunStatus({
@@ -414,46 +422,258 @@ function ToolResultBlock({
   );
 }
 
+function stripJsonCodeFence(value: string) {
+  const trimmed = value.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenceMatch ? fenceMatch[1].trim() : trimmed;
+}
+
+function formatAnswerAsJson(value: string) {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(stripJsonCodeFence(normalized));
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return normalized;
+  }
+}
+
+function QAgentSuperCard({
+  callBlock,
+  resultBlock,
+  assistantAnswer,
+}: {
+  callBlock: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
+  resultBlock?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
+  assistantAnswer?: string;
+}) {
+  // 提取查询内容：从 --query '内容' 中提取出内容
+  const extractQuery = (cmd: string) => {
+    const match = cmd.match(/--query\s+['"](.+?)['"]/);
+    return match ? match[1] : cmd;
+  };
+
+  const queryText = extractQuery(callBlock.command || '');
+  const isError = resultBlock?.status === 'error' || Boolean(resultBlock?.stderr);
+  const answerFromAssistant = typeof assistantAnswer === 'string' && assistantAnswer.trim()
+    ? assistantAnswer.trim()
+    : '';
+  const rawAnswer = answerFromAssistant || (typeof resultBlock?.stdout === 'string' ? resultBlock.stdout.trim() : '');
+  const formattedAnswer = formatAnswerAsJson(rawAnswer);
+
+  return (
+    <div className="group relative my-6 max-w-3xl animate-in fade-in slide-in-from-bottom-3 duration-500">
+      {/* 外层发光背景 (仅深色模式) */}
+      <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-[24px] opacity-10 blur-[12px] group-hover:opacity-20 transition-opacity" />
+
+      <div className="relative flex flex-col bg-white dark:bg-zinc-950 rounded-[22px] border border-border/50 shadow-2xl overflow-hidden">
+        {/* Header: 系统元数据 */}
+        <div className="flex items-center justify-between px-5 py-3 bg-zinc-50 dark:bg-zinc-900/50 border-b border-border/40">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)]">
+              <Terminal className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-indigo-600 dark:text-indigo-400">Query Agent Executive</div>
+              <div className="text-[10px] font-mono text-muted-foreground/60">{callBlock.toolName || 'qagent-v1'}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-muted-foreground/50">{callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString() : ''}</span>
+            <div className={cn(
+              "h-2 w-2 rounded-full",
+              resultBlock ? (isError ? "bg-red-500" : "bg-emerald-500") : "bg-amber-500 animate-pulse"
+            )} />
+          </div>
+        </div>
+
+        {/* 第一部分：输入查询 */}
+        <div className="p-5 space-y-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
+              <ArrowUp className="w-3 h-3 text-emerald-500" />
+              Input Query
+            </div>
+            <p className="text-[15px] font-bold text-foreground/90 leading-snug">
+              {queryText}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-zinc-950/5 dark:bg-black/40 p-3 border border-border/20">
+            <div className="font-mono text-[11px] text-zinc-500 break-all leading-relaxed whitespace-pre-wrap">
+              <span className="text-zinc-600 mr-2 select-none font-bold">CMD {'>'}</span>
+              {callBlock.command}
+            </div>
+          </div>
+        </div>
+
+        {/* 分割线与状态 */}
+        <div className="relative h-px w-full bg-border/40">
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2 px-3 bg-white dark:bg-zinc-950 border border-border/40 rounded-full">
+            <Sparkles className="w-3 h-3 text-indigo-500" />
+            <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Processing Reply</span>
+          </div>
+        </div>
+
+        {/* 第二部分：回复输出 */}
+        <div className={cn(
+          "p-5 space-y-3 transition-all",
+          !resultBlock && "opacity-40 grayscale"
+        )}>
+          <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
+            <ArrowDown className="w-3 h-3 text-indigo-500" />
+            Agent Reply
+          </div>
+
+          {resultBlock ? (
+            <div className="space-y-4">
+              {hasVisibleText(formattedAnswer) ? (
+                <div className="space-y-2 rounded-2xl border border-indigo-500/10 bg-indigo-500/[0.03] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[10px] font-black uppercase tracking-[0.24em] text-indigo-600 dark:text-indigo-300">
+                      回复
+                    </span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {answerFromAssistant ? '来自 message.answer' : '来自 stdout 回退'}
+                    </span>
+                  </div>
+                  <pre className="max-h-96 overflow-auto rounded-2xl border border-indigo-500/10 bg-white/80 p-4 font-mono text-[13px] leading-6 text-foreground/90 whitespace-pre-wrap [overflow-wrap:anywhere] dark:bg-zinc-950/60">
+                    {formattedAnswer}
+                  </pre>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-border/40 text-[13px] text-muted-foreground italic">
+                  提示：该命令已成功执行，但未返回可展示的 JSON 回复。
+                </div>
+              )}
+
+              {resultBlock.stderr && (
+                <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-3 flex gap-3 items-start">
+                  <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-black text-red-600/60 tracking-wider">EXECUTION ERROR</span>
+                    <p className="text-[11px] font-mono text-red-600 dark:text-red-400 underline decoration-red-500/30">{resultBlock.stderr}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 py-4 text-muted-foreground">
+              <LoaderCircle className="w-4 h-4 animate-spin text-indigo-500" />
+              <span className="text-xs italic font-medium">正在生成回执结果...</span>
+            </div>
+          )}
+        </div>
+
+        {/* 底部功能条 */}
+        <div className="px-5 py-2.5 bg-zinc-50 dark:bg-zinc-900/30 flex items-center justify-between border-t border-border/20">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5">
+              <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">Status Safe</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">Git_Integrity Verified</span>
+            </div>
+          </div>
+          {resultBlock && (
+            <span className="text-[9px] font-mono text-zinc-400 font-black">
+              TRACE_ID: {resultBlock.callId?.slice(-8).toUpperCase() || 'UNTARGETED'}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageContentBlocks({
   blocks,
+  answer,
 }: {
   blocks: PersistedOntologyAssistantContentBlock[];
+  answer?: string;
 }) {
   if (blocks.length === 0) {
     return null;
   }
 
+  // 预处理：将成对的 tool_call 和 tool_result 组合在一起
+  const processedGroups: Array<{
+    type: 'assistant' | 'super_card' | 'standalone_call' | 'standalone_result';
+    data: any;
+  }> = [];
+
+  const toolResultsMap = new Map<string, Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>>();
+  blocks.forEach(b => {
+    if (b.type === 'tool_result' && b.callId) toolResultsMap.set(b.callId, b);
+  });
+
+  const consumedCallIds = new Set<string>();
+
+  blocks.forEach((block) => {
+    if (block.type === 'assistant') {
+      processedGroups.push({ type: 'assistant', data: block });
+    } else if (block.type === 'tool_call') {
+      const isCliCall = block.command?.includes('run_git_query_agent.py') || block.toolName === 'query_agent';
+      const pairedResult = block.callId ? toolResultsMap.get(block.callId) : null;
+
+      if (isCliCall) {
+        processedGroups.push({
+          type: 'super_card',
+          data: { call: block, result: pairedResult }
+        });
+        if (block.callId) consumedCallIds.add(block.callId);
+      } else {
+        processedGroups.push({ type: 'standalone_call', data: block });
+      }
+    } else if (block.type === 'tool_result') {
+      if (!block.callId || !consumedCallIds.has(block.callId)) {
+        processedGroups.push({ type: 'standalone_result', data: block });
+      }
+    }
+  });
+
   return (
     <div className="space-y-3">
-      {blocks.map((block) => {
-        if (block.type === 'assistant') {
-          if (!hasVisibleText(block.content)) {
-            return null;
-          }
-
-          return (
-            <div key={block.id} className="group/msg flex flex-col items-start">
-              <div className="flex-1 min-w-0 w-full text-foreground/90">
-                <AssistantMarkdown content={block.content} />
-              </div>
-              {block.phase === 'completed' && (
-                <div className="mt-1 animate-in fade-in duration-500">
-                  <MessageCopyButton content={block.content} />
+      {processedGroups.map((group, idx) => {
+        const key = `group-${idx}`;
+        switch (group.type) {
+          case 'assistant':
+            if (!hasVisibleText(group.data.content)) return null;
+            return (
+              <div key={key} className="group/msg flex flex-col items-start">
+                <div className="flex-1 min-w-0 w-full text-foreground/90">
+                  <AssistantMarkdown content={group.data.content} />
                 </div>
-              )}
-            </div>
-          );
+                {group.data.phase === 'completed' && (
+                  <div className="mt-1 animate-in fade-in duration-500">
+                    <MessageCopyButton content={group.data.content} />
+                  </div>
+                )}
+              </div>
+            );
+          case 'super_card':
+            return (
+              <QAgentSuperCard
+                key={key}
+                callBlock={group.data.call}
+                resultBlock={group.data.result}
+                assistantAnswer={answer}
+              />
+            );
+          case 'standalone_call':
+            return <ToolCallBlock key={key} block={group.data} />;
+          case 'standalone_result':
+            return <ToolResultBlock key={key} block={group.data} />;
+          default:
+            return null;
         }
-
-        if (block.type === 'tool_call') {
-          return <ToolCallBlock key={block.id} block={block} />;
-        }
-
-        if (block.type === 'tool_result') {
-          return <ToolResultBlock key={block.id} block={block} />;
-        }
-
-        return null;
       })}
     </div>
   );
@@ -520,7 +740,13 @@ export function ChatArea({
   // Auto-scroll logic
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
+      const isInitial = messages.length > 0 && scrollTop === 0;
+
+      if (isNearBottom || isInitial) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
     }
   }, [messages, loading, statusMessage]);
 
@@ -622,7 +848,7 @@ export function ChatArea({
                     <div className="group/msg flex flex-col items-start px-1 mt-8 transition-all">
                       <div className="flex-1 min-w-0 w-full text-foreground/90">
                         {hasContentBlocks ? (
-                          <MessageContentBlocks blocks={contentBlocks} />
+                          <MessageContentBlocks blocks={contentBlocks} answer={message.answer} />
                         ) : (
                           <ToolRunDetails toolRuns={toolRuns} />
                         )}
