@@ -2,6 +2,7 @@
 **/.agent/
 **/.qagent-web-runtime/
 **/.env*
+!**/.env.example
 **/config.yaml
 **/config.local.yaml
 **/settings.json
