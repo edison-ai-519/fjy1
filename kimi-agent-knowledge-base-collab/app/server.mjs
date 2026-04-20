@@ -1,5 +1,5 @@
 import { createServer, request as httpRequest } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -15,6 +15,7 @@ const XG_GATEWAY_API_KEY = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY
 const {
   knowledgeBaseService,
   assistantSessionStateService,
+  conversationGraphStateService,
   localWorkspaceService,
   qagentService,
   appRoot,
@@ -260,6 +261,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/knowledge-graph") {
+      if (url.searchParams.get("refresh") === "1" && typeof knowledgeBaseService.repository?.invalidateCache === "function") {
+        knowledgeBaseService.repository.invalidateCache();
+      }
       sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph());
       return;
     }
@@ -563,6 +567,71 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/chat/state") {
       const body = await parseBody(req);
       sendJson(res, 200, await assistantSessionStateService.save(body));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/chat/graph") {
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+
+      sendJson(res, 200, await conversationGraphStateService.load(conversationId));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/chat/graph") {
+      const body = await parseBody(req);
+      const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+
+      sendJson(res, 200, await conversationGraphStateService.save(body));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/chat/upload") {
+      const body = await parseBody(req);
+      const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+      const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+      const contentBase64 = typeof body.contentBase64 === "string" ? body.contentBase64.trim() : "";
+      const mimeType = typeof body.mimeType === "string" ? body.mimeType.trim() : "application/octet-stream";
+
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+      if (!fileName) {
+        sendJson(res, 400, { error: "fileName is required" });
+        return;
+      }
+      if (!contentBase64) {
+        sendJson(res, 400, { error: "contentBase64 is required" });
+        return;
+      }
+
+      const runtimeRoot = qagentService.getConversationRuntimeRoot(conversationId);
+      const uploadsDir = path.join(runtimeRoot, "uploads");
+      const safeFileName = fileName.replace(/[\\/]+/g, "_").replace(/\0/g, "").trim() || "upload.bin";
+      const filePath = path.join(uploadsDir, safeFileName);
+
+      await mkdir(uploadsDir, { recursive: true });
+      await writeFile(filePath, Buffer.from(contentBase64, "base64"));
+
+      sendJson(res, 200, {
+        ok: true,
+        conversationId,
+        runtimeRoot,
+        uploadsDir,
+        filePath,
+        fileName: safeFileName,
+        mimeType,
+      });
       return;
     }
 

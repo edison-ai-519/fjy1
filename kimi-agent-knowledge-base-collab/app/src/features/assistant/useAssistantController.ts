@@ -1,9 +1,11 @@
 import * as React from 'react';
+import { toast } from 'sonner';
 
 import {
   askOntologyAssistantStream,
   fetchOntologyAssistantState,
   saveOntologyAssistantState,
+  uploadOntologyAssistantFile,
   type OntologyAssistantAssistantCompletedEvent,
   type OntologyAssistantHistoryTurn,
   type OntologyAssistantSessionState,
@@ -125,6 +127,17 @@ function appendAssistantCompletedBlock(
   return nextBlocks;
 }
 
+function inferToolName(command: string) {
+  const normalized = command.toLowerCase();
+  if (normalized.includes('ner.sh') || normalized.includes('python -m ner')) {
+    return 'ner';
+  }
+  if (normalized.includes('re.sh') || normalized.includes('entity_relation')) {
+    return 're';
+  }
+  return undefined;
+}
+
 function appendToolCallBlock(
   blocks: PersistedOntologyAssistantContentBlock[],
   event: OntologyAssistantToolStartedEvent,
@@ -142,6 +155,7 @@ function appendToolCallBlock(
       callId: event.callId,
       command: event.command,
       reasoning: event.reasoning,
+      toolName: inferToolName(event.command),
       createdAt: event.startedAt,
     },
   ];
@@ -162,6 +176,7 @@ function appendToolResultBlock(
       type: 'tool_result',
       callId: event.callId,
       command: event.command,
+      toolName: inferToolName(event.command),
       status: event.status,
       stdout: event.stdout,
       stderr: event.stderr,
@@ -331,6 +346,40 @@ export function useAssistantController(selectedEntity: Entity | null) {
       error: null,
     }));
   }, [updateActiveSession]);
+
+  const onUploadFile = React.useCallback(async (file: File) => {
+    if (!activeSession || !file) {
+      return;
+    }
+
+    try {
+      const contentBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result !== 'string') {
+            reject(new Error('文件读取失败'));
+            return;
+          }
+          const base64 = result.includes(',') ? result.split(',', 2)[1] : result;
+          resolve(base64);
+        };
+        reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+        reader.readAsDataURL(file);
+      });
+
+      await uploadOntologyAssistantFile({
+        conversationId: activeSession.id,
+        fileName: file.name,
+        contentBase64,
+        mimeType: file.type || 'application/octet-stream',
+      });
+      toast.success(`已上传到稳定 runtime: ${file.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '上传失败');
+      throw error;
+    }
+  }, [activeSession]);
 
   const onAsk = React.useCallback(async (question?: string) => {
     if (!activeSession) {
@@ -533,6 +582,9 @@ export function useAssistantController(selectedEntity: Entity | null) {
           : session
       ));
     } catch (error) {
+      if (error instanceof Error && error.name !== 'AbortError') {
+        toast.error(error.message || '上传失败');
+      }
       updateActiveSession((session) => ({
         ...session,
         loading: false,
@@ -574,6 +626,7 @@ export function useAssistantController(selectedEntity: Entity | null) {
     onAsk,
     onStop,
     onDraftChange,
+    onUploadFile,
     onNewSession,
     onDeleteSession,
     onDeleteSessions,

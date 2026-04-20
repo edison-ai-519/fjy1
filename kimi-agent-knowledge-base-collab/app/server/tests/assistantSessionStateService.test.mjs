@@ -51,7 +51,23 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
                 callId: "call-1",
                 command: "rg ontology",
                 reasoning: "先查仓库中的相关术语",
+                toolName: "ner",
                 createdAt: "2026-04-15T02:00:01.000Z",
+              },
+              {
+                id: "block-tool-result-1",
+                type: "tool_result",
+                callId: "call-1",
+                command: "rg ontology",
+                toolName: "ner",
+                status: "success",
+                stdout: "{\"ok\":true}",
+                stderr: "",
+                exitCode: 0,
+                cwd: "/repo",
+                durationMs: 12,
+                createdAt: "2026-04-15T02:00:01.100Z",
+                finishedAt: "2026-04-15T02:00:01.120Z",
               },
             ],
             executionStages: [
@@ -109,7 +125,23 @@ test("AssistantSessionStateService persists frontend chat sessions", async () =>
                 callId: "call-1",
                 command: "rg ontology",
                 reasoning: "先查仓库中的相关术语",
+                toolName: "ner",
                 createdAt: "2026-04-15T02:00:01.000Z",
+              },
+              {
+                id: "block-tool-result-1",
+                type: "tool_result",
+                callId: "call-1",
+                command: "rg ontology",
+                toolName: "ner",
+                status: "success",
+                stdout: "{\"ok\":true}",
+                stderr: "",
+                exitCode: 0,
+                cwd: "/repo",
+                durationMs: 12,
+                createdAt: "2026-04-15T02:00:01.100Z",
+                finishedAt: "2026-04-15T02:00:01.120Z",
               },
             ],
             executionStages: [
@@ -206,4 +238,61 @@ test("AssistantSessionStateService derives rich compatibility stages for legacy 
   assert.equal(state.sessions[0].messages[0].toolRuns.length, 1);
   assert.equal(state.sessions[0].messages[0].toolRuns[0].callId, "tool-legacy");
   assert.deepEqual(state.sessions[0].messages[0].contentBlocks, []);
+});
+
+test("AssistantSessionStateService infers tool names from legacy content blocks when missing", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "assistant-session-state-content-"));
+  const service = new AssistantSessionStateService({ runtimeRoot });
+
+  await service.save({
+    sessions: [
+      {
+        id: "session-content",
+        title: "内容块会话",
+        draftQuestion: "",
+        messages: [
+          {
+            id: "message-content",
+            question: "抽取实体",
+            answer: "完成",
+            relatedNames: [],
+            contentBlocks: [
+              {
+                id: "block-tool-call-ner",
+                type: "tool_call",
+                callId: "call-ner",
+                command: "/tmp/runtime/ner.sh extract --input a.txt --stdout",
+                createdAt: "2026-04-15T02:00:01.000Z",
+              },
+              {
+                id: "block-tool-result-ner",
+                type: "tool_result",
+                callId: "call-ner",
+                command: "/tmp/runtime/ner.sh extract --input a.txt --stdout",
+                status: "success",
+                stdout: "{\"ok\":true}",
+                stderr: "",
+                exitCode: 0,
+                cwd: "/tmp/runtime",
+                durationMs: 12,
+                createdAt: "2026-04-15T02:00:01.100Z",
+                finishedAt: "2026-04-15T02:00:01.120Z",
+              },
+            ],
+            executionStages: [],
+            toolRuns: [],
+          },
+        ],
+      },
+    ],
+    activeSessionId: "session-content",
+    businessPrompt: "",
+    modelName: "gpt-4.1-mini",
+  });
+
+  const state = await service.load();
+  const blocks = state.sessions[0].messages[0].contentBlocks;
+
+  assert.equal(blocks[0].toolName, "ner");
+  assert.equal(blocks[1].toolName, "ner");
 });

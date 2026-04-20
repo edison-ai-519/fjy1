@@ -14,6 +14,16 @@ export interface OntologyAssistantResponse {
   stderr?: string;
 }
 
+export interface OntologyAssistantUploadResponse {
+  ok: boolean;
+  conversationId: string;
+  runtimeRoot: string;
+  uploadsDir: string;
+  filePath: string;
+  fileName: string;
+  mimeType: string;
+}
+
 export interface OntologyAssistantHistoryTurn {
   question: string;
   answer: string;
@@ -91,6 +101,46 @@ export interface PersistedOntologyAssistantToolRun {
   finishedAt: string | null;
 }
 
+export interface AssistantGraphEntity {
+  entity_id: string;
+  text: string;
+  normalized_text?: string;
+  label?: string;
+  confidence?: number | null;
+  source_sentence?: string;
+  metadata?: Record<string, unknown>;
+  display_level?: number;
+  visible?: boolean;
+  highlight?: boolean;
+  pinned?: boolean;
+  focus?: boolean;
+  start?: number;
+  end?: number;
+}
+
+export interface AssistantGraphRelation {
+  relation_id?: string;
+  source_entity_id?: string;
+  target_entity_id?: string;
+  source_text?: string;
+  target_text?: string;
+  relation_type?: string;
+  confidence?: number | null;
+  evidence_sentence?: string;
+  metadata?: Record<string, unknown>;
+  display_level?: number;
+  visible?: boolean;
+  highlight?: boolean;
+}
+
+export interface AssistantGraphOverlay {
+  version: number;
+  conversationId: string;
+  updatedAt: string;
+  nodes: AssistantGraphEntity[];
+  relations: AssistantGraphRelation[];
+}
+
 export type PersistedOntologyAssistantContentBlock =
   | {
       id: string;
@@ -106,6 +156,7 @@ export type PersistedOntologyAssistantContentBlock =
       callId: string;
       command: string;
       reasoning?: string;
+      toolName?: string;
       createdAt: string;
     }
   | {
@@ -113,6 +164,7 @@ export type PersistedOntologyAssistantContentBlock =
       type: 'tool_result';
       callId: string;
       command: string;
+      toolName?: string;
       status: 'running' | 'success' | 'error' | 'timeout' | 'cancelled' | 'rejected';
       stdout: string;
       stderr: string;
@@ -200,6 +252,40 @@ export async function saveOntologyAssistantState(
   });
 
   return parseJson<OntologyAssistantSessionState>(response);
+}
+
+export async function uploadOntologyAssistantFile(input: {
+  conversationId: string;
+  fileName: string;
+  contentBase64: string;
+  mimeType?: string;
+}): Promise<OntologyAssistantUploadResponse> {
+  const response = await fetch(buildApiUrl('/api/chat/upload'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  return parseJson<OntologyAssistantUploadResponse>(response);
+}
+
+export async function fetchAssistantGraphOverlay(conversationId: string): Promise<AssistantGraphOverlay> {
+  const response = await fetch(buildApiUrl(`/api/chat/graph?conversationId=${encodeURIComponent(conversationId)}`));
+  return parseJson<AssistantGraphOverlay>(response);
+}
+
+export async function saveAssistantGraphOverlay(input: AssistantGraphOverlay): Promise<AssistantGraphOverlay> {
+  const response = await fetch(buildApiUrl('/api/chat/graph'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  return parseJson<AssistantGraphOverlay>(response);
 }
 
 export async function askOntologyAssistantStream(

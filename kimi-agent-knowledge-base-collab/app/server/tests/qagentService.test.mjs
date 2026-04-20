@@ -150,6 +150,79 @@ test("QAgentService buildPrompt includes tool traces when provided", () => {
   assert.equal(prompt.includes("stdout="), true);
 });
 
+test("QAgentService writes the graph-overlay skill into the isolated runtime workspace", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-skill-"));
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: tempDir,
+    projectRoot: tempDir,
+    runtimeRoot: path.join(tempDir, "runtime"),
+  });
+
+  const runtimeRoot = path.join(tempDir, "runtime", ".web-chat-runs", "conversation-test");
+  await service.ensureOntologyFactorySkills(runtimeRoot);
+
+  const skillPath = path.join(runtimeRoot, ".agent", "skills", "graph-overlay", "SKILL.md");
+  const skillContent = await readFile(skillPath, "utf8");
+
+  assert.equal(skillContent.includes("knowledge-graph/overlay.json"), true);
+  assert.equal(skillContent.includes("display_level"), true);
+  assert.equal(skillContent.includes("不要重写底图"), false);
+  assert.equal(skillContent.includes("Never rewrite the base knowledge graph JSON"), true);
+});
+
+test("QAgentService writes the ner and relation wrapper commands into skills", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-wrappers-"));
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: tempDir,
+    projectRoot: tempDir,
+    runtimeRoot: path.join(tempDir, "runtime"),
+  });
+
+  const runtimeRoot = path.join(tempDir, "runtime", ".web-chat-runs", "conversation-test");
+  await service.ensureOntologyFactorySkills(runtimeRoot);
+
+  const nerSkill = await readFile(path.join(runtimeRoot, ".agent", "skills", "ner", "SKILL.md"), "utf8");
+  const relationSkill = await readFile(path.join(runtimeRoot, ".agent", "skills", "entity-relation", "SKILL.md"), "utf8");
+  const nerWrapperPath = path.join(runtimeRoot, "ner.sh");
+  const relationWrapperPath = path.join(runtimeRoot, "re.sh");
+
+  assert.equal(nerSkill.includes(nerWrapperPath), true);
+  assert.equal(relationSkill.includes(relationWrapperPath), true);
+  assert.equal(nerSkill.includes("initial runtime directory"), true);
+  assert.equal(relationSkill.includes("initial runtime directory"), true);
+});
+
+test("QAgentService writes the entity workflow skill into the isolated runtime workspace", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-workflow-"));
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: tempDir,
+    projectRoot: tempDir,
+    runtimeRoot: path.join(tempDir, "runtime"),
+  });
+
+  const runtimeRoot = path.join(tempDir, "runtime", ".web-chat-runs", "conversation-test");
+  await service.ensureOntologyFactorySkills(runtimeRoot);
+
+  const workflowSkill = await readFile(
+    path.join(runtimeRoot, ".agent", "skills", "entity-ner-re-graph-wiki-workflow", "SKILL.md"),
+    "utf8",
+  );
+  const nerWrapperPath = path.join(runtimeRoot, "ner.sh");
+  const relationWrapperPath = path.join(runtimeRoot, "re.sh");
+  const wikimgWrapperPath = path.join(runtimeRoot, "wikimg.sh");
+
+  assert.equal(workflowSkill.includes(nerWrapperPath), true);
+  assert.equal(workflowSkill.includes(relationWrapperPath), true);
+  assert.equal(workflowSkill.includes(wikimgWrapperPath), true);
+  assert.equal(workflowSkill.includes("visible: false"), true);
+  assert.equal(workflowSkill.includes("wiki/"), true);
+  assert.equal(workflowSkill.includes("There is no `graph-overlay.sh`"), true);
+  assert.equal(workflowSkill.includes(".agent/skills/entity-ner-re-graph-wiki-workflow/SKILL.md"), true);
+});
+
 test("QAgentService writes the selected model into runtime config", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-model-"));
   const runtimeRoot = path.join(tempDir, "runtime");
@@ -1186,7 +1259,7 @@ if (args.includes("--stream")) {
   assert.equal(commandLog.includes("hook fetch-memory off"), true);
   assert.equal(commandLog.includes("hook save-memory off"), true);
   assert.equal(commandLog.includes("hook auto-compact off"), true);
-  assert.equal(/\b(work|session|model)\b/.test(commandLog), false);
+  assert.equal(/\b(work|model)\b/.test(commandLog), false);
 });
 
 test("QAgentService removes persisted workline mappings across service instances", async () => {

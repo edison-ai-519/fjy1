@@ -38,6 +38,17 @@ function truncateCommand(command) {
   return normalized.length > 48 ? `${normalized.slice(0, 48)}...` : normalized;
 }
 
+function inferToolName(command) {
+  const normalized = String(command || "").toLowerCase();
+  if (normalized.includes("ner.sh") || normalized.includes("python -m ner")) {
+    return "ner";
+  }
+  if (normalized.includes("re.sh") || normalized.includes("entity_relation")) {
+    return "re";
+  }
+  return undefined;
+}
+
 function isInterruptedToolRun(toolRun) {
   if (!toolRun || typeof toolRun !== "object") {
     return false;
@@ -162,22 +173,26 @@ function normalizeContentBlock(value) {
   }
 
   if (raw.type === "tool_call") {
+    const command = typeof raw.command === "string" ? raw.command : "";
     return {
       id: typeof raw.id === "string" ? raw.id : "",
       type: "tool_call",
       callId: typeof raw.callId === "string" ? raw.callId : "",
-      command: typeof raw.command === "string" ? raw.command : "",
+      command,
       reasoning: typeof raw.reasoning === "string" ? raw.reasoning : undefined,
+      toolName: typeof raw.toolName === "string" ? raw.toolName : inferToolName(command),
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : null,
     };
   }
 
   if (raw.type === "tool_result") {
+    const command = typeof raw.command === "string" ? raw.command : "";
     return {
       id: typeof raw.id === "string" ? raw.id : "",
       type: "tool_result",
       callId: typeof raw.callId === "string" ? raw.callId : "",
-      command: typeof raw.command === "string" ? raw.command : "",
+      command,
+      toolName: typeof raw.toolName === "string" ? raw.toolName : inferToolName(command),
       status: typeof raw.status === "string" ? raw.status : "cancelled",
       stdout: typeof raw.stdout === "string" ? raw.stdout : "",
       stderr: typeof raw.stderr === "string" ? raw.stderr : "",

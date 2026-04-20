@@ -8,6 +8,7 @@ import { DatabaseKnowledgeBaseRepository } from "./repositories/databaseKnowledg
 import { WikiMGKnowledgeBaseRepository } from "./repositories/wikiMGKnowledgeBaseRepository.mjs";
 import { KnowledgeBaseService } from "./services/knowledgeBaseService.mjs";
 import { AssistantSessionStateService } from "./services/assistantSessionStateService.mjs";
+import { ConversationGraphStateService } from "./services/conversationGraphStateService.mjs";
 import { OntoGitLocalCommitService } from "./services/ontoGitLocalCommitService.mjs";
 import { QAgentService } from "./services/qagentService.mjs";
 import { WikiWorkspaceWriterService } from "./services/wikiWorkspaceWriterService.mjs";
@@ -116,6 +117,9 @@ export function createAppServices() {
       ),
     }),
     assistantSessionStateService: new AssistantSessionStateService({
+      runtimeRoot: qagentRuntimeRoot,
+    }),
+    conversationGraphStateService: new ConversationGraphStateService({
       runtimeRoot: qagentRuntimeRoot,
     }),
     localWorkspaceService: ontoGitCommitService,

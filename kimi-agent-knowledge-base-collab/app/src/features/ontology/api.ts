@@ -210,8 +210,8 @@ export interface EditorCommitResult {
   error?: string;
 }
 
-export async function fetchKnowledgeGraph(): Promise<KnowledgeGraphData> {
-  const response = await fetch(buildApiUrl('/api/knowledge-graph'));
+export async function fetchKnowledgeGraph(options: { refresh?: boolean } = {}): Promise<KnowledgeGraphData> {
+  const response = await fetch(buildApiUrl(`/api/knowledge-graph${options.refresh ? '?refresh=1' : ''}`));
   return parseJson<KnowledgeGraphData>(response);
 }
 

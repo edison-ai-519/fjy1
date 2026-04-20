@@ -11,6 +11,10 @@ const DEFAULT_CONTROL_TIMEOUT_MS = 15_000;
 const DEFAULT_EXECUTION_STAGE_DETAIL = "已整理知识库上下文，准备连接 Agent CLI...";
 const WIKIMG_WRAPPER_NAME = "wikimg.sh";
 const WIKIMG_HELP_NAME = "wikimg-help.md";
+const NER_WRAPPER_NAME = "ner.sh";
+const NER_HELP_NAME = "ner-help.md";
+const RELATION_WRAPPER_NAME = "re.sh";
+const RELATION_HELP_NAME = "re-help.md";
 
 function asNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -1460,12 +1464,16 @@ export class QAgentService {
   async prepareIsolatedRuntime(options = {}) {
     const runtimeParent = path.join(this.runtimeRoot, ".web-chat-runs");
     await mkdir(runtimeParent, { recursive: true });
-    const isolatedRuntimeRoot = await mkdtemp(path.join(runtimeParent, "run-"));
+    const conversationId = typeof options.conversationId === "string" ? options.conversationId.trim() : "";
+    const isolatedRuntimeRoot = conversationId
+      ? this.getConversationRuntimeRoot(conversationId)
+      : await mkdtemp(path.join(runtimeParent, "run-"));
     await this.ensureRuntimeRoot({
       ...options,
       runtimeRoot: isolatedRuntimeRoot,
     });
     await this.ensureOntologyFactorySkills(isolatedRuntimeRoot);
+    await this.ensureOntologyFactoryWrappers(isolatedRuntimeRoot);
     await this.runControlCommand(["hook", "fetch-memory", "off"], {
       runtimeRoot: isolatedRuntimeRoot,
     });
@@ -1480,6 +1488,18 @@ export class QAgentService {
 
   async cleanupIsolatedRuntime(runtimeRoot) {
     if (!runtimeRoot || typeof runtimeRoot !== "string") {
+      return;
+    }
+
+    const runtimeParent = path.join(this.runtimeRoot, ".web-chat-runs");
+    const resolvedRuntimeRoot = path.resolve(runtimeRoot);
+    const resolvedRuntimeParent = path.resolve(runtimeParent);
+    if (!resolvedRuntimeRoot.startsWith(`${resolvedRuntimeParent}${path.sep}`)) {
+      return;
+    }
+
+    const runtimeBaseName = path.basename(resolvedRuntimeRoot);
+    if (!runtimeBaseName.startsWith("run-")) {
       return;
     }
 
@@ -1538,9 +1558,95 @@ exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@
     await writeFile(helpPath, helpContent, "utf8");
   }
 
+  async ensureOntologyFactoryWrappers(targetRuntimeRoot) {
+    await this.ensureNERWrapper(targetRuntimeRoot);
+    await this.ensureRelationWrapper(targetRuntimeRoot);
+  }
+
+  async ensureNERWrapper(targetRuntimeRoot) {
+    const wrapperPath = path.join(targetRuntimeRoot, NER_WRAPPER_NAME);
+    const helpPath = path.join(targetRuntimeRoot, NER_HELP_NAME);
+    const ontologyFactoryRoot = path.resolve(this.projectRoot, "..", "Ontology_Factory");
+    const nerSrc = path.join(ontologyFactoryRoot, "ner", "src");
+    const wrapperContent = `#!/usr/bin/env bash
+set -euo pipefail
+
+exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
+`;
+    const helpContent = `# ner.sh
+
+这是一个给 QAgent 在隔离 runtime 中使用的本地封装脚本。
+
+## 固定行为
+
+- 自动把 \`PYTHONPATH\` 指向 NER 包
+- 自动调用 \`python -m ner.cli\`
+
+## 用法
+
+\`\`\`bash
+./ner.sh extract --input /path/to/text.txt --stdout
+./ner.sh extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
+./ner.sh extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`
+
+## 说明
+
+- 不需要手动设置 \`PYTHONPATH\`
+- 如果要在别的工作区执行，请让后端重新生成 runtime
+`;
+
+    await writeFile(wrapperPath, wrapperContent, "utf8");
+    await chmod(wrapperPath, 0o755);
+    await writeFile(helpPath, helpContent, "utf8");
+  }
+
+  async ensureRelationWrapper(targetRuntimeRoot) {
+    const wrapperPath = path.join(targetRuntimeRoot, RELATION_WRAPPER_NAME);
+    const helpPath = path.join(targetRuntimeRoot, RELATION_HELP_NAME);
+    const ontologyFactoryRoot = path.resolve(this.projectRoot, "..", "Ontology_Factory");
+    const relationSrc = path.join(ontologyFactoryRoot, "relation", "src");
+    const nerSrc = path.join(ontologyFactoryRoot, "ner", "src");
+    const wrapperContent = `#!/usr/bin/env bash
+set -euo pipefail
+
+exec env PYTHONPATH=${JSON.stringify(`${relationSrc}:${nerSrc}`)} python -m entity_relation.cli "$@"
+`;
+    const helpContent = `# re.sh
+
+这是一个给 QAgent 在隔离 runtime 中使用的本地封装脚本。
+
+## 固定行为
+
+- 自动把 \`PYTHONPATH\` 指向 relation 和 ner 包
+- 自动调用 \`python -m entity_relation.cli\`
+
+## 用法
+
+\`\`\`bash
+./re.sh extract --input /path/to/text.txt --stdout
+./re.sh extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
+./re.sh extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`
+
+## 说明
+
+- 关系抽取依赖 NER 包，所以会同时注入 relation 与 ner 的路径
+- 不需要手动设置 \`PYTHONPATH\`
+`;
+
+    await writeFile(wrapperPath, wrapperContent, "utf8");
+    await chmod(wrapperPath, 0o755);
+    await writeFile(helpPath, helpContent, "utf8");
+  }
+
   async ensureOntologyFactorySkills(targetRuntimeRoot) {
     const skillsDir = path.join(targetRuntimeRoot, ".agent", "skills");
     await mkdir(skillsDir, { recursive: true });
+    const nerWrapperPath = path.join(targetRuntimeRoot, NER_WRAPPER_NAME);
+    const relationWrapperPath = path.join(targetRuntimeRoot, RELATION_WRAPPER_NAME);
+    const wikimgWrapperPath = path.join(targetRuntimeRoot, WIKIMG_WRAPPER_NAME);
+    const graphOverlayPath = path.join(targetRuntimeRoot, "knowledge-graph", "overlay.json");
 
     const skills = [
       {
@@ -1560,23 +1666,26 @@ Use this skill when you need to extract entities from Chinese source text, inspe
 - Narrow extraction to a query-specific snippet before running NER.
 - Export \`NerDocument\` JSON for downstream document and relation processing.
 - Use the CLI output as a read-only document input for later ontology steps.
+- Treat \`${nerWrapperPath}\` as the primary entrypoint for this workflow.
 
 ## Important Paths
 
 - Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
 - NER package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner
 - CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner/src/ner/cli.py
+- The wrapper script is created in the conversation's initial runtime directory: \`${nerWrapperPath}\`
+- Start from that initial runtime directory and run the script there directly.
 
 ## Recommended Commands
 
-Run from the Ontology Factory root so Python module imports resolve cleanly:
+Use the runtime wrapper script directly:
 
 \`\`\`bash
-cd /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
-
-python -m ner.cli extract --input /path/to/text.txt --stdout
-python -m ner.cli extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
-python -m ner.cli extract --input /path/to/text.txt --output /path/to/output.json
+\`${nerWrapperPath}\` extract --input /path/to/text.txt --stdout
+\`${nerWrapperPath}\` extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
+\`${nerWrapperPath}\` extract --input /path/to/text.txt --output /path/to/output.json
+\`${nerWrapperPath}\` extract --input /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/sample_text.txt --stdout
+\`${nerWrapperPath}\` extract --input /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/sample_text.txt --query 光照 --max-sentences 4 --stdout
 \`\`\`
 
 ## Output
@@ -1589,12 +1698,16 @@ python -m ner.cli extract --input /path/to/text.txt --output /path/to/output.jso
 - You need to identify key entities in a document before relation extraction.
 - You want a structured, deterministic representation of mentions and normalized entities.
 - You want to inspect NER output before feeding it into a later ontology workflow.
+- If you need to hide, de-emphasize, or pin graph nodes after extraction, switch immediately to the graph-overlay skill and update \`knowledge-graph/overlay.json\` instead of creating a separate \`*_ner.json\` file.
 
 ## Notes
 
 - The extractor uses HanLP first and falls back to rule-based extraction.
 - Optional OpenRouter enhancement is available when the relevant environment variables are configured.
 - Keep the input file local and prefer read-only inspection commands when debugging the pipeline.
+- Do not depend on a temporary \`english_story_ner.json\` or similar intermediate file unless the user explicitly asks to persist the raw NER output. For graph display changes, use the NER stdout directly or write the overlay file in the same turn.
+- Prefer \`${nerWrapperPath}\` over calling the Python CLI directly; use \`cli.py\` only when you are debugging the wrapper itself.
+- The conversation starts in the runtime root that already contains \`${nerWrapperPath}\`; do not look for the script elsewhere.
 `,
       },
       {
@@ -1613,23 +1726,24 @@ Use this skill when you need to derive relations between entities from a local t
 - Convert text into relation candidates using the relation CLI.
 - Reuse NER output as the document basis for relation extraction.
 - Export \`RelationDocument\` JSON for ontology indexing and knowledge graph workflows.
+- Treat \`${relationWrapperPath}\` as the primary entrypoint for this workflow.
 
 ## Important Paths
 
 - Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
 - Relation package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation
 - CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation/src/entity_relation/cli.py
+- The wrapper script is created in the conversation's initial runtime directory: \`${relationWrapperPath}\`
+- Start from that initial runtime directory and run the script there directly.
 
 ## Recommended Commands
 
-Run from the Ontology Factory root so Python module imports resolve cleanly:
+Use the runtime wrapper script directly:
 
 \`\`\`bash
-cd /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
-
-python -m entity_relation.cli extract --input /path/to/text.txt --stdout
-python -m entity_relation.cli extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
-python -m entity_relation.cli extract --input /path/to/text.txt --output /path/to/output.json
+\`${relationWrapperPath}\` extract --input /path/to/text.txt --stdout
+\`${relationWrapperPath}\` extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
+\`${relationWrapperPath}\` extract --input /path/to/text.txt --output /path/to/output.json
 \`\`\`
 
 ## Output
@@ -1648,6 +1762,148 @@ python -m entity_relation.cli extract --input /path/to/text.txt --output /path/t
 - The relation extractor currently uses NER internally and applies sentence-level heuristics.
 - It is intentionally conservative and works best on focused snippets rather than large blobs of unrelated text.
 - Prefer this skill after \`ner\` when you want both entities and relations in the same workflow.
+- Prefer \`${relationWrapperPath}\` over calling the Python CLI directly; use \`cli.py\` only when you are debugging the wrapper itself.
+- The conversation starts in the runtime root that already contains \`${relationWrapperPath}\`; do not look for the script elsewhere.
+`,
+      },
+      {
+        name: "entity-ner-re-graph-wiki-workflow",
+        content: `---
+name: entity-ner-re-graph-wiki-workflow
+description: Run NER, RE, graph overlay cleanup, and wiki page creation or updates from the current conversation runtime.
+---
+
+# Entity NER / RE / Graph / Wiki Workflow
+
+Use this skill when the user wants one pass that extracts entities, extracts relations, hides useless graph nodes, and then writes or improves wiki pages for the stable entities that matter.
+
+## Execution Order
+
+1. Run NER first with \`${nerWrapperPath}\`.
+2. Run RE on the same text or a narrowed snippet with \`${relationWrapperPath}\`.
+3. Update \`${graphOverlayPath}\` through the graph-overlay workflow to hide low-value nodes and keep only useful entities and relations visible.
+4. Use \`${wikimgWrapperPath}\` to inspect existing wiki pages, then create or improve pages for the remaining stable entities and relation clusters.
+
+## Graph Overlay Rules
+
+- There is no \`graph-overlay.sh\` script.
+- Graph overlay is done by editing \`${graphOverlayPath}\` directly.
+- Start by reading the current overlay JSON, then merge your changes into that file.
+- Hide verbs, function words, fragments, punctuation-like tokens, and other noisy nodes by setting \`visible: false\`.
+- Preserve useful entities, relation anchors, and any node the user explicitly wants to keep.
+- Do not rewrite the base knowledge graph JSON.
+- Merge changes into the overlay instead of replacing the whole file.
+
+## How To Apply Graph Overlay
+
+Use the overlay file itself as the target:
+
+\`\`\`bash
+cat \`${graphOverlayPath}\`
+\`\`\`
+
+Then write the merged JSON back to the same file. If you need a command, use a small Node.js merge snippet or the existing app API. Do not invent or call \`graph-overlay.sh\`.
+
+## Wiki Rules
+
+- Treat the runtime's \`wiki/\` workspace as the destination for new and updated pages.
+- First inspect what already exists with \`${wikimgWrapperPath}\` list and \`${wikimgWrapperPath}\` show.
+- Create new wiki pages for stable entities that deserve their own entry.
+- Improve existing wiki pages when the entity already has a page and the new information adds definition, evidence, relations, or boundaries.
+- Keep one page focused on one stable entity or one tight concept cluster; do not dump the entire extraction result into a single page.
+- Prefer pages that clearly explain what the entity is, why it matters, and how it relates to the rest of the graph.
+
+## Practical Workflow
+
+1. Run NER and keep the stdout JSON.
+2. Run RE and keep the stdout JSON.
+3. Decide which nodes are useful enough to remain visible.
+4. Write the overlay patch first so the graph view stays clean.
+5. Inspect wiki pages and then add or improve the pages that correspond to the cleaned entity set.
+6. Preserve existing wiki content unless the user explicitly asks to replace it.
+
+## Notes
+
+- Use the wrapper scripts from the conversation's initial runtime directory directly.
+- Do not look for \`ner.sh\`, \`re.sh\`, or \`wikimg.sh\` elsewhere.
+- Do not look for \`graph-overlay.sh\` elsewhere because it does not exist.
+- The skill instructions themselves live under the initial runtime directory in \`.agent/skills/<skill-name>/SKILL.md\`.
+- If you need to inspect the skill text, read \`.agent/skills/entity-ner-re-graph-wiki-workflow/SKILL.md\` from the initial runtime directory.
+- If a page already exists, update it instead of creating a duplicate.
+`,
+      },
+      {
+        name: "graph-overlay",
+        content: `---
+name: graph-overlay
+description: Update the conversation knowledge-graph overlay JSON in the QAgent workspace without overwriting the base graph.
+---
+
+# Graph Overlay Skill
+
+Use this skill when you need to update the assistant-side knowledge graph display level, visibility, or highlight state inside the current conversation workspace.
+
+## What This Skill Is For
+
+- Read the base knowledge graph as a read-only source of truth.
+- Update only the session overlay JSON in the current QAgent workspace.
+- Merge new node and relation display metadata without deleting older overlay changes.
+- Keep the UI state recoverable after refresh by writing the overlay file back to disk.
+
+## Important Paths
+
+- Current QAgent runtime workspace: the active conversation runtime directory
+- Overlay file: \`knowledge-graph/overlay.json\`
+- Base graph: the read-only knowledge graph JSON that must not be overwritten
+- There is no \`graph-overlay.sh\` file. The overlay is the JSON file above.
+
+## Overlay Rules
+
+- Never rewrite the base knowledge graph JSON when you only need to change display state.
+- Only modify the overlay layer for:
+  - \`display_level\`
+  - \`visible\`
+  - \`highlight\`
+  - \`pinned\`
+  - \`focus\`
+- When a node or relation already exists in the overlay, merge the new change into that item instead of replacing the whole file.
+- Preserve unrelated nodes and relations.
+- If the overlay file does not exist, create it with:
+  - \`version\`
+  - \`conversationId\`
+  - \`updatedAt\`
+  - \`nodes\`
+  - \`relations\`
+- If you just finished NER and have the stdout JSON in hand, do not create a separate \`*_ner.json\` file first. Update \`knowledge-graph/overlay.json\` directly from the extracted entities so the UI can refresh immediately.
+
+## Recommended Workflow
+
+1. Inspect the current overlay JSON in the conversation workspace.
+2. Update only the items that need a display change.
+3. Keep previous overlay edits unless the user explicitly asks to reset them.
+4. Write the merged JSON back to \`knowledge-graph/overlay.json\`.
+
+## Recommended Commands
+
+Use the runtime workspace and a small Node.js merge script or direct JSON edit:
+
+\`\`\`bash
+cat knowledge-graph/overlay.json
+node -e '/* merge overlay JSON here */'
+\`\`\`
+
+## How To Apply Changes
+
+- Read the existing overlay JSON first.
+- Merge only the nodes and relations that need display changes.
+- Write the merged JSON back to \`knowledge-graph/overlay.json\`.
+- If the user asks for a command, run a small inline Node.js merge. Do not search for or call \`graph-overlay.sh\`.
+
+## Notes
+
+- This skill is for presentation-layer changes only.
+- Use \`ner\` and \`entity-relation\` first when you need to generate new entities or relations.
+- Use this skill after extraction when you want to decide which nodes should be emphasized, hidden, or pinned in the right-hand graph.
 `,
       },
     ];
@@ -1657,6 +1913,11 @@ python -m entity_relation.cli extract --input /path/to/text.txt --output /path/t
       await mkdir(skillDir, { recursive: true });
       await writeFile(path.join(skillDir, "SKILL.md"), skill.content, "utf8");
     }
+  }
+
+  getConversationRuntimeRoot(conversationId) {
+    const runtimeParent = path.join(this.runtimeRoot, ".web-chat-runs");
+    return path.join(runtimeParent, `conversation-${this.buildConversationRuntimeSlug(conversationId)}`);
   }
 
   resolveWikiMGRoot() {
@@ -1677,5 +1938,13 @@ python -m entity_relation.cli extract --input /path/to/text.txt --output /path/t
     ].filter(Boolean);
 
     return candidates[0];
+  }
+
+  buildConversationRuntimeSlug(conversationId) {
+    return conversationId
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "session";
   }
 }

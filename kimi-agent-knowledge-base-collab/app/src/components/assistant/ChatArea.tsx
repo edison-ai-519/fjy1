@@ -11,6 +11,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   LoaderCircle,
+  Paperclip,
+  Eye,
+  GitCompareArrows,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -26,6 +29,7 @@ interface ChatAreaProps {
   onAsk: (question?: string) => void;
   onStop: () => void;
   onDraftChange: (value: string) => void;
+  onUploadFile: (file: File) => Promise<void>;
   isBusy: boolean;
   selectedEntityName?: string;
   renderSettings?: () => React.ReactNode;
@@ -218,6 +222,51 @@ function ToolCallBlock({
 }: {
   block: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
 }) {
+  const isNer = block.toolName === 'ner';
+  const isRe = block.toolName === 're';
+
+  if (isNer || isRe) {
+    return (
+      <div className="relative overflow-hidden rounded-[28px] border border-border/30 bg-card/80 p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.55)] backdrop-blur-sm">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.14),transparent_42%),radial-gradient(circle_at_bottom_right,rgba(99,102,241,0.10),transparent_38%)]" />
+        <div className="relative flex items-start justify-between gap-4">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-black tracking-[0.24em] uppercase text-white shadow-sm',
+                  isNer ? 'bg-cyan-600' : 'bg-indigo-600',
+                )}
+              >
+                {isNer ? <Eye className="h-3.5 w-3.5" /> : <GitCompareArrows className="h-3.5 w-3.5" />}
+                {isNer ? '观察中' : '对比分析中'}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {block.createdAt ? new Date(block.createdAt).toLocaleTimeString([], { hour12: false }) : ''}
+              </span>
+            </div>
+            <div className="max-w-[30rem] text-[13px] leading-6 text-foreground/80">
+              {isNer
+                ? '正在识别实体并把它们整理进图谱，右侧会同步出现可连接的节点。'
+                : '正在对照实体关系与上下文，准备把对比结果连成一条可读的关系链。'}
+            </div>
+          </div>
+          <div className={cn(
+            'rounded-2xl border px-3 py-2 text-[11px] font-bold',
+            isNer
+              ? 'border-cyan-500/20 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300'
+              : 'border-indigo-500/20 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+          )}>
+            {isNer ? 'NER' : 'RE'}
+          </div>
+        </div>
+        <div className="relative mt-4 rounded-2xl border border-dashed border-border/40 bg-background/60 px-4 py-3 text-[12px] leading-6 text-muted-foreground">
+          {isNer ? '观察实体抽取过程，并等待节点落图。' : '观察关系对照过程，并等待关系落线。'}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-2xl border border-border/40 bg-card/80 p-3 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -245,6 +294,8 @@ function ToolResultBlock({
 }: {
   block: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
 }) {
+  const isNer = block.toolName === 'ner';
+  const isRe = block.toolName === 're';
   const statusMeta = formatToolRunStatus({
     callId: block.callId,
     command: block.command,
@@ -260,6 +311,70 @@ function ToolResultBlock({
   });
   const hasStdout = hasVisibleText(block.stdout);
   const hasStderr = hasVisibleText(block.stderr);
+
+  if (isNer || isRe) {
+    return (
+      <div className="rounded-[28px] border border-border/30 bg-card/80 p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.55)]">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-black tracking-[0.24em] uppercase text-white shadow-sm',
+                isNer ? 'bg-cyan-600' : 'bg-indigo-600',
+              )}
+            >
+              {isNer ? <Eye className="h-3.5 w-3.5" /> : <GitCompareArrows className="h-3.5 w-3.5" />}
+              {isNer ? '观察完成' : '对比完成'}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              {typeof block.durationMs === 'number' ? `${(block.durationMs / 1000).toFixed(2)}s` : '已结束'}
+            </span>
+          </div>
+          <div
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold',
+              statusMeta.className,
+            )}
+          >
+            {statusMeta.icon}
+            <span>{statusMeta.label}</span>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-2xl border border-border/40 bg-background/70 p-3">
+            <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/70">
+              {isNer ? '抽取结果' : '关系对照'}
+            </div>
+            {hasStdout ? (
+              <ToolOutputBlock label="stdout" content={block.stdout} tone="default" />
+            ) : (
+              <div className="text-[12px] text-muted-foreground/80">
+                本次没有可直接渲染的结构化输出。
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border border-dashed border-border/40 bg-muted/20 p-3">
+            <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/70">
+              图谱联动
+            </div>
+            <div className="space-y-2 text-[12px] leading-6 text-muted-foreground">
+              <div>
+                {isNer ? '左侧已转为观察卡，右侧图谱会追加新节点。' : '左侧已转为对比卡，右侧图谱会尝试连出关系线。'}
+              </div>
+              <div className="rounded-xl bg-background/70 px-3 py-2 text-foreground/80">
+                {isNer ? '节点正在落图' : '关系正在成线'}
+              </div>
+            </div>
+          </div>
+        </div>
+        {hasStderr && (
+          <div className="mt-3">
+            <ToolOutputBlock label="stderr" content={block.stderr} tone="danger" />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-2xl border border-border/40 bg-card/80 p-3 shadow-sm">
@@ -372,12 +487,14 @@ export function ChatArea({
   onAsk,
   onStop,
   onDraftChange,
+  onUploadFile,
   isBusy,
   renderSettings,
   renderExtraActions
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [showScrollButton, setShowScrollButton] = React.useState(false);
   const { messages, draftQuestion, loading, error, statusMessage } = activeSession;
   const lastMessage = messages[messages.length - 1];
@@ -421,6 +538,19 @@ export function ChatArea({
     if (e.key === 'Enter' && !e.shiftKey && !isBusy) {
       e.preventDefault();
       onAsk();
+    }
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      await onUploadFile(file);
+    } finally {
+      event.target.value = '';
     }
   };
 
@@ -570,6 +700,23 @@ export function ChatArea({
             {/* Toolbar Row */}
             <div className="flex items-center justify-end px-1">
               <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleFileChange(event);
+                  }}
+                />
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-10 h-10 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted transition-all"
+                  title="上传文件到当前会话 runtime"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </Button>
                 <Button
                   size="icon"
                   onClick={() => (loading ? onStop() : onAsk())}
