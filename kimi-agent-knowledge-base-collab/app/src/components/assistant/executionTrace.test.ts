@@ -5,6 +5,7 @@ import {
   getExecutionTraceTitle,
   getExecutionTraceKind,
   isCliExecutionTrace,
+  isToolRunFailure,
   groupAssistantContentBlocks,
 } from './executionTrace';
 
@@ -67,4 +68,11 @@ test('脚本调用会被识别为 cli', () => {
 test('bash -lc 这类内联命令保持 plain', () => {
   assert.equal(getExecutionTraceKind('bash -lc "echo hello"'), 'plain');
   assert.equal(getExecutionTraceTitle('bash -lc "echo hello"'), 'bash');
+});
+
+test('stderr 不会单独把结果判成失败', () => {
+  assert.equal(isToolRunFailure('success', 0), false);
+  assert.equal(isToolRunFailure('success', undefined), false);
+  assert.equal(isToolRunFailure('success', 1), true);
+  assert.equal(isToolRunFailure('error', 0), true);
 });

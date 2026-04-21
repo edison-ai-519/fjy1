@@ -114,6 +114,14 @@ export function isCliExecutionTrace(command: string, toolName?: string) {
   return getExecutionTraceKind(command, toolName) === 'cli';
 }
 
+export function isToolRunFailure(status?: string | null, exitCode?: number | null) {
+  if (status === 'error') {
+    return true;
+  }
+
+  return typeof exitCode === 'number' && exitCode !== 0;
+}
+
 export function groupAssistantContentBlocks(blocks: PersistedOntologyAssistantContentBlock[]): AssistantContentGroup[] {
   if (blocks.length === 0) {
     return [];

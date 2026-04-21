@@ -20,7 +20,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { AssistantMarkdown, copyCodeToClipboard } from './AssistantMarkdown';
-import { getExecutionTraceKind, getExecutionTraceTitle, groupAssistantContentBlocks } from './executionTrace';
+import {
+  getExecutionTraceKind,
+  getExecutionTraceTitle,
+  groupAssistantContentBlocks,
+  isToolRunFailure,
+} from './executionTrace';
 import { cn } from '@/lib/utils';
 import type {
   PersistedOntologyAssistantContentBlock,
@@ -109,9 +114,15 @@ function ToolOutputBlock({
 }: {
   label: string;
   content: string;
-  tone: 'default' | 'danger';
+  tone: 'default' | 'warning' | 'danger';
 }) {
   const preview = buildToolOutputPreview(content);
+  const toneClassName =
+    tone === 'danger'
+      ? 'border-rose-500/20 bg-rose-500/5 text-rose-950 dark:text-rose-100'
+      : tone === 'warning'
+        ? 'border-slate-300/70 bg-slate-100/80 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/45 dark:text-slate-300'
+        : 'border-border/40 bg-muted/30 text-foreground/85';
 
   return (
     <div className="space-y-1.5">
@@ -121,9 +132,7 @@ function ToolOutputBlock({
       <pre
         className={cn(
           'max-h-56 overflow-auto rounded-2xl border px-3 py-2.5 text-[12px] leading-5 shadow-sm whitespace-pre-wrap [overflow-wrap:anywhere]',
-          tone === 'danger'
-            ? 'border-rose-500/20 bg-rose-500/5 text-rose-950 dark:text-rose-100'
-            : 'border-border/40 bg-muted/30 text-foreground/85'
+          toneClassName,
         )}
       >
         {preview.content}
@@ -207,11 +216,26 @@ function PlainExecutionCard({
   assistantAnswer?: string;
 }) {
   const [open, setOpen] = React.useState(false);
+
+  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
+  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
+  const durationLabel = typeof resultBlock?.durationMs === 'number'
+    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
+    : '';
+  const hasStdout = hasVisibleText(resultBlock?.stdout);
+  const hasStderr = hasVisibleText(resultBlock?.stderr);
+  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
+  const formattedAnswer = formatAnswerAsJson(answerText);
+  const answerIsJson = Boolean(answerText && formattedAnswer && formattedAnswer !== answerText);
+  const hasToolRunFailure = resultBlock ? isToolRunFailure(resultBlock.status, resultBlock.exitCode) : false;
+  const effectiveStatus: PersistedOntologyAssistantToolRun['status'] = resultBlock
+    ? (hasToolRunFailure ? 'error' : resultBlock.status)
+    : 'running';
   const statusMeta = resultBlock
     ? formatToolRunStatus({
         callId: resultBlock.callId,
         command: resultBlock.command,
-        status: resultBlock.status,
+        status: effectiveStatus,
         stdout: resultBlock.stdout,
         stderr: resultBlock.stderr,
         exitCode: resultBlock.exitCode,
@@ -226,31 +250,20 @@ function PlainExecutionCard({
         className: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
         icon: <LoaderCircle className="h-3.5 w-3.5 animate-spin" />,
       };
-
-  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
-  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
-  const durationLabel = typeof resultBlock?.durationMs === 'number'
-    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
-    : '';
-  const hasStdout = hasVisibleText(resultBlock?.stdout);
-  const hasStderr = hasVisibleText(resultBlock?.stderr);
-  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
-  const formattedAnswer = formatAnswerAsJson(answerText);
-  const answerIsJson = Boolean(answerText && formattedAnswer && formattedAnswer !== answerText);
   const cardTone =
-    resultBlock?.status === 'error'
+    effectiveStatus === 'error'
       ? 'border-rose-200/80 bg-rose-50/80 dark:border-rose-900/40 dark:bg-rose-950/20'
       : resultBlock?.status === 'running'
         ? 'border-amber-200/80 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20'
         : 'border-slate-200/80 bg-white/75 dark:border-slate-800/70 dark:bg-slate-950/35';
   const titleTone =
-    resultBlock?.status === 'error'
+    effectiveStatus === 'error'
       ? 'text-rose-950 dark:text-rose-100'
       : resultBlock?.status === 'running'
         ? 'text-amber-950 dark:text-amber-100'
         : 'text-slate-950 dark:text-slate-100';
   const badgeTone =
-    resultBlock?.status === 'error'
+    effectiveStatus === 'error'
       ? 'ring-rose-500/10'
       : resultBlock?.status === 'running'
         ? 'ring-amber-500/10'
@@ -327,7 +340,7 @@ function PlainExecutionCard({
                   <ToolOutputBlock label="stdout" content={resultBlock.stdout} tone="default" />
                 )}
                 {hasStderr && (
-                  <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="danger" />
+                  <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="warning" />
                 )}
                 {answerText && (
                   <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3 dark:border-slate-800/70 dark:bg-slate-950/50">
@@ -448,10 +461,12 @@ function ToolResultBlock({
 
   const isNer = block.toolName === 'ner';
   const isRe = block.toolName === 're';
+  const hasToolRunFailure = isToolRunFailure(block.status, block.exitCode);
+  const effectiveStatus = hasToolRunFailure ? 'error' : block.status;
   const statusMeta = formatToolRunStatus({
     callId: block.callId,
     command: block.command,
-    status: block.status,
+    status: effectiveStatus,
     stdout: block.stdout,
     stderr: block.stderr,
     exitCode: block.exitCode,
@@ -521,7 +536,7 @@ function ToolResultBlock({
         </div>
         {hasStderr && (
           <div className="mt-3">
-            <ToolOutputBlock label="stderr" content={block.stderr} tone="danger" />
+            <ToolOutputBlock label="stderr" content={block.stderr} tone="warning" />
           </div>
         )}
       </div>
@@ -555,7 +570,7 @@ function ToolResultBlock({
         <ToolOutputBlock label="stdout" content={block.stdout} tone="default" />
       )}
       {hasStderr && (
-        <ToolOutputBlock label="stderr" content={block.stderr} tone="danger" />
+        <ToolOutputBlock label="stderr" content={block.stderr} tone="warning" />
       )}
       {!hasStdout && !hasStderr && (
         <div className="text-[12px] text-muted-foreground/80">
@@ -632,12 +647,24 @@ function ExecutionTraceCard({
   assistantAnswer?: string;
 }) {
   const [isExpanded, setIsExpanded] = React.useState(true);
-  
+
+  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
+  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
+  const durationLabel = typeof resultBlock?.durationMs === 'number'
+    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
+    : '';
+  const hasStdout = hasVisibleText(resultBlock?.stdout);
+  const hasStderr = hasVisibleText(resultBlock?.stderr);
+  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
+  const hasToolRunFailure = resultBlock ? isToolRunFailure(resultBlock.status, resultBlock.exitCode) : false;
+  const effectiveStatus: PersistedOntologyAssistantToolRun['status'] = resultBlock
+    ? (hasToolRunFailure ? 'error' : resultBlock.status)
+    : 'running';
   const statusMeta = resultBlock
     ? formatToolRunStatus({
         callId: resultBlock.callId,
         command: resultBlock.command,
-        status: resultBlock.status,
+        status: effectiveStatus,
         stdout: resultBlock.stdout,
         stderr: resultBlock.stderr,
         exitCode: resultBlock.exitCode,
@@ -652,18 +679,9 @@ function ExecutionTraceCard({
         className: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
         icon: <LoaderCircle className="h-3.5 w-3.5 animate-spin" />,
       };
-
-  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
-  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
-  const durationLabel = typeof resultBlock?.durationMs === 'number'
-    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
-    : '';
-  const hasStdout = hasVisibleText(resultBlock?.stdout);
-  const hasStderr = hasVisibleText(resultBlock?.stderr);
-  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
   const isRunning = !resultBlock || resultBlock.status === 'running';
   const cardTone =
-    resultBlock?.status === 'error'
+    effectiveStatus === 'error'
       ? 'border-rose-200/80 bg-gradient-to-br from-rose-50 via-white to-white dark:border-rose-500/20 dark:from-rose-950/35 dark:via-slate-950 dark:to-rose-950/15'
       : isRunning
         ? 'border-amber-200/80 bg-gradient-to-br from-amber-50 via-white to-cyan-50 dark:border-amber-500/20 dark:from-amber-950/30 dark:via-slate-950 dark:to-cyan-950/15'
@@ -769,7 +787,7 @@ function ExecutionTraceCard({
                   </div>
 
                   {hasStdout && <ToolOutputBlock label="stdout" content={resultBlock.stdout} tone="default" />}
-                  {hasStderr && <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="danger" />}
+                  {hasStderr && <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="warning" />}
                   {!hasStdout && !hasStderr && (
                     <div className="py-4 text-center text-xs text-muted-foreground italic">本次执行无标准输出。</div>
                   )}
@@ -810,7 +828,7 @@ function QAgentSuperCard({
   };
 
   const queryText = extractQuery(callBlock.command || '');
-  const isError = resultBlock?.status === 'error' || Boolean(resultBlock?.stderr);
+  const isError = resultBlock ? isToolRunFailure(resultBlock.status, resultBlock.exitCode) : false;
   const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
 
   return (
@@ -883,7 +901,7 @@ function QAgentSuperCard({
                 {resultBlock ? (
                   <div className="max-h-[300px] overflow-auto space-y-3 rounded-xl border border-indigo-500/10 bg-indigo-500/[0.02] p-3 custom-scrollbar">
                     {resultBlock.stderr && (
-                      <div className="rounded-lg bg-red-500/5 border border-red-500/20 p-2 text-[11px] font-mono text-red-600">
+                      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-2 text-[11px] font-mono text-slate-700 dark:text-slate-100">
                         {resultBlock.stderr}
                       </div>
                     )}
