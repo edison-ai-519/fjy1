@@ -1,6 +1,6 @@
 ---
 name: git-query-agent-cli
-description: 使用 `git` CLI 在 QAgent 中稳定执行仓库查询、状态检查、分支/日志/差异检索和只读查询；如果未来仓库内存在专用 Git Query CLI，则优先使用其相对路径，否则回退到标准 `git` 命令。
+description: 使用 `D:\code\FJY\OntoGit\agent\run_git_query_agent.sh` 和 `D:\code\FJY\OntoGit\agent\run_git_tool.sh` 在 QAgent 中稳定执行 Git Query 相关 CLI；如果当前任务是仓库查询就回退到标准 `git` 命令。
 ---
 
 # Git Query Agent CLI
@@ -44,7 +44,8 @@ description: 使用 `git` CLI 在 QAgent 中稳定执行仓库查询、状态检
 - 优先做只读查询
 - 不确定仓库时，先确认当前工作目录
 - 需要跨目录查询时，优先用 `git -C <repo>`，不要依赖临时 `cd`
-- 如果未来存在专用 Git Query CLI，优先按项目相对路径调用；如果没有，就直接使用 `git`
+- 如果要走专用 CLI，优先调用 `..\OntoGit\agent\run_git_query_agent.sh` 或 `..\OntoGit\agent\run_git_tool.sh`
+- 如果当前任务只是标准 Git 查询，就直接使用 `git`
 
 ## 典型查询
 

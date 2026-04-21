@@ -6,6 +6,7 @@ import {
   Check,
   ArrowUp,
   ArrowDown,
+  ChevronDown,
   Square,
   Terminal,
   CheckCircle2,
@@ -14,10 +15,12 @@ import {
   Paperclip,
   Eye,
   GitCompareArrows,
+  ChevronUp,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { AssistantMarkdown, copyCodeToClipboard } from './AssistantMarkdown';
+import { getExecutionTraceKind, getExecutionTraceTitle, groupAssistantContentBlocks } from './executionTrace';
 import { cn } from '@/lib/utils';
 import type {
   PersistedOntologyAssistantContentBlock,
@@ -140,79 +143,220 @@ function ToolRunDetails({ toolRuns }: { toolRuns: PersistedOntologyAssistantTool
   }
 
   return (
-    <div className="mb-5 space-y-3">
+    <div className="mb-5 space-y-4">
       <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground/80">
         <Terminal className="h-3.5 w-3.5" />
         <span>本轮工具过程</span>
       </div>
 
       {toolRuns.map((toolRun, index) => {
-        const statusMeta = formatToolRunStatus(toolRun);
-        const hasStdout = hasVisibleText(toolRun.stdout);
-        const hasStderr = hasVisibleText(toolRun.stderr);
-        const hasOutput = hasStdout || hasStderr;
+        const callBlock = {
+          id: `tool-run-call-${toolRun.callId || index}`,
+          type: 'tool_call' as const,
+          callId: toolRun.callId,
+          command: toolRun.command,
+          toolName: toolRun.status === 'running' ? 'running' : undefined,
+          createdAt: toolRun.startedAt || toolRun.finishedAt || '',
+        };
+
+        const executionKind = getExecutionTraceKind(toolRun.command);
+
+        const resultBlock = {
+          id: `tool-run-result-${toolRun.callId || index}`,
+          type: 'tool_result' as const,
+          callId: toolRun.callId,
+          command: toolRun.command,
+          toolName: toolRun.status === 'running' ? 'running' : undefined,
+          status: toolRun.status,
+          stdout: toolRun.stdout,
+          stderr: toolRun.stderr,
+          exitCode: toolRun.exitCode,
+          cwd: toolRun.cwd,
+          durationMs: toolRun.durationMs,
+          createdAt: toolRun.startedAt || toolRun.finishedAt || '',
+          finishedAt: toolRun.finishedAt,
+        };
 
         return (
-          <div
-            key={toolRun.callId || `tool-run-${index}`}
-            className="space-y-2 rounded-3xl border border-border/40 bg-card/80 p-3 shadow-sm"
-          >
-            <div className="rounded-2xl border border-border/40 bg-background/80 p-3">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white dark:bg-slate-200 dark:text-slate-900">
-                  tool_call
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  第 {index + 1} 次调用
-                </span>
-              </div>
-              <div className="rounded-2xl bg-muted/40 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/90 [overflow-wrap:anywhere]">
-                {toolRun.command || '等待工具参数...'}
-              </div>
-              {toolRun.cwd && (
-                <div className="mt-2 text-[11px] text-muted-foreground/80 [overflow-wrap:anywhere]">
-                  cwd: {toolRun.cwd}
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-2xl border border-border/40 bg-background/80 p-3">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white">
-                  tool_result
-                </span>
-                <div
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold',
-                    statusMeta.className
-                  )}
-                >
-                  {statusMeta.icon}
-                  <span>{statusMeta.label}</span>
-                  {typeof toolRun.exitCode === 'number' && (
-                    <span className="font-mono opacity-80">exit {toolRun.exitCode}</span>
-                  )}
-                  {typeof toolRun.durationMs === 'number' && (
-                    <span className="font-mono opacity-80">{(toolRun.durationMs / 1000).toFixed(2)}s</span>
-                  )}
-                </div>
-              </div>
-
-              {hasStdout && (
-                <ToolOutputBlock label="stdout" content={toolRun.stdout} tone="default" />
-              )}
-              {hasStderr && (
-                <ToolOutputBlock label="stderr" content={toolRun.stderr} tone="danger" />
-              )}
-              {!hasOutput && (
-                <div className="text-[12px] text-muted-foreground/80">
-                  {toolRun.status === 'running' ? '工具正在运行，等待返回结果...' : '本次工具调用没有可展示的输出。'}
-                </div>
-              )}
-            </div>
-          </div>
+          executionKind === 'cli' ? (
+            <ExecutionTraceCard
+              key={toolRun.callId || `tool-run-${index}`}
+              callBlock={callBlock}
+              resultBlock={resultBlock}
+            />
+          ) : (
+            <PlainExecutionCard
+              key={toolRun.callId || `tool-run-${index}`}
+              callBlock={callBlock}
+              resultBlock={resultBlock}
+            />
+          )
         );
       })}
+    </div>
+  );
+}
+
+function PlainExecutionCard({
+  callBlock,
+  resultBlock,
+  assistantAnswer,
+}: {
+  callBlock: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
+  resultBlock?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
+  assistantAnswer?: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const statusMeta = resultBlock
+    ? formatToolRunStatus({
+        callId: resultBlock.callId,
+        command: resultBlock.command,
+        status: resultBlock.status,
+        stdout: resultBlock.stdout,
+        stderr: resultBlock.stderr,
+        exitCode: resultBlock.exitCode,
+        cwd: resultBlock.cwd,
+        durationMs: resultBlock.durationMs,
+        truncated: false,
+        startedAt: resultBlock.createdAt,
+        finishedAt: resultBlock.finishedAt,
+      })
+    : {
+        label: '进行中',
+        className: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
+        icon: <LoaderCircle className="h-3.5 w-3.5 animate-spin" />,
+      };
+
+  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
+  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
+  const durationLabel = typeof resultBlock?.durationMs === 'number'
+    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
+    : '';
+  const hasStdout = hasVisibleText(resultBlock?.stdout);
+  const hasStderr = hasVisibleText(resultBlock?.stderr);
+  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
+  const formattedAnswer = formatAnswerAsJson(answerText);
+  const answerIsJson = Boolean(answerText && formattedAnswer && formattedAnswer !== answerText);
+  const cardTone =
+    resultBlock?.status === 'error'
+      ? 'border-rose-200/80 bg-rose-50/80 dark:border-rose-900/40 dark:bg-rose-950/20'
+      : resultBlock?.status === 'running'
+        ? 'border-amber-200/80 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20'
+        : 'border-slate-200/80 bg-white/75 dark:border-slate-800/70 dark:bg-slate-950/35';
+  const titleTone =
+    resultBlock?.status === 'error'
+      ? 'text-rose-950 dark:text-rose-100'
+      : resultBlock?.status === 'running'
+        ? 'text-amber-950 dark:text-amber-100'
+        : 'text-slate-950 dark:text-slate-100';
+  const badgeTone =
+    resultBlock?.status === 'error'
+      ? 'ring-rose-500/10'
+      : resultBlock?.status === 'running'
+        ? 'ring-amber-500/10'
+        : 'ring-slate-500/10';
+
+  return (
+    <div className={cn('group my-3 overflow-hidden rounded-[18px] border backdrop-blur-sm shadow-[0_10px_24px_-20px_rgba(15,23,42,0.35)] transition-shadow hover:shadow-[0_14px_28px_-18px_rgba(15,23,42,0.45)]', cardTone)}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-900/40"
+      >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-100/90 text-slate-600 shadow-sm dark:border-slate-700/80 dark:bg-slate-900/80 dark:text-slate-300">
+          <Terminal className="h-4 w-4" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn('truncate text-[15px] font-semibold', titleTone)}>
+              {title}
+            </span>
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground/75">
+            {timeLabel && <span>开始 {timeLabel}</span>}
+            {durationLabel && <span>· 耗时 {durationLabel}</span>}
+            {callBlock.reasoning && (
+              <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                reason
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <div
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow-sm ring-1 ring-inset',
+              statusMeta.className,
+              badgeTone,
+            )}
+          >
+            {statusMeta.icon}
+            <span>{statusMeta.label}</span>
+          </div>
+          <ChevronDown
+            className={cn(
+              'h-4 w-4 text-muted-foreground/70 transition-transform',
+              open && 'rotate-180',
+            )}
+          />
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-200/70 px-4 pb-4 pt-3 dark:border-slate-800/70">
+          <div className="space-y-4">
+            {/* 命令区 */}
+            <div className="max-h-[120px] overflow-auto rounded-xl border border-slate-200/75 bg-slate-50/90 px-3 py-2 font-mono text-[12px] leading-5 text-foreground/90 [overflow-wrap:anywhere] dark:border-slate-800/80 dark:bg-slate-950/50 custom-scrollbar">
+              {callBlock.command || '等待工具参数...'}
+            </div>
+
+            {hasVisibleText(callBlock.reasoning) && (
+              <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.05] px-3 py-2 text-[12px] leading-5 text-foreground/85 [overflow-wrap:anywhere]">
+                <span className="mr-2 text-[10px] font-black uppercase tracking-[0.22em] text-amber-600 dark:text-amber-300">
+                  reason
+                </span>
+                {callBlock.reasoning}
+              </div>
+            )}
+
+            {resultBlock ? (
+              <div className="max-h-[300px] overflow-auto space-y-3 custom-scrollbar">
+                {hasStdout && (
+                  <ToolOutputBlock label="stdout" content={resultBlock.stdout} tone="default" />
+                )}
+                {hasStderr && (
+                  <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="danger" />
+                )}
+                {answerText && (
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3 dark:border-slate-800/70 dark:bg-slate-950/50">
+                    <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground/70">
+                      回复
+                    </div>
+                    {answerIsJson ? (
+                      <pre className="max-h-60 overflow-auto rounded-2xl border border-slate-200/80 bg-background/80 p-3 font-mono text-[12px] leading-6 text-foreground/90 whitespace-pre-wrap [overflow-wrap:anywhere] dark:border-slate-800/70 dark:bg-slate-950/45 custom-scrollbar">
+                        {formattedAnswer}
+                      </pre>
+                    ) : (
+                      <AssistantMarkdown content={answerText} />
+                    )}
+                  </div>
+                )}
+                {!hasStdout && !hasStderr && !answerText && (
+                  <div className="text-[12px] text-muted-foreground/80 italic">
+                    本次工具调用没有可展示的输出。
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-300/70 bg-slate-50/70 px-4 py-5 text-center text-xs text-muted-foreground dark:border-slate-700/70 dark:bg-slate-950/30">
+                工具正在运行，等待回执...
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -272,7 +416,7 @@ function ToolCallBlock({
   }
 
   return (
-    <div className="rounded-2xl border border-border/40 bg-card/80 p-3 shadow-sm">
+    <div className="rounded-[16px] border border-slate-200/70 bg-white/70 p-3 shadow-[0_8px_18px_-16px_rgba(15,23,42,0.35)] backdrop-blur-sm dark:border-slate-800/70 dark:bg-slate-950/35">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white dark:bg-slate-200 dark:text-slate-900">
           tool_call
@@ -385,7 +529,7 @@ function ToolResultBlock({
   }
 
   return (
-    <div className="rounded-2xl border border-border/40 bg-card/80 p-3 shadow-sm">
+    <div className="rounded-[16px] border border-slate-200/70 bg-white/70 p-3 shadow-[0_8px_18px_-16px_rgba(15,23,42,0.35)] backdrop-blur-sm dark:border-slate-800/70 dark:bg-slate-950/35">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <span className="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white">
           tool_result
@@ -442,6 +586,212 @@ function formatAnswerAsJson(value: string) {
   }
 }
 
+function CliAnswerPanel({ answer }: { answer: string }) {
+  const normalizedAnswer = answer.trim();
+  const formattedAnswer = formatAnswerAsJson(normalizedAnswer);
+  const answerIsJson = Boolean(normalizedAnswer && formattedAnswer && formattedAnswer !== normalizedAnswer);
+
+  return (
+    <div className="relative overflow-hidden rounded-[26px] border border-indigo-500/25 bg-gradient-to-br from-indigo-500/12 via-cyan-500/8 to-white/90 p-4 shadow-[0_24px_60px_-36px_rgba(79,70,229,0.75)] dark:from-indigo-500/15 dark:via-cyan-500/10 dark:to-slate-950/80">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.16),transparent_40%),radial-gradient(circle_at_bottom_left,rgba(34,211,238,0.12),transparent_34%)]" />
+      <div className="relative mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.24em] text-indigo-700 dark:text-indigo-300">
+          <Sparkles className="h-3.5 w-3.5" />
+          智能回复
+        </div>
+        <div className="rounded-full border border-indigo-500/15 bg-white/75 px-2.5 py-1 text-[10px] font-semibold text-indigo-700 dark:bg-slate-950/65 dark:text-indigo-300">
+          LLM / Agent
+        </div>
+      </div>
+      {answerIsJson ? (
+        <pre className="relative max-h-80 overflow-auto rounded-[22px] border border-indigo-500/15 bg-white/85 p-4 font-mono text-[13px] leading-6 text-foreground/90 whitespace-pre-wrap [overflow-wrap:anywhere] dark:bg-slate-950/70">
+          {formattedAnswer}
+        </pre>
+      ) : (
+        <div className="relative rounded-[22px] border border-indigo-500/15 bg-white/80 p-3 dark:bg-slate-950/60">
+          <AssistantMarkdown content={normalizedAnswer} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isQueryAgentToolCall(command?: string, toolName?: string) {
+  return Boolean(
+    command?.includes('run_git_query_agent.py') || toolName === 'query_agent',
+  );
+}
+
+function ExecutionTraceCard({
+  callBlock,
+  resultBlock,
+  assistantAnswer,
+}: {
+  callBlock: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_call' }>;
+  resultBlock?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
+  assistantAnswer?: string;
+}) {
+  const [isExpanded, setIsExpanded] = React.useState(true);
+  
+  const statusMeta = resultBlock
+    ? formatToolRunStatus({
+        callId: resultBlock.callId,
+        command: resultBlock.command,
+        status: resultBlock.status,
+        stdout: resultBlock.stdout,
+        stderr: resultBlock.stderr,
+        exitCode: resultBlock.exitCode,
+        cwd: resultBlock.cwd,
+        durationMs: resultBlock.durationMs,
+        truncated: false,
+        startedAt: resultBlock.createdAt,
+        finishedAt: resultBlock.finishedAt,
+      })
+    : {
+        label: '进行中',
+        className: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
+        icon: <LoaderCircle className="h-3.5 w-3.5 animate-spin" />,
+      };
+
+  const title = getExecutionTraceTitle(callBlock.command || '', callBlock.toolName);
+  const timeLabel = callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString([], { hour12: false }) : '';
+  const durationLabel = typeof resultBlock?.durationMs === 'number'
+    ? `${(resultBlock.durationMs / 1000).toFixed(2)}s`
+    : '';
+  const hasStdout = hasVisibleText(resultBlock?.stdout);
+  const hasStderr = hasVisibleText(resultBlock?.stderr);
+  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
+  const isRunning = !resultBlock || resultBlock.status === 'running';
+  const cardTone =
+    resultBlock?.status === 'error'
+      ? 'border-rose-200/80 bg-gradient-to-br from-rose-50 via-white to-white dark:border-rose-500/20 dark:from-rose-950/35 dark:via-slate-950 dark:to-rose-950/15'
+      : isRunning
+        ? 'border-amber-200/80 bg-gradient-to-br from-amber-50 via-white to-cyan-50 dark:border-amber-500/20 dark:from-amber-950/30 dark:via-slate-950 dark:to-cyan-950/15'
+        : 'border-cyan-200/80 bg-gradient-to-br from-cyan-50 via-white to-indigo-50 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-950 dark:to-cyan-950/18';
+
+  return (
+    <div className={cn('group relative my-6 overflow-hidden rounded-[30px] border shadow-[0_12px_36px_-18px_rgba(14,165,233,0.4)] backdrop-blur-xl dark:shadow-[0_12px_36px_-18px_rgba(8,145,178,0.3)]', cardTone)}>
+      <div className="pointer-events-none absolute inset-0 opacity-90 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.20),transparent_38%),radial-gradient(circle_at_top_right,rgba(99,102,241,0.14),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(14,165,233,0.10),transparent_30%)]" />
+      <div className="pointer-events-none absolute left-0 top-0 h-full w-2 bg-gradient-to-b from-cyan-400 via-blue-500 to-indigo-500" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/80 to-transparent" />
+
+      <button
+        type="button"
+        onClick={() => setIsExpanded((value) => !value)}
+        className="relative flex w-full items-center gap-4 px-5 py-5 text-left transition-colors hover:bg-white/45 dark:hover:bg-slate-950/35"
+      >
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[20px] bg-gradient-to-br from-cyan-500 via-blue-500 to-indigo-600 text-white shadow-[0_18px_35px_-14px_rgba(14,165,233,0.95)] ring-1 ring-white/35 dark:ring-white/10">
+          <Terminal className="h-5 w-5" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-[18px] font-extrabold tracking-[-0.02em] text-slate-950 dark:text-white">
+              {title}
+            </span>
+            {isQueryAgentToolCall(callBlock.command, callBlock.toolName) && (
+              <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.22em] text-indigo-700 dark:text-indigo-300">
+                AGENT
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground/80">
+            {timeLabel && <span>开始 {timeLabel}</span>}
+            {durationLabel && <span>· 耗时 {durationLabel}</span>}
+            {callBlock.reasoning && <span>· 有 reason</span>}
+            {resultBlock?.cwd && <span>· cwd 已记录</span>}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-3">
+          <div
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[11px] font-semibold shadow-[0_10px_18px_-12px_rgba(15,23,42,0.25)] ring-1 ring-inset ring-white/25 dark:ring-white/10',
+              statusMeta.className,
+            )}
+          >
+            {statusMeta.icon}
+            <span>{statusMeta.label}</span>
+            {typeof resultBlock?.exitCode === 'number' && (
+              <span className="font-mono opacity-80">exit {resultBlock.exitCode}</span>
+            )}
+            {typeof resultBlock?.durationMs === 'number' && (
+              <span className="font-mono opacity-80">{(resultBlock.durationMs / 1000).toFixed(2)}s</span>
+            )}
+          </div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-cyan-500/15 bg-white/70 text-cyan-700 shadow-sm transition-colors group-hover:bg-white dark:bg-slate-950/45 dark:text-cyan-300">
+            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </div>
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="relative border-t border-cyan-500/10 px-5 pb-5 pt-4 lg:px-6 lg:pb-6 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="space-y-6">
+            {/* 上部分：命令区 (固定高度滚动) */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.24em] text-cyan-600 dark:text-cyan-300">
+                <ArrowUp className="h-3.5 w-3.5" />
+                执行命令
+              </div>
+              <div className="max-h-[160px] overflow-auto rounded-[20px] bg-slate-950 px-4 py-3 shadow-inner custom-scrollbar">
+                <div className="font-mono text-[12px] leading-6 text-slate-100 [overflow-wrap:anywhere]">
+                  {callBlock.command || '等待工具参数...'}
+                </div>
+              </div>
+            </div>
+
+            {/* 中部分：Reason (如果有) */}
+            {hasVisibleText(callBlock.reasoning) && (
+              <div className="rounded-[22px] border border-amber-500/20 bg-amber-500/[0.06] p-4 text-[12px] leading-6 text-foreground/85">
+                <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.24em] text-amber-600 dark:text-amber-300">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  执行原因 (REASON)
+                </div>
+                {callBlock.reasoning}
+              </div>
+            )}
+
+            {/* 下部分：回执与输出 (固定高度滚动) */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.24em] text-emerald-600 dark:text-emerald-400">
+                <ArrowDown className="h-3.5 w-3.5" />
+                执行回执与输出
+              </div>
+              
+              {resultBlock ? (
+                <div className="max-h-[380px] overflow-auto space-y-4 rounded-[24px] border border-slate-200/80 bg-white/60 p-4 dark:border-slate-800/80 dark:bg-slate-950/45 custom-scrollbar">
+                  {/* 状态统计小条 */}
+                  <div className="flex flex-wrap items-center gap-4 border-b border-border/20 pb-3">
+                    <div className="text-[11px] font-bold text-muted-foreground/70 uppercase tracking-tighter">Status: {statusMeta.label}</div>
+                    <div className="text-[11px] font-bold text-muted-foreground/70 uppercase tracking-tighter">Exit: {resultBlock.exitCode ?? 'N/A'}</div>
+                    <div className="text-[11px] font-bold text-muted-foreground/70 uppercase tracking-tighter">Time: {typeof resultBlock.durationMs === 'number' ? `${(resultBlock.durationMs / 1000).toFixed(2)}s` : 'N/A'}</div>
+                  </div>
+
+                  {hasStdout && <ToolOutputBlock label="stdout" content={resultBlock.stdout} tone="default" />}
+                  {hasStderr && <ToolOutputBlock label="stderr" content={resultBlock.stderr} tone="danger" />}
+                  {!hasStdout && !hasStderr && (
+                    <div className="py-4 text-center text-xs text-muted-foreground italic">本次执行无标准输出。</div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-[24px] border border-dashed border-cyan-500/20 bg-cyan-500/[0.05] p-8 text-center text-sm text-muted-foreground italic">
+                  正在等待工具返回回执内容...
+                </div>
+              )}
+            </div>
+
+            {/* 智能回复面板 (如果有且已完成) */}
+            {answerText && resultBlock && (
+              <CliAnswerPanel answer={answerText} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QAgentSuperCard({
   callBlock,
   resultBlock,
@@ -451,6 +801,8 @@ function QAgentSuperCard({
   resultBlock?: Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>;
   assistantAnswer?: string;
 }) {
+  const [isExpanded, setIsExpanded] = React.useState(true);
+
   // 提取查询内容：从 --query '内容' 中提取出内容
   const extractQuery = (cmd: string) => {
     const match = cmd.match(/--query\s+['"](.+?)['"]/);
@@ -459,138 +811,123 @@ function QAgentSuperCard({
 
   const queryText = extractQuery(callBlock.command || '');
   const isError = resultBlock?.status === 'error' || Boolean(resultBlock?.stderr);
-  const answerFromAssistant = typeof assistantAnswer === 'string' && assistantAnswer.trim()
-    ? assistantAnswer.trim()
-    : '';
-  const rawAnswer = answerFromAssistant || (typeof resultBlock?.stdout === 'string' ? resultBlock.stdout.trim() : '');
-  const formattedAnswer = formatAnswerAsJson(rawAnswer);
+  const answerText = typeof assistantAnswer === 'string' ? assistantAnswer.trim() : '';
 
   return (
-    <div className="group relative my-6 max-w-3xl animate-in fade-in slide-in-from-bottom-3 duration-500">
-      {/* 外层发光背景 (仅深色模式) */}
-      <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-[24px] opacity-10 blur-[12px] group-hover:opacity-20 transition-opacity" />
-
-      <div className="relative flex flex-col bg-white dark:bg-zinc-950 rounded-[22px] border border-border/50 shadow-2xl overflow-hidden">
-        {/* Header: 系统元数据 */}
-        <div className="flex items-center justify-between px-5 py-3 bg-zinc-50 dark:bg-zinc-900/50 border-b border-border/40">
+    <div className="group relative my-6 max-w-3xl animate-in fade-in slide-in-from-bottom-2 duration-500">
+      <div className="relative flex flex-col bg-slate-100 dark:bg-zinc-900 rounded-[20px] border-2 border-slate-400/60 dark:border-zinc-700 shadow-2xl overflow-hidden">
+        {/* 左侧状态色轴 */}
+        <div className={cn(
+          "absolute left-0 top-0 bottom-0 w-1.5 z-10",
+          resultBlock ? (isError ? "bg-red-500" : "bg-emerald-500") : "bg-amber-500 animate-pulse"
+        )} />
+        
+        {/* Header: 点击此处切换展开/折叠 */}
+        <div 
+          className="flex items-center justify-between px-6 py-4 pl-8 bg-slate-300/70 dark:bg-black/40 border-b-2 border-slate-400/40 dark:border-zinc-700 cursor-pointer hover:bg-slate-300 dark:hover:bg-black/60 transition-all"
+          onClick={() => setIsExpanded(!isExpanded)}
+        >
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)]">
-              <Terminal className="w-4 h-4 text-white" />
+            <div className="p-1.5 rounded-lg bg-indigo-500 shadow-md">
+              <Terminal className="w-3.5 h-3.5 text-white" />
             </div>
             <div>
-              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-indigo-600 dark:text-indigo-400">Query Agent Executive</div>
-              <div className="text-[10px] font-mono text-muted-foreground/60">{callBlock.toolName || 'qagent-v1'}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.15em] text-indigo-600 dark:text-indigo-400">Query Agent</div>
+              <div className="text-[13px] font-bold text-foreground/90 leading-none">
+                {queryText.length > 30 ? `${queryText.slice(0, 30)}...` : queryText}
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-mono text-muted-foreground/50">{callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleTimeString() : ''}</span>
+          <div className="flex items-center gap-3">
             <div className={cn(
-              "h-2 w-2 rounded-full",
-              resultBlock ? (isError ? "bg-red-500" : "bg-emerald-500") : "bg-amber-500 animate-pulse"
-            )} />
-          </div>
-        </div>
-
-        {/* 第一部分：输入查询 */}
-        <div className="p-5 space-y-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
-              <ArrowUp className="w-3 h-3 text-emerald-500" />
-              Input Query
+              "px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1",
+              resultBlock ? (isError ? "bg-red-500/10 text-red-600" : "bg-emerald-500/10 text-emerald-600") : "bg-amber-500/10 text-amber-600 animate-pulse"
+            )}>
+              {resultBlock ? (isError ? "Error" : "Success") : "Running"}
             </div>
-            <p className="text-[15px] font-bold text-foreground/90 leading-snug">
-              {queryText}
-            </p>
-          </div>
-
-          <div className="rounded-xl bg-zinc-950/5 dark:bg-black/40 p-3 border border-border/20">
-            <div className="font-mono text-[11px] text-zinc-500 break-all leading-relaxed whitespace-pre-wrap">
-              <span className="text-zinc-600 mr-2 select-none font-bold">CMD {'>'}</span>
-              {callBlock.command}
+            <div className="text-muted-foreground/40">
+              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </div>
           </div>
         </div>
 
-        {/* 分割线与状态 */}
-        <div className="relative h-px w-full bg-border/40">
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2 px-3 bg-white dark:bg-zinc-950 border border-border/40 rounded-full">
-            <Sparkles className="w-3 h-3 text-indigo-500" />
-            <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Processing Reply</span>
-          </div>
-        </div>
-
-        {/* 第二部分：回复输出 */}
-        <div className={cn(
-          "p-5 space-y-3 transition-all",
-          !resultBlock && "opacity-40 grayscale"
-        )}>
-          <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
-            <ArrowDown className="w-3 h-3 text-indigo-500" />
-            Agent Reply
-          </div>
-
-          {resultBlock ? (
-            <div className="space-y-4">
-              {hasVisibleText(formattedAnswer) ? (
-                <div className="space-y-2 rounded-2xl border border-indigo-500/10 bg-indigo-500/[0.03] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-[10px] font-black uppercase tracking-[0.24em] text-indigo-600 dark:text-indigo-300">
-                      回复
-                    </span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {answerFromAssistant ? '来自 message.answer' : '来自 stdout 回退'}
-                    </span>
-                  </div>
-                  <pre className="max-h-96 overflow-auto rounded-2xl border border-indigo-500/10 bg-white/80 p-4 font-mono text-[13px] leading-6 text-foreground/90 whitespace-pre-wrap [overflow-wrap:anywhere] dark:bg-zinc-950/60">
-                    {formattedAnswer}
-                  </pre>
+        {/* Body: 仅在展开时显示 */}
+        {isExpanded && (
+          <div className="animate-in slide-in-from-top-2 duration-300">
+            {/* 内容 */}
+            <div className="p-5 space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
+                  <ArrowUp className="w-3 h-3 text-emerald-500" />
+                  Full Command
                 </div>
-              ) : (
-                <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-border/40 text-[13px] text-muted-foreground italic">
-                  提示：该命令已成功执行，但未返回可展示的 JSON 回复。
-                </div>
-              )}
-
-              {resultBlock.stderr && (
-                <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-3 flex gap-3 items-start">
-                  <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-black text-red-600/60 tracking-wider">EXECUTION ERROR</span>
-                    <p className="text-[11px] font-mono text-red-600 dark:text-red-400 underline decoration-red-500/30">{resultBlock.stderr}</p>
+                <div className="max-h-[140px] overflow-auto rounded-xl bg-zinc-950/5 dark:bg-black/40 p-3 border border-border/20 custom-scrollbar">
+                  <div className="font-mono text-[11px] text-zinc-500 break-all leading-relaxed whitespace-pre-wrap">
+                    <span className="text-zinc-600 mr-2 select-none font-bold">CMD {'>'}</span>
+                    {callBlock.command}
                   </div>
                 </div>
+              </div>
+
+              <div className="relative h-px w-full bg-border/20" />
+
+              <div className={cn(
+                "space-y-2 transition-all",
+                !resultBlock && "opacity-40"
+              )}>
+                <div className="flex items-center gap-2 text-[10px] font-bold text-muted-foreground/60 uppercase tracking-widest">
+                  <ArrowDown className="w-3 h-3 text-indigo-500" />
+                  Execution Result
+                </div>
+
+                {resultBlock ? (
+                  <div className="max-h-[300px] overflow-auto space-y-3 rounded-xl border border-indigo-500/10 bg-indigo-500/[0.02] p-3 custom-scrollbar">
+                    {resultBlock.stderr && (
+                      <div className="rounded-lg bg-red-500/5 border border-red-500/20 p-2 text-[11px] font-mono text-red-600">
+                        {resultBlock.stderr}
+                      </div>
+                    )}
+                    {resultBlock.stdout ? (
+                      <pre className="text-[12px] font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap">
+                        {resultBlock.stdout}
+                      </pre>
+                    ) : (
+                      <div className="text-[12px] text-muted-foreground italic">No output.</div>
+                    )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 py-4 text-muted-foreground justify-center">
+                    <LoaderCircle className="w-4 h-4 animate-spin text-indigo-500" />
+                    <span className="text-xs italic">Executing...</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {answerText && resultBlock && (
+              <div className="px-5 pb-4">
+                <CliAnswerPanel answer={answerText} />
+              </div>
+            )}
+            
+            {/* Footer */}
+            <div className="px-5 py-2 bg-zinc-50/50 dark:bg-zinc-900/30 flex items-center justify-between border-t border-border/10">
+              <span className="text-[9px] font-mono text-zinc-400">
+                {callBlock.createdAt ? new Date(callBlock.createdAt).toLocaleString() : ''}
+              </span>
+              {resultBlock && (
+                <span className="text-[9px] font-mono text-zinc-400">
+                  {resultBlock.callId?.slice(-8).toUpperCase()}
+                </span>
               )}
             </div>
-          ) : (
-            <div className="flex items-center gap-3 py-4 text-muted-foreground">
-              <LoaderCircle className="w-4 h-4 animate-spin text-indigo-500" />
-              <span className="text-xs italic font-medium">正在生成回执结果...</span>
-            </div>
-          )}
-        </div>
-
-        {/* 底部功能条 */}
-        <div className="px-5 py-2.5 bg-zinc-50 dark:bg-zinc-900/30 flex items-center justify-between border-t border-border/20">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5">
-              <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">Status Safe</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">Git_Integrity Verified</span>
-            </div>
           </div>
-          {resultBlock && (
-            <span className="text-[9px] font-mono text-zinc-400 font-black">
-              TRACE_ID: {resultBlock.callId?.slice(-8).toUpperCase() || 'UNTARGETED'}
-            </span>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );
 }
+
 
 function MessageContentBlocks({
   blocks,
@@ -603,41 +940,7 @@ function MessageContentBlocks({
     return null;
   }
 
-  // 预处理：将成对的 tool_call 和 tool_result 组合在一起
-  const processedGroups: Array<{
-    type: 'assistant' | 'super_card' | 'standalone_call' | 'standalone_result';
-    data: any;
-  }> = [];
-
-  const toolResultsMap = new Map<string, Extract<PersistedOntologyAssistantContentBlock, { type: 'tool_result' }>>();
-  blocks.forEach(b => {
-    if (b.type === 'tool_result' && b.callId) toolResultsMap.set(b.callId, b);
-  });
-
-  const consumedCallIds = new Set<string>();
-
-  blocks.forEach((block) => {
-    if (block.type === 'assistant') {
-      processedGroups.push({ type: 'assistant', data: block });
-    } else if (block.type === 'tool_call') {
-      const isCliCall = block.command?.includes('run_git_query_agent.py') || block.toolName === 'query_agent';
-      const pairedResult = block.callId ? toolResultsMap.get(block.callId) : null;
-
-      if (isCliCall) {
-        processedGroups.push({
-          type: 'super_card',
-          data: { call: block, result: pairedResult }
-        });
-        if (block.callId) consumedCallIds.add(block.callId);
-      } else {
-        processedGroups.push({ type: 'standalone_call', data: block });
-      }
-    } else if (block.type === 'tool_result') {
-      if (!block.callId || !consumedCallIds.has(block.callId)) {
-        processedGroups.push({ type: 'standalone_result', data: block });
-      }
-    }
-  });
+  const processedGroups = groupAssistantContentBlocks(blocks);
 
   return (
     <div className="space-y-3">
@@ -645,32 +948,55 @@ function MessageContentBlocks({
         const key = `group-${idx}`;
         switch (group.type) {
           case 'assistant':
-            if (!hasVisibleText(group.data.content)) return null;
+            if (!hasVisibleText(group.block.content)) return null;
             return (
               <div key={key} className="group/msg flex flex-col items-start">
                 <div className="flex-1 min-w-0 w-full text-foreground/90">
-                  <AssistantMarkdown content={group.data.content} />
+                  <AssistantMarkdown content={group.block.content} />
                 </div>
-                {group.data.phase === 'completed' && (
+                {group.block.phase === 'completed' && (
                   <div className="mt-1 animate-in fade-in duration-500">
-                    <MessageCopyButton content={group.data.content} />
+                    <MessageCopyButton content={group.block.content} />
                   </div>
                 )}
               </div>
             );
-          case 'super_card':
+          case 'paired_execution':
+            if (isQueryAgentToolCall(group.callBlock.command, group.callBlock.toolName)) {
+              return (
+                <QAgentSuperCard
+                  key={key}
+                  callBlock={group.callBlock}
+                  resultBlock={group.resultBlock}
+                  assistantAnswer={answer}
+                />
+              );
+            }
+            if (getExecutionTraceKind(group.callBlock.command, group.callBlock.toolName) === 'cli') {
+              return (
+                <ExecutionTraceCard
+                  key={key}
+                  callBlock={group.callBlock}
+                  resultBlock={group.resultBlock}
+                  assistantAnswer={answer}
+                />
+              );
+            }
             return (
-              <QAgentSuperCard
+              <PlainExecutionCard
                 key={key}
-                callBlock={group.data.call}
-                resultBlock={group.data.result}
+                callBlock={group.callBlock}
+                resultBlock={group.resultBlock}
                 assistantAnswer={answer}
               />
             );
           case 'standalone_call':
-            return <ToolCallBlock key={key} block={group.data} />;
+            if (getExecutionTraceKind(group.block.command, group.block.toolName) === 'cli') {
+              return <ExecutionTraceCard key={key} callBlock={group.block} />;
+            }
+            return <ToolCallBlock key={key} block={group.block} />;
           case 'standalone_result':
-            return <ToolResultBlock key={key} block={group.data} />;
+            return <ToolResultBlock key={key} block={group.block} />;
           default:
             return null;
         }

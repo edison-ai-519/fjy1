@@ -1,3 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ONTOGIT_AGENT_DIR="${SCRIPT_DIR}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+resolve_python() {
+  if [[ -n "${PYTHON_BIN}" ]] && command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    printf '%s\n' "${PYTHON_BIN}"
+    return
+  fi
+  for candidate in python.exe python3.exe py.exe python3 python py; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local resolved
+    resolved="$(powershell.exe -NoProfile -Command "(Get-Command python -ErrorAction SilentlyContinue).Source")"
+    resolved="${resolved//$'\r'/}"
+    if [[ -n "${resolved}" ]]; then
+      printf '%s\n' "${resolved}"
+      return
+    fi
+    resolved="$(powershell.exe -NoProfile -Command "(Get-Command python3 -ErrorAction SilentlyContinue).Source")"
+    resolved="${resolved//$'\r'/}"
+    if [[ -n "${resolved}" ]]; then
+      printf '%s\n' "${resolved}"
+      return
+    fi
+    resolved="$(powershell.exe -NoProfile -Command "(Get-Command py -ErrorAction SilentlyContinue).Source")"
+    resolved="${resolved//$'\r'/}"
+    if [[ -n "${resolved}" ]]; then
+      printf '%s\n' "${resolved}"
+      return
+    fi
+  fi
+  printf '%s\n' "python"
+}
+
+PYTHON_BIN="$(resolve_python)"
+
+cd "${SCRIPT_DIR}"
+exec "${PYTHON_BIN}" - "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
@@ -107,3 +153,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+PY
