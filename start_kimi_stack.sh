@@ -17,7 +17,7 @@ LOG_DIR="${ROOT_DIR}/.run-logs"
 BACKEND_PORT="${PORT:-8787}"
 FRONTEND_PORT="${VITE_PORT:-5173}"
 XIAOGUGIT_PORT=8001
-PROBABILITY_PORT=5000
+PROBABILITY_PORT=5001
 GATEWAY_PORT=8080
 
 find_python() {
@@ -230,9 +230,10 @@ start_ontogit_services() {
   echo "启动 OntoGit gateway..."
   local gateway_env="GATEWAY_XIAOGUGIT_URL='http://127.0.0.1:${XIAOGUGIT_PORT}' GATEWAY_PROBABILITY_URL='http://127.0.0.1:${PROBABILITY_PORT}' GATEWAY_XG_AUTH_SECRET='${XG_AUTH_SECRET}' GATEWAY_XG_AUTH_USERNAME='${XG_AUTH_USERNAME}' GATEWAY_SERVICE_API_KEY='${GATEWAY_SERVICE_API_KEY}'"
   
-  if [[ -f "${GATEWAY_DIR}/gateway.exe" ]]; then
+  if [[ -f "${GATEWAY_DIR}/gateway.exe" && -x "${GATEWAY_DIR}/gateway.exe" ]]; then
     start_detached "${GATEWAY_DIR}" "${LOG_DIR}/ontogit-gateway.log" "${LOG_DIR}/ontogit-gateway.pid" "${gateway_env}" "./gateway.exe"
   elif has_cmd go; then
+    echo "gateway.exe 不可执行，改用 go run 启动 gateway..."
     start_detached "${GATEWAY_DIR}" "${LOG_DIR}/ontogit-gateway.log" "${LOG_DIR}/ontogit-gateway.pid" "${gateway_env}" "go run ."
   else
     echo "警告: 未找到 gateway.exe 或 go 命令，无法启动 OntoGit gateway。"

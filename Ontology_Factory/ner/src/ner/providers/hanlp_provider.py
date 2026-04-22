@@ -8,6 +8,8 @@ from ner.providers.base import BaseNerProvider, RawEntityMention
 
 _ASCII_ENTITY_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9_.+-]{1,31}\b")
 _CHINESE_ENTITY_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,12}")
+_MIXED_ALNUM_PATTERN = re.compile(r"[A-Za-z0-9]")
+_CHINESE_BLOCK_RE = re.compile(r"[\u4e00-\u9fff]+")
 _STOPWORDS = {
     "项目",
     "系统",
@@ -15,12 +17,42 @@ _STOPWORDS = {
     "平台",
     "数据",
     "功能",
+    "信息",
+    "内容",
+    "结果",
+    "方式",
+    "情况",
+    "过程",
+    "方法",
+    "服务",
+    "页面",
+    "规则",
+    "设备",
+    "接口",
+    "方案",
+    "场景",
+    "任务",
+    "指标",
+    "资源",
     "进行",
     "实现",
     "负责",
     "用于",
     "以及",
     "当前",
+    "相关",
+    "以上",
+    "以下",
+    "部分",
+    "一种",
+    "一个",
+    "多个",
+    "同一",
+    "主要",
+    "支持",
+    "包含",
+    "提供",
+    "使用",
 }
 _DOMAIN_TERMS = (
     "溶氧",
@@ -61,8 +93,11 @@ class HanLPNerProvider(BaseNerProvider):
         mentions: list[RawEntityMention] = []
         seen: set[tuple[int, int, str]] = set()
         for match in _ASCII_ENTITY_PATTERN.finditer(text):
+            candidate = match.group(0)
+            if not _is_likely_entity_like(candidate):
+                continue
             entity = RawEntityMention(
-                text=match.group(0),
+                text=candidate,
                 label="TECH",
                 start=match.start(),
                 end=match.end(),
@@ -75,6 +110,8 @@ class HanLPNerProvider(BaseNerProvider):
 
         for term in _DOMAIN_TERMS:
             for start in _find_all(text, term):
+                if not _is_valid_chinese_candidate(term):
+                    continue
                 entity = RawEntityMention(
                     text=term,
                     label="TERM",
@@ -89,9 +126,7 @@ class HanLPNerProvider(BaseNerProvider):
 
         for match in _CHINESE_ENTITY_PATTERN.finditer(text):
             candidate = match.group(0)
-            if candidate in _STOPWORDS:
-                continue
-            if candidate.endswith(("进行", "实现", "负责", "支持")):
+            if not _is_valid_chinese_candidate(candidate):
                 continue
             entity = RawEntityMention(
                 text=candidate,
@@ -186,3 +221,46 @@ def _find_all(text: str, needle: str) -> list[int]:
             return starts
         starts.append(index)
         cursor = index + len(needle)
+
+
+def _is_likely_entity_like(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) < 2:
+        return False
+    if len(value) > 32:
+        return False
+    if value.lower() == value and not _MIXED_ALNUM_PATTERN.search(value):
+        return False
+    if value.isdigit():
+        return False
+    return bool(_MIXED_ALNUM_PATTERN.search(value) or any(char.isupper() for char in value) or any(char.isdigit() for char in value))
+
+
+def _is_valid_chinese_candidate(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    if candidate in _STOPWORDS:
+        return False
+    if len(candidate) < 2:
+        return False
+    if len(candidate) > 10:
+        return False
+    if candidate.endswith(("进行", "实现", "负责", "支持", "管理", "处理", "分析", "连接", "接入", "上传", "同步", "采集", "测量")):
+        return False
+    if candidate.startswith(("通过", "基于", "关于", "对于", "在", "对")):
+        return False
+    if candidate.count("的") >= 2:
+        return False
+    if all(char in _STOPWORDS for char in _CHINESE_BLOCK_RE.findall(candidate)):
+        return False
+    if len(candidate) <= 2:
+        return candidate in _DOMAIN_TERMS or any(char.isdigit() for char in candidate) or any(
+            token in candidate for token in ("机", "网", "云", "控", "监", "传", "台", "图")
+        )
+    if candidate.endswith(("方案", "系统", "平台", "设备", "接口", "模块", "场景", "规则", "告警", "控制", "监测")):
+        return True
+    return any(token in candidate for token in _DOMAIN_TERMS) or any(
+        token in candidate for token in ("设备", "系统", "平台", "传感器", "控制", "监测", "告警", "投喂", "增氧", "远程", "用户")
+    )

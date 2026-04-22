@@ -54,7 +54,7 @@
 | `GATEWAY_PORT` | `8080` | compose 暴露端口 |
 | `GATEWAY_ADDR` | `:8080` | gateway 监听地址 |
 | `GATEWAY_XIAOGUGIT_URL` | `http://127.0.0.1:8000` | `xiaogugit` 上游地址 |
-| `GATEWAY_PROBABILITY_URL` | `http://127.0.0.1:5000` | `probability` 上游地址 |
+| `GATEWAY_PROBABILITY_URL` | `http://127.0.0.1:5001` | `probability` 上游地址 |
 | `GATEWAY_SERVICE_API_KEY` | `change-me` | 服务调用 API Key |
 | `GATEWAY_XG_AUTH_SECRET` | 继承 `XG_AUTH_SECRET` 或默认值 | 生成 `xiaogugit` 兼容 token 的签名密钥 |
 | `GATEWAY_XG_AUTH_USERNAME` | `mogong` | 服务调用场景下注入的用户名 |
@@ -69,7 +69,7 @@
 cd "C:\Users\gaozh\Desktop\data infra\gateway"
 $env:GATEWAY_ADDR=":8080"
 $env:GATEWAY_XIAOGUGIT_URL="http://127.0.0.1:8000"
-$env:GATEWAY_PROBABILITY_URL="http://127.0.0.1:5000"
+$env:GATEWAY_PROBABILITY_URL="http://127.0.0.1:5001"
 .\gateway.exe
 ```
 
@@ -98,7 +98,7 @@ docker compose up --build
 默认 compose 假设宿主机上已经有：
 
 - `xiaogugit` 在 `http://host.docker.internal:8000`
-- `probability` 在 `http://host.docker.internal:5000`
+- `probability` 在 `http://host.docker.internal:5001`
 
 如果要接容器内服务，改这两个环境变量即可：
 

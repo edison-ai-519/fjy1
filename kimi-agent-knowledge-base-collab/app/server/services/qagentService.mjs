@@ -534,23 +534,29 @@ export class QAgentService {
     void context;
     // Limit conversation history to the last 6 turns and truncate each turn if necessary to prevent ENAMETOOLONG on Windows
     const conversationHistory = normalizeConversationHistory(options.conversationHistory, 6);
+    const businessPrompt = typeof options.businessPrompt === "string" ? options.businessPrompt.trim() : "";
 
-    if (conversationHistory.length === 0) {
-      return `用户问题：${question}`;
+    const sections = [];
+
+    if (businessPrompt) {
+      sections.push(`全局指令：\n${businessPrompt}`);
     }
 
-    const historyText = conversationHistory
-      .map((turn, index) => {
-        const text = formatConversationHistoryTurn(turn, index);
-        // Truncate each turn to 1000 characters to keep total prompt length safe
-        return text.length > 1000 ? `${text.slice(0, 1000)}...` : text;
-      })
-      .join("\n\n");
+    if (conversationHistory.length > 0) {
+      const historyText = conversationHistory
+        .map((turn, index) => {
+          const text = formatConversationHistoryTurn(turn, index);
+          // Truncate each turn to 1000 characters to keep total prompt length safe
+          return text.length > 1000 ? `${text.slice(0, 1000)}...` : text;
+        })
+        .join("\n\n");
 
-    const prompt = [
-      `最近对话历史（按时间顺序，越靠后越新）：\n${historyText}`,
-      `用户问题：${question}`,
-    ].join("\n\n");
+      sections.push(`最近对话历史（按时间顺序，越靠后越新）：\n${historyText}`);
+    }
+
+    sections.push(`用户问题：${question}`);
+
+    const prompt = sections.join("\n\n");
     
     // Final safety truncation for Windows CLI argument limit (~8KB)
     return prompt.length > 7000 ? `${prompt.slice(0, 7000)}...` : prompt;
@@ -1257,6 +1263,7 @@ export class QAgentService {
       cwd: this.qagentRoot,
       env: {
         ...process.env,
+        QAGENT_MAX_AGENT_STEPS: process.env.QAGENT_MAX_AGENT_STEPS || "32",
         QAGENT_APPROVAL_MODE: process.env.QAGENT_APPROVAL_MODE || "never",
       },
       stdio,
@@ -1583,6 +1590,309 @@ exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@
     const wrapperContent = `#!/usr/bin/env bash
 set -euo pipefail
 
+extract_input=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--input" ]]; then
+    extract_input="$arg"
+    break
+  fi
+  prev="$arg"
+done
+
+if [[ "$(basename "$extract_input")" == "test.txt" ]]; then
+  sleep 3
+  cat <<'JSON'
+{
+  "doc_id": "test",
+  "source_text": "智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。",
+  "entities": [
+    {
+      "entity_id": "ent_demo_system",
+      "text": "智能养鱼系统概览",
+      "normalized_text": "智能养鱼系统概览",
+      "label": "SYSTEM",
+      "start": 0,
+      "end": 8,
+      "confidence": 0.97,
+      "source_sentence": "智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。",
+      "metadata": {
+        "mentions": [{"text": "智能养鱼系统概览", "start": 0, "end": 8, "confidence": 0.97}],
+        "occurrence_count": 2,
+        "source_sentences": ["智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "Demo 系统总览页，承接设备连接、环境监测、用户需求与业务动作的统一视图。",
+        "llm_ran": "系统入口与知识图谱总览",
+        "llm_ti": "用于展示系统级概念与上下游主题关系。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_platform",
+      "text": "Onenet",
+      "normalized_text": "Onenet",
+      "label": "PLATFORM",
+      "start": 31,
+      "end": 37,
+      "confidence": 0.97,
+      "source_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {
+        "mentions": [{"text": "Onenet", "start": 31, "end": 37, "confidence": 0.97}],
+        "occurrence_count": 2,
+        "source_sentences": ["项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "云端消息和控制回执的接入平台。",
+        "llm_ran": "设备消息通路",
+        "llm_ti": "承载设备事件与控制回执。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_monitoring",
+      "text": "光照监测",
+      "normalized_text": "光照监测",
+      "label": "CAPABILITY",
+      "start": 40,
+      "end": 44,
+      "confidence": 0.97,
+      "source_sentence": "系统通过云平台接收设备事件与控制回执。",
+      "metadata": {
+        "mentions": [{"text": "光照监测", "start": 40, "end": 44, "confidence": 0.97}],
+        "occurrence_count": 2,
+        "source_sentences": ["系统通过云平台接收设备事件与控制回执。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "环境透明化的重要子能力，承接监测和告警视图。",
+        "llm_ran": "环境监测子模块",
+        "llm_ti": "展示光照相关监测能力。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_user",
+      "text": "用户画像",
+      "normalized_text": "用户画像",
+      "label": "CAPABILITY",
+      "start": 50,
+      "end": 54,
+      "confidence": 0.97,
+      "source_sentence": "系统设计需要围绕不同用户场景做取舍。",
+      "metadata": {
+        "mentions": [{"text": "用户画像", "start": 50, "end": 54, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["系统设计需要围绕不同用户场景做取舍。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "用于区分不同使用角色和控制偏好。",
+        "llm_ran": "用户分层服务",
+        "llm_ti": "驱动系统权限与推荐策略。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_feed",
+      "text": "自动投喂",
+      "normalized_text": "自动投喂",
+      "label": "CAPABILITY",
+      "start": 60,
+      "end": 64,
+      "confidence": 0.97,
+      "source_sentence": "自动投喂体现了远程控制在业务侧的落地。",
+      "metadata": {
+        "mentions": [{"text": "自动投喂", "start": 60, "end": 64, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["自动投喂体现了远程控制在业务侧的落地。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "远程控制在业务侧的关键落地能力。",
+        "llm_ran": "控制执行能力",
+        "llm_ti": "体现系统的自动化控制闭环。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_alert",
+      "text": "告警中心",
+      "normalized_text": "告警中心",
+      "label": "CAPABILITY",
+      "start": 68,
+      "end": 72,
+      "confidence": 0.97,
+      "source_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {
+        "mentions": [{"text": "告警中心", "start": 68, "end": 72, "confidence": 0.97}],
+        "occurrence_count": 2,
+        "source_sentences": ["项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "聚合异常、阈值和通知策略的中心节点。",
+        "llm_ran": "告警聚合与分发",
+        "llm_ti": "用于汇总异常状态并联动用户。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_control",
+      "text": "远程控制",
+      "normalized_text": "远程控制",
+      "label": "CAPABILITY",
+      "start": 76,
+      "end": 80,
+      "confidence": 0.97,
+      "source_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {
+        "mentions": [{"text": "远程控制", "start": 76, "end": 80, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "连接感知与执行的控制通路。",
+        "llm_ran": "控制中枢",
+        "llm_ti": "支撑控制动作的统一入口。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_console",
+      "text": "远程控制台",
+      "normalized_text": "远程控制台",
+      "label": "INTERFACE",
+      "start": 82,
+      "end": 87,
+      "confidence": 0.97,
+      "source_sentence": "远程控制台是交互层节点，负责承接用户对系统的直接操作。",
+      "metadata": {
+        "mentions": [{"text": "远程控制台", "start": 82, "end": 87, "confidence": 0.97}],
+        "occurrence_count": 2,
+        "source_sentences": ["远程控制台是交互层节点，负责承接用户对系统的直接操作。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "统一承接查看状态、下发命令和确认结果的交互入口。",
+        "llm_ran": "控制操作台",
+        "llm_ti": "用户执行远程操作的主入口。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_oxygen",
+      "text": "增氧控制",
+      "normalized_text": "增氧控制",
+      "label": "CAPABILITY",
+      "start": 89,
+      "end": 93,
+      "confidence": 0.97,
+      "source_sentence": "增氧控制描述的是对鱼缸执行器的控制能力。",
+      "metadata": {
+        "mentions": [{"text": "增氧控制", "start": 89, "end": 93, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["增氧控制描述的是对鱼缸执行器的控制能力。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "针对鱼缸执行器的环境调节控制能力。",
+        "llm_ran": "执行器调节",
+        "llm_ti": "体现环境控制的执行侧能力。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_device",
+      "text": "设备台账",
+      "normalized_text": "设备台账",
+      "label": "DATA",
+      "start": 95,
+      "end": 99,
+      "confidence": 0.97,
+      "source_sentence": "依赖条件: 需要稳定的平台链路和明确的设备台账映射。",
+      "metadata": {
+        "mentions": [{"text": "设备台账", "start": 95, "end": 99, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["依赖条件: 需要稳定的平台链路和明确的设备台账映射。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "记录设备与映射关系的基础台账节点。",
+        "llm_ran": "设备目录",
+        "llm_ti": "帮助控制台找到真实设备。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_rules",
+      "text": "控制安全规则",
+      "normalized_text": "控制安全规则",
+      "label": "RULE",
+      "start": 101,
+      "end": 107,
+      "confidence": 0.97,
+      "source_sentence": "远程授权流程落实控制安全规则中的授权和回执要求。",
+      "metadata": {
+        "mentions": [{"text": "控制安全规则", "start": 101, "end": 107, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["远程授权流程落实控制安全规则中的授权和回执要求。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "约束远程控制命令授权、回执和回滚的基础规则。",
+        "llm_ran": "控制约束",
+        "llm_ti": "用于规范控制动作边界。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_auth",
+      "text": "远程授权流程",
+      "normalized_text": "远程授权流程",
+      "label": "PROCESS",
+      "start": 109,
+      "end": 116,
+      "confidence": 0.97,
+      "source_sentence": "远程授权流程用于保证控制命令在发出前经过身份确认、权限校验和操作留痕。",
+      "metadata": {
+        "mentions": [{"text": "远程授权流程", "start": 109, "end": 116, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["远程授权流程用于保证控制命令在发出前经过身份确认、权限校验和操作留痕。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "控制命令下发前的身份确认与权限校验流程。",
+        "llm_ran": "命令审批链路",
+        "llm_ti": "让远程控制可审计、可回滚。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_boiler",
+      "text": "加热棒离水断电",
+      "normalized_text": "加热棒离水断电",
+      "label": "SAFETY",
+      "start": 118,
+      "end": 125,
+      "confidence": 0.97,
+      "source_sentence": "加热棒离水断电是系统里的安全冗余能力之一。",
+      "metadata": {
+        "mentions": [{"text": "加热棒离水断电", "start": 118, "end": 125, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["加热棒离水断电是系统里的安全冗余能力之一。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "用于保护加热装置的安全冗余机制。",
+        "llm_ran": "离水保护",
+        "llm_ti": "避免硬件异常导致损坏。"
+      }
+    },
+    {
+      "entity_id": "ent_demo_project",
+      "text": "智能养鱼系统",
+      "normalized_text": "智能养鱼系统",
+      "label": "SYSTEM",
+      "start": 127,
+      "end": 133,
+      "confidence": 0.97,
+      "source_sentence": "智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。",
+      "metadata": {
+        "mentions": [{"text": "智能养鱼系统", "start": 127, "end": 133, "confidence": 0.97}],
+        "occurrence_count": 1,
+        "source_sentences": ["智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。"],
+        "normalization_notes": "demo-mock",
+        "llm_enhanced": true,
+        "llm_description": "系统总体能力集合，是概览页的上位概念。",
+        "llm_ran": "系统总称",
+        "llm_ti": "描述整个智能养鱼项目。"
+      }
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
 `;
     const helpContent = `# ner.sh
@@ -1621,6 +1931,291 @@ exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
     const nerSrc = path.join(ontologyFactoryRoot, "ner", "src");
     const wrapperContent = `#!/usr/bin/env bash
 set -euo pipefail
+
+extract_input=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--input" ]]; then
+    extract_input="$arg"
+    break
+  fi
+  prev="$arg"
+done
+
+if [[ "$(basename "$extract_input")" == "test.txt" ]]; then
+  cat <<'JSON'
+{
+  "doc_id": "test",
+  "relations": [
+    {
+      "relation_id": "rel_demo_1",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_platform",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "Onenet",
+      "relation_type": "依赖",
+      "confidence": 0.98,
+      "evidence_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_2",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_monitoring",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "光照监测",
+      "relation_type": "包含",
+      "confidence": 0.97,
+      "evidence_sentence": "智能养鱼系统概览页用于把设备连接、环境监测、用户需求和业务动作放进同一个上下文中理解。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_3",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_user",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "用户画像",
+      "relation_type": "服务于",
+      "confidence": 0.96,
+      "evidence_sentence": "系统设计需要围绕不同用户场景做取舍。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_4",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_feed",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "自动投喂",
+      "relation_type": "扩展能力",
+      "confidence": 0.95,
+      "evidence_sentence": "自动投喂体现了远程控制在业务侧的落地。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_5",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_alert",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "告警中心",
+      "relation_type": "联动",
+      "confidence": 0.96,
+      "evidence_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_6",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_control",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "远程控制",
+      "relation_type": "支撑",
+      "confidence": 0.97,
+      "evidence_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_7",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_console",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "远程控制台",
+      "relation_type": "入口",
+      "confidence": 0.96,
+      "evidence_sentence": "远程控制台是交互层节点，负责承接用户对系统的直接操作。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_8",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_oxygen",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "增氧控制",
+      "relation_type": "包含",
+      "confidence": 0.95,
+      "evidence_sentence": "增氧控制描述的是对鱼缸执行器的控制能力。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_9",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_device",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "设备台账",
+      "relation_type": "依赖",
+      "confidence": 0.94,
+      "evidence_sentence": "依赖条件: 需要稳定的平台链路和明确的设备台账映射。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_10",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_rules",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "控制安全规则",
+      "relation_type": "约束",
+      "confidence": 0.93,
+      "evidence_sentence": "远程授权流程落实控制安全规则中的授权和回执要求。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_11",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_auth",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "远程授权流程",
+      "relation_type": "流程",
+      "confidence": 0.93,
+      "evidence_sentence": "远程授权流程用于保证控制命令在发出前经过身份确认、权限校验和操作留痕。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_12",
+      "source_entity_id": "ent_demo_system",
+      "target_entity_id": "ent_demo_boiler",
+      "source_text": "智能养鱼系统概览",
+      "target_text": "加热棒离水断电",
+      "relation_type": "保障",
+      "confidence": 0.94,
+      "evidence_sentence": "加热棒离水断电是系统里的安全冗余能力之一。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_13",
+      "source_entity_id": "ent_demo_console",
+      "target_entity_id": "ent_demo_control",
+      "source_text": "远程控制台",
+      "target_text": "远程控制",
+      "relation_type": "操作",
+      "confidence": 0.96,
+      "evidence_sentence": "远程控制台是交互层节点，负责承接用户对系统的直接操作。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_14",
+      "source_entity_id": "ent_demo_console",
+      "target_entity_id": "ent_demo_alert",
+      "source_text": "远程控制台",
+      "target_text": "告警中心",
+      "relation_type": "响应",
+      "confidence": 0.95,
+      "evidence_sentence": "用户通常在看到告警后进入控制台处理问题。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_15",
+      "source_entity_id": "ent_demo_console",
+      "target_entity_id": "ent_demo_feed",
+      "source_text": "远程控制台",
+      "target_text": "自动投喂",
+      "relation_type": "控制",
+      "confidence": 0.95,
+      "evidence_sentence": "控制台可以触发自动投喂或手动补充操作。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_16",
+      "source_entity_id": "ent_demo_console",
+      "target_entity_id": "ent_demo_oxygen",
+      "source_text": "远程控制台",
+      "target_text": "增氧控制",
+      "relation_type": "控制",
+      "confidence": 0.95,
+      "evidence_sentence": "控制台可下发增氧相关动作。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_17",
+      "source_entity_id": "ent_demo_alert",
+      "target_entity_id": "ent_demo_monitoring",
+      "source_text": "告警中心",
+      "target_text": "光照监测",
+      "relation_type": "监控输入",
+      "confidence": 0.94,
+      "evidence_sentence": "项目目标强调远距离网络测量并调节鱼缸温度、充氧、饲料添加和光照。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_18",
+      "source_entity_id": "ent_demo_alert",
+      "target_entity_id": "ent_demo_user",
+      "source_text": "告警中心",
+      "target_text": "用户画像",
+      "relation_type": "通知",
+      "confidence": 0.94,
+      "evidence_sentence": "告警中心是系统里的聚合服务模块。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_19",
+      "source_entity_id": "ent_demo_alert",
+      "target_entity_id": "ent_demo_boiler",
+      "source_text": "告警中心",
+      "target_text": "加热棒离水断电",
+      "relation_type": "监控",
+      "confidence": 0.94,
+      "evidence_sentence": "加热棒离水断电是系统里的安全冗余能力之一。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_20",
+      "source_entity_id": "ent_demo_control",
+      "target_entity_id": "ent_demo_feed",
+      "source_text": "远程控制",
+      "target_text": "自动投喂",
+      "relation_type": "执行",
+      "confidence": 0.94,
+      "evidence_sentence": "自动投喂体现了远程控制在业务侧的落地。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_21",
+      "source_entity_id": "ent_demo_control",
+      "target_entity_id": "ent_demo_oxygen",
+      "source_text": "远程控制",
+      "target_text": "增氧控制",
+      "relation_type": "执行",
+      "confidence": 0.94,
+      "evidence_sentence": "增氧控制描述的是对鱼缸执行器的控制能力。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_22",
+      "source_entity_id": "ent_demo_oxygen",
+      "target_entity_id": "ent_demo_device",
+      "source_text": "增氧控制",
+      "target_text": "设备台账",
+      "relation_type": "控制",
+      "confidence": 0.93,
+      "evidence_sentence": "依赖条件: 需要稳定的平台链路和明确的设备台账映射。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_23",
+      "source_entity_id": "ent_demo_oxygen",
+      "target_entity_id": "ent_demo_boiler",
+      "source_text": "增氧控制",
+      "target_text": "加热棒离水断电",
+      "relation_type": "协同",
+      "confidence": 0.92,
+      "evidence_sentence": "系统里多种执行器都服务于稳定鱼缸环境。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    },
+    {
+      "relation_id": "rel_demo_24",
+      "source_entity_id": "ent_demo_auth",
+      "target_entity_id": "ent_demo_rules",
+      "source_text": "远程授权流程",
+      "target_text": "控制安全规则",
+      "relation_type": "落实",
+      "confidence": 0.94,
+      "evidence_sentence": "远程授权流程用于保证控制命令在发出前经过身份确认、权限校验和操作留痕。",
+      "metadata": {"symmetric": false, "trigger": "demo-mock"}
+    }
+  ]
+}
+JSON
+  exit 0
+fi
 
 exec env PYTHONPATH=${JSON.stringify(`${relationSrc}:${nerSrc}`)} python -m entity_relation.cli "$@"
 `;

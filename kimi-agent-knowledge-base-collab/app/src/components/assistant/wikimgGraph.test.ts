@@ -119,3 +119,20 @@ test('buildWikimgGraphSlice 只保留已查看节点及其相互关系', () => {
     ['common:kimi-demo/人工智能->domain:kimi-demo/机器学习'],
   );
 });
+
+test('buildWikimgGraphSlice 支持中文层级前缀的模糊匹配', () => {
+  const entities = [
+    createEntity('domain:fish-home/鱼家-智能养鱼系统', '鱼家——智能养鱼系统'),
+    createEntity('domain:fish-home/鱼家第一阶段', '鱼家第一阶段'),
+  ];
+
+  const slice = buildWikimgGraphSlice(
+    entities,
+    [],
+    ['domain:鱼家-智能养鱼系统'],
+  );
+
+  assert.ok(slice);
+  assert.deepEqual(slice?.viewedRefs, ['domain:鱼家-智能养鱼系统']);
+  assert.deepEqual(slice?.entities.map((entity) => entity.id), ['domain:fish-home/鱼家-智能养鱼系统']);
+});

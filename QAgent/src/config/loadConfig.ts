@@ -276,7 +276,7 @@ export async function loadRuntimeConfig(
       appName: defaultAppName(provider),
     },
     runtime: {
-      maxAgentSteps: 8,
+      maxAgentSteps: 32,
       fetchMemoryMaxAgentSteps: 3,
       autoMemoryForkMaxAgentSteps: 4,
       shellCommandTimeoutMs: 120_000,

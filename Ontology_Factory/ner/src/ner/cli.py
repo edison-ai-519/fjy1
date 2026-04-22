@@ -42,7 +42,13 @@ def main() -> int:
             base_url=args.openrouter_base_url,
         )
     )
-    document = extract_entities(text, doc_id=doc_id, use_llm=llm_client.is_enabled(), llm_client=llm_client)
+    document = extract_entities(
+        text,
+        doc_id=doc_id,
+        use_llm=llm_client.is_enabled(),
+        llm_client=llm_client,
+        source_name=input_path.name,
+    )
     rendered = document.model_dump_json(indent=2)
     if args.output:
         output_path = Path(args.output)

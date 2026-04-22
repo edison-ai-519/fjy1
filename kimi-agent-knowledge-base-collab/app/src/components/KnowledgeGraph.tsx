@@ -36,6 +36,7 @@ export function KnowledgeGraph({
   selectedEntityId
 }: KnowledgeGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const layoutCacheRef = useRef<Record<string, Pick<Node, 'x' | 'y' | 'vx' | 'vy' | 'radius' | 'color'>>>( {});
   const [nodes, setNodes] = useState<Node[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
   const [scale, setScale] = useState(1);
@@ -108,13 +109,14 @@ export function KnowledgeGraph({
     const initialNodes: Node[] = visibleEntities.map((entity, index) => {
       const angle = (index / visibleEntities.length) * 2 * Math.PI;
       const displayLevel = entity.display_level ?? 2;
+      const cachedPosition = layoutCacheRef.current[entity.id];
       return {
         id: entity.id,
         name: entity.name,
-        x: width / 2 + Math.cos(angle) * initialOrbitRadius,
-        y: height / 2 + Math.sin(angle) * initialOrbitRadius,
-        vx: 0,
-        vy: 0,
+        x: cachedPosition?.x ?? (width / 2 + Math.cos(angle) * initialOrbitRadius),
+        y: cachedPosition?.y ?? (height / 2 + Math.sin(angle) * initialOrbitRadius),
+        vx: cachedPosition?.vx ?? 0,
+        vy: cachedPosition?.vy ?? 0,
         radius: displayLevel <= 1 ? 23 : displayLevel >= 3 ? 17 : 20,
         color: domainColors[entity.domain] || '#6b7280',
         entity: entity
@@ -145,11 +147,25 @@ export function KnowledgeGraph({
 
     setNodes(initialNodes);
     setLinks(Array.from(mergedLinksMap.values()));
-  }, [entities, crossReferences, selectedEntityId]);
+  }, [entities, crossReferences, width, height]);
 
   // 力导向模拟
   useEffect(() => {
     if (nodes.length === 0) return;
+
+    layoutCacheRef.current = Object.fromEntries(
+      nodes.map((node) => [
+        node.id,
+        {
+          x: node.x,
+          y: node.y,
+          vx: node.vx,
+          vy: node.vy,
+          radius: node.radius,
+          color: node.color,
+        },
+      ]),
+    );
 
     const simulation = setInterval(() => {
       setNodes(prevNodes => {
@@ -214,6 +230,20 @@ export function KnowledgeGraph({
             node.y = Math.max(node.radius + 5, Math.min(height - node.radius - 5, node.y));
           }
         });
+
+        layoutCacheRef.current = Object.fromEntries(
+          newNodes.map((node) => [
+            node.id,
+            {
+              x: node.x,
+              y: node.y,
+              vx: node.vx,
+              vy: node.vy,
+              radius: node.radius,
+              color: node.color,
+            },
+          ]),
+        );
 
         if (draggedNode === null && totalSpeed < 0.6) {
           clearInterval(simulation);

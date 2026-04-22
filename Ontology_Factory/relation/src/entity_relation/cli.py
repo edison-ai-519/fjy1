@@ -38,7 +38,7 @@ def main() -> int:
     if args.query.strip():
         text = _slice_text_by_query(text, args.query.strip(), max_sentences=max(1, int(args.max_sentences)))
     doc_id = args.doc_id or input_path.stem
-    ner_document = extract_entities(text, doc_id=doc_id, use_llm=False, llm_client=None)
+    ner_document = extract_entities(text, doc_id=doc_id, use_llm=False, llm_client=None, source_name=input_path.name)
     relation_document = extract_relations(ner_document)
     rendered = relation_document.model_dump_json(indent=2)
     if args.output:

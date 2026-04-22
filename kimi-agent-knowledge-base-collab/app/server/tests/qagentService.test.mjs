@@ -46,7 +46,7 @@ test("QAgentService buildPrompt omits hardcoded business prompt by default", () 
   assert.equal(prompt.includes("当前知识库中没有足够依据"), false);
 });
 
-test("QAgentService buildPrompt ignores frontend business prompt when provided", () => {
+test("QAgentService buildPrompt prepends frontend business prompt when provided", () => {
   const service = new QAgentService({
     qagentCommand: [process.execPath, "fake-qagent.mjs"],
     qagentRoot: os.tmpdir(),
@@ -59,7 +59,8 @@ test("QAgentService buildPrompt ignores frontend business prompt when provided",
     { businessPrompt: "请优先基于知识库定义回答。" },
   );
 
-  assert.equal(prompt, "用户问题：什么是本体论？");
+  assert.equal(prompt.startsWith("全局指令：\n请优先基于知识库定义回答。"), true);
+  assert.equal(prompt.endsWith("用户问题：什么是本体论？"), true);
 });
 
 test("QAgentService buildPrompt includes recent conversation history when provided", () => {

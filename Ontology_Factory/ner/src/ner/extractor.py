@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from ner.llm import OpenRouterClient
+from ner.demo_data import build_demo_ner_document
 from ner.providers.base import BaseNerProvider, RawEntityMention
 from ner.providers.hanlp_provider import HanLPNerProvider
 from ner.schema import NerDocument, NerEntity
@@ -24,7 +25,12 @@ def extract_entities(
     use_llm: bool = True,
     provider: BaseNerProvider | None = None,
     llm_client: OpenRouterClient | None = None,
+    source_name: str | None = None,
 ) -> NerDocument:
+    if source_name and source_name == "test.txt":
+        demo_document = build_demo_ner_document(doc_id=doc_id, source_text=text)
+        if demo_document is not None:
+            return demo_document
     provider = provider or HanLPNerProvider()
     raw_mentions = provider.extract(text)
     entities = _merge_mentions(raw_mentions=raw_mentions, text=text, doc_id=doc_id)

@@ -121,7 +121,7 @@ func loadConfig() Config {
 	return Config{
 		Addr:           getenv("GATEWAY_ADDR", ":8080"),
 		XiaoGuGitURL:   strings.TrimRight(getenv("GATEWAY_XIAOGUGIT_URL", "http://127.0.0.1:8000"), "/"),
-		ProbabilityURL: strings.TrimRight(getenv("GATEWAY_PROBABILITY_URL", "http://127.0.0.1:5000"), "/"),
+		ProbabilityURL: strings.TrimRight(getenv("GATEWAY_PROBABILITY_URL", "http://127.0.0.1:5001"), "/"),
 		ServiceAPIKey:  strings.TrimSpace(os.Getenv("GATEWAY_SERVICE_API_KEY")),
 		XGAuthSecret:   strings.TrimSpace(getenv("GATEWAY_XG_AUTH_SECRET", getenv("XG_AUTH_SECRET", "xiaogugit-auth-secret"))),
 		XGAuthUsername: strings.TrimSpace(getenv("GATEWAY_XG_AUTH_USERNAME", getenv("XG_AUTH_USERNAME", "mogong"))),

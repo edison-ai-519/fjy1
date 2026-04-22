@@ -110,11 +110,22 @@ function normalizeWikiRefCandidate(value: string) {
   return value.trim().replace(/^["'`]+|["'`]+$/g, '');
 }
 
+function normalizeWikiRefComparable(value: string) {
+  return normalizeWikiRefCandidate(value)
+    .toLowerCase()
+    .replace(/^(common|domain|private):/i, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
 function findTargetEntity(entities: Entity[], ref: string): Entity | null {
   const normalizedRef = normalizeWikiRefCandidate(ref);
   if (!normalizedRef) {
     return null;
   }
+
+  const comparableRef = normalizeWikiRefComparable(normalizedRef);
+  const refTail = normalizedRef.split('/').filter(Boolean).at(-1) || normalizedRef;
+  const comparableTail = normalizeWikiRefComparable(refTail);
 
   return (
     entities.find((entity) => entity.id === normalizedRef)
@@ -122,6 +133,10 @@ function findTargetEntity(entities: Entity[], ref: string): Entity | null {
       || entities.find((entity) => entity.id.endsWith(`:${normalizedRef}`))
       || entities.find((entity) => entity.name === normalizedRef)
       || entities.find((entity) => entity.name.includes(normalizedRef))
+      || entities.find((entity) => normalizeWikiRefComparable(entity.id) === comparableRef)
+      || entities.find((entity) => normalizeWikiRefComparable(entity.id).endsWith(comparableTail))
+      || entities.find((entity) => normalizeWikiRefComparable(entity.name) === comparableRef)
+      || entities.find((entity) => normalizeWikiRefComparable(entity.name).includes(comparableTail))
       || null
   );
 }

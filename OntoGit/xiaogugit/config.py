@@ -139,6 +139,6 @@ def get_settings() -> Settings:
         auth_cookie_name=values.get("XG_AUTH_COOKIE_NAME", "xg_session"),
         auth_username=values.get("XG_AUTH_USERNAME", "mogong"),
         auth_password=values.get("XG_AUTH_PASSWORD", "123456"),
-        inference_url=values.get("XG_INFERENCE_URL", "http://127.0.0.1:5000/api/llm/probability-reason").strip(),
+        inference_url=values.get("XG_INFERENCE_URL", "http://127.0.0.1:5001/api/llm/probability-reason").strip(),
         inference_timeout=_read_int(values, "XG_INFERENCE_TIMEOUT", 10),
     )

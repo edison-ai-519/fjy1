@@ -122,7 +122,7 @@ function Get-Config {
     BackendPort = $backendPort
     FrontendPort = $frontendPort
     XiaoGuGitPort = 8001
-    ProbabilityPort = 5000
+    ProbabilityPort = 5001
     GatewayPort = 8080
     PythonBin = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
     WikiMgRoot = $wikiMgRoot
