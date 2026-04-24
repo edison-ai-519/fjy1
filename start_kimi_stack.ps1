@@ -100,11 +100,9 @@ function Get-Config {
     ScriptPath = $scriptPath
     PowerShellExecutable = Get-PowerShellExecutablePath
     AppDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\app'
-    QAgentDir = Join-Path $rootDir 'QAgent'
     XiaoGuGitDir = Join-Path $rootDir 'OntoGit\xiaogugit'
     ProbabilityDir = Join-Path $rootDir 'OntoGit\probability'
     GatewayDir = Join-Path $rootDir 'OntoGit\gateway'
-    WebRuntimeDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\.qagent-web-runtime'
     LogDir = Join-Path $rootDir '.run-logs'
     BackendLogFile = Join-Path $rootDir '.run-logs\kimi-backend.log'
     FrontendLogFile = Join-Path $rootDir '.run-logs\kimi-frontend.log'
@@ -191,7 +189,7 @@ function Assert-Prerequisites {
   Assert-Command -CommandName 'npm'
   Assert-Command -CommandName $Config.PythonBin
 
-  foreach ($dir in @($Config.AppDir, $Config.QAgentDir, $Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)) {
+  foreach ($dir in @($Config.AppDir, $Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)) {
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
       throw "Required directory not found: $dir"
     }
@@ -200,7 +198,6 @@ function Assert-Prerequisites {
     throw "WiKiMG CLI not found: $($Config.WikiMgCliPath)"
   }
 
-  Install-NpmDependenciesIfNeeded -Directory $Config.QAgentDir -Name 'QAgent'
   Install-NpmDependenciesIfNeeded -Directory $Config.AppDir -Name 'Kimi app'
 }
 
@@ -812,23 +809,6 @@ function Start-OntoGitServices {
   Start-OntoGitGateway -Config $Config
 }
 
-function Stop-QAgentGateway {
-  param([Parameter(Mandatory)][psobject]$Config)
-
-  if (-not (Test-Path -LiteralPath $Config.QAgentDir -PathType Container)) {
-    return
-  }
-
-  Write-Host 'Stopping old QAgent web runtime gateway...'
-  Push-Location $Config.QAgentDir
-  try {
-    & node '.\bin\qagent.js' --cwd $Config.WebRuntimeDir gateway stop *> $null
-  } catch {
-  } finally {
-    Pop-Location
-  }
-}
-
 function Invoke-LoggedCommand {
   param(
     [Parameter(Mandatory)][string]$LogPath,
@@ -915,7 +895,6 @@ function Start-KimiStack {
   Write-Host 'Stopping old processes...'
   Stop-PidFileProcess -PidFile $Config.BackendPidFile
   Stop-PidFileProcess -PidFile $Config.FrontendPidFile
-  Stop-QAgentGateway -Config $Config
   Stop-OntoGitService -Name 'xiaogugit' -PidFile $Config.XiaoGuGitPidFile -Port $Config.XiaoGuGitPort
   Stop-OntoGitService -Name 'probability' -PidFile $Config.ProbabilityPidFile -Port $Config.ProbabilityPort
   Stop-OntoGitService -Name 'gateway' -PidFile $Config.GatewayPidFile -Port $Config.GatewayPort

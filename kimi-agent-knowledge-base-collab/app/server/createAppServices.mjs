@@ -1,7 +1,6 @@
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
 
 import { JsonKnowledgeBaseRepository } from "./repositories/jsonKnowledgeBaseRepository.mjs";
 import { DatabaseKnowledgeBaseRepository } from "./repositories/databaseKnowledgeBaseRepository.mjs";
@@ -10,7 +9,7 @@ import { KnowledgeBaseService } from "./services/knowledgeBaseService.mjs";
 import { AssistantSessionStateService } from "./services/assistantSessionStateService.mjs";
 import { ConversationGraphStateService } from "./services/conversationGraphStateService.mjs";
 import { OntoGitLocalCommitService } from "./services/ontoGitLocalCommitService.mjs";
-import { QAgentService } from "./services/qagentService.mjs";
+import { LinearWorkflowService } from "./services/linearWorkflowService.mjs";
 import { WikiWorkspaceWriterService } from "./services/wikiWorkspaceWriterService.mjs";
 import { ensureKnowledgeDataWorkspace, resolveKnowledgeDataPaths } from "./knowledgeDataPaths.mjs";
 
@@ -19,50 +18,11 @@ const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, "..");
 const projectRoot = path.resolve(appRoot, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
-const qagentRuntimeRoot = path.join(projectRoot, ".qagent-web-runtime");
+const workflowRuntimeRoot = path.join(projectRoot, ".workflow-runtime");
 const defaultWikiMGRoot = path.resolve(workspaceRoot, "Ontology_Factory");
-
-function resolveQAgentRoot() {
-  const candidates = [
-    process.env.QAGENT_ROOT,
-    path.resolve(projectRoot, "../QAgent"),
-    path.resolve(projectRoot, "../QAgent-master"),
-  ].filter(Boolean);
-
-  return (
-    candidates.find((candidate) => existsSync(path.join(candidate, "package.json")))
-    || candidates[0]
-  );
-}
-
-function resolveQAgentCommand(qagentRoot) {
-  if (process.env.QAGENT_BIN) {
-    return [process.execPath, process.env.QAGENT_BIN];
-  }
-
-  const builtBin = path.join(qagentRoot, "bin", "qagent.js");
-  const builtDist = path.join(qagentRoot, "dist", "cli", "index.js");
-  if (existsSync(builtBin) && existsSync(builtDist)) {
-    return [process.execPath, builtBin];
-  }
-
-  const tsxBin = path.join(
-    qagentRoot,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "tsx.cmd" : "tsx",
-  );
-  const sourceEntry = path.join(qagentRoot, "src", "cli", "index.ts");
-  if (existsSync(tsxBin) && existsSync(sourceEntry)) {
-    return [tsxBin, sourceEntry];
-  }
-
-  return [process.execPath, builtBin];
-}
 
 export function createAppServices() {
   const repositoryMode = process.env.KNOWLEDGE_BASE_PROVIDER || "json";
-  const qagentRoot = resolveQAgentRoot();
   const knowledgeDataPaths = resolveKnowledgeDataPaths({
     workspaceRoot,
     env: process.env,
@@ -117,17 +77,20 @@ export function createAppServices() {
       ),
     }),
     assistantSessionStateService: new AssistantSessionStateService({
-      runtimeRoot: qagentRuntimeRoot,
+      runtimeRoot: workflowRuntimeRoot,
     }),
     conversationGraphStateService: new ConversationGraphStateService({
-      runtimeRoot: qagentRuntimeRoot,
+      runtimeRoot: workflowRuntimeRoot,
     }),
     localWorkspaceService: ontoGitCommitService,
-    qagentService: new QAgentService({
-      qagentCommand: resolveQAgentCommand(qagentRoot),
-      qagentRoot,
-      projectRoot,
-      runtimeRoot: qagentRuntimeRoot,
+    workflowService: new LinearWorkflowService({
+      runtimeRoot: workflowRuntimeRoot,
+      gatewayBaseUrl: process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080",
+      gatewayApiKey: process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "",
+      workflowTimeoutMs: Number(process.env.WORKFLOW_TIMEOUT_MS || 120000),
+      workflowLlmBaseUrl: process.env.WORKFLOW_LLM_BASE_URL || process.env.DMXAPI_BASE_URL || "",
+      workflowLlmApiKey: process.env.WORKFLOW_LLM_API_KEY || process.env.DMXAPI_API_KEY || "",
+      workflowModel: process.env.WORKFLOW_MODEL || process.env.DMXAPI_MODEL || "gpt-5.4",
     }),
     appRoot,
   };

@@ -17,7 +17,7 @@ const {
   assistantSessionStateService,
   conversationGraphStateService,
   localWorkspaceService,
-  qagentService,
+  workflowService,
   appRoot,
 } = createAppServices();
 
@@ -26,7 +26,7 @@ function sendJson(res, status, payload) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
   });
   res.end(JSON.stringify(payload));
 }
@@ -36,7 +36,7 @@ function sendText(res, status, text, contentType = "text/plain; charset=utf-8") 
     "Content-Type": contentType,
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
   });
   res.end(text);
 }
@@ -48,7 +48,7 @@ function openSse(res) {
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
   });
   res.write(": connected\n\n");
 }
@@ -87,121 +87,6 @@ function getContentType(filePath) {
   if (filePath.endsWith(".json")) return "application/json; charset=utf-8";
   if (filePath.endsWith(".svg")) return "image/svg+xml";
   return "application/octet-stream";
-}
-
-function parseConversationHistory(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .map((item) => (
-      item && typeof item === "object"
-        ? {
-            question: typeof item.question === "string" ? item.question : "",
-            answer: typeof item.answer === "string" ? item.answer : "",
-            toolRuns: Array.isArray(item.toolRuns) ? item.toolRuns : [],
-            contentBlocks: Array.isArray(item.contentBlocks) ? item.contentBlocks : [],
-          }
-        : null
-    ))
-    .filter(Boolean);
-}
-
-function normalizeConversationHistoryForPrompt(value, limit = Number.POSITIVE_INFINITY) {
-  const seen = new Set();
-  const history = [];
-
-  for (const item of parseConversationHistory(value)) {
-    const question = typeof item.question === "string" ? item.question.trim() : "";
-    const answer = typeof item.answer === "string" ? item.answer.trim() : "";
-    if (!question || !answer) {
-      continue;
-    }
-
-    const signature = `${question}\u0000${answer}`;
-    if (seen.has(signature)) {
-      continue;
-    }
-
-    seen.add(signature);
-    history.push({
-      question,
-      answer,
-      toolRuns: Array.isArray(item.toolRuns) ? item.toolRuns : [],
-      contentBlocks: Array.isArray(item.contentBlocks) ? item.contentBlocks : [],
-    });
-  }
-
-  if (limit === Number.POSITIVE_INFINITY) {
-    return history;
-  }
-
-  return history.slice(-limit);
-}
-
-function extractPersistedConversationHistory(state, conversationId, limit = Number.POSITIVE_INFINITY) {
-  if (!conversationId || typeof conversationId !== "string") {
-    return [];
-  }
-
-  const sessions = Array.isArray(state?.sessions) ? state.sessions : [];
-  const session = sessions.find((item) => item && typeof item === "object" && item.id === conversationId);
-  const messages = Array.isArray(session?.messages) ? session.messages : [];
-
-  const history = messages
-    .map((message) => {
-    const question = typeof message?.question === "string" ? message.question.trim() : "";
-    const answer = typeof message?.answer === "string" ? message.answer.trim() : "";
-    if (!question || !answer) {
-      return null;
-    }
-    return {
-      question,
-      answer,
-      toolRuns: Array.isArray(message?.toolRuns) ? message.toolRuns : [],
-      contentBlocks: Array.isArray(message?.contentBlocks) ? message.contentBlocks : [],
-    };
-  })
-  .filter(Boolean);
-
-  if (limit === Number.POSITIVE_INFINITY) {
-    return history;
-  }
-
-  return history.slice(-limit);
-}
-
-function mergeConversationHistories(primary, fallback, limit = Number.POSITIVE_INFINITY) {
-  const seen = new Set();
-  const merged = [];
-
-  for (const item of [...fallback, ...primary]) {
-    const question = typeof item?.question === "string" ? item.question.trim() : "";
-    const answer = typeof item?.answer === "string" ? item.answer.trim() : "";
-    if (!question || !answer) {
-      continue;
-    }
-
-    const signature = `${question}\u0000${answer}`;
-    if (seen.has(signature)) {
-      continue;
-    }
-
-    seen.add(signature);
-    merged.push({
-      question,
-      answer,
-      toolRuns: Array.isArray(item?.toolRuns) ? item.toolRuns : [],
-      contentBlocks: Array.isArray(item?.contentBlocks) ? item.contentBlocks : [],
-    });
-  }
-
-  if (limit === Number.POSITIVE_INFINITY) {
-    return merged;
-  }
-
-  return merged.slice(-limit);
 }
 
 async function readRequestBodyBuffer(req) {
@@ -254,7 +139,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/health") {
       sendJson(res, 200, {
         ok: true,
-        qagentAvailable: true,
+        workflowAvailable: true,
+        workflowMode: "linear",
         provider: process.env.KNOWLEDGE_BASE_PROVIDER || "json",
       });
       return;
@@ -515,17 +401,6 @@ const server = createServer(async (req, res) => {
       const entityId = typeof body.entityId === "string" ? body.entityId : undefined;
       const conversationId = typeof body.conversationId === "string" ? body.conversationId : undefined;
       const businessPrompt = typeof body.businessPrompt === "string" ? body.businessPrompt : undefined;
-      const modelName = typeof body.modelName === "string" ? body.modelName : undefined;
-      const requestConversationHistory = normalizeConversationHistoryForPrompt(body.conversationHistory);
-      const persistedState = await assistantSessionStateService.load();
-      const persistedConversationHistory = extractPersistedConversationHistory(
-        persistedState,
-        conversationId,
-      );
-      const conversationHistory = mergeConversationHistories(
-        requestConversationHistory,
-        persistedConversationHistory,
-      );
 
       if (!question) {
         sendJson(res, 400, { error: "question is required" });
@@ -533,11 +408,9 @@ const server = createServer(async (req, res) => {
       }
 
       const context = await knowledgeBaseService.collectChatContext(question, entityId);
-      const result = await qagentService.ask(question, context, {
+      const result = await workflowService.ask(question, context, {
         conversationId,
         businessPrompt,
-        modelName,
-        conversationHistory,
       });
 
       if (!result.ok) {
@@ -615,7 +488,7 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const runtimeRoot = qagentService.getConversationRuntimeRoot(conversationId);
+      const runtimeRoot = workflowService.getConversationRuntimeRoot(conversationId);
       const uploadsDir = path.join(runtimeRoot, "uploads");
       const safeFileName = fileName.replace(/[\\/]+/g, "_").replace(/\0/g, "").trim() || "upload.bin";
       const filePath = path.join(uploadsDir, safeFileName);
@@ -635,23 +508,51 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/workflow/file/run") {
+      const fileName = typeof url.searchParams.get("fileName") === "string"
+        ? url.searchParams.get("fileName").trim()
+        : "";
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      const bodyBuffer = await readRequestBodyBuffer(req);
+
+      if (!fileName) {
+        sendJson(res, 400, { error: "fileName is required" });
+        return;
+      }
+      if (bodyBuffer.byteLength === 0) {
+        sendJson(res, 400, { error: "file content is empty" });
+        return;
+      }
+      if (!projectId) {
+        sendJson(res, 400, { error: "projectId is required" });
+        return;
+      }
+
+      const result = await workflowService.runFileWorkflow({
+        fileName: decodeURIComponent(fileName),
+        projectId: decodeURIComponent(projectId),
+        mimeType: typeof req.headers["content-type"] === "string"
+          ? req.headers["content-type"]
+          : "application/octet-stream",
+        content: bodyBuffer,
+        conversationId,
+      });
+
+      sendJson(res, result.ok ? 200 : 502, result);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat/stream") {
       const body = await parseBody(req);
       const question = typeof body.question === "string" ? body.question.trim() : "";
       const entityId = typeof body.entityId === "string" ? body.entityId : undefined;
       const conversationId = typeof body.conversationId === "string" ? body.conversationId : undefined;
       const businessPrompt = typeof body.businessPrompt === "string" ? body.businessPrompt : undefined;
-      const modelName = typeof body.modelName === "string" ? body.modelName : undefined;
-      const requestConversationHistory = normalizeConversationHistoryForPrompt(body.conversationHistory);
-      const persistedState = await assistantSessionStateService.load();
-      const persistedConversationHistory = extractPersistedConversationHistory(
-        persistedState,
-        conversationId,
-      );
-      const conversationHistory = mergeConversationHistories(
-        requestConversationHistory,
-        persistedConversationHistory,
-      );
 
       if (!question) {
         sendJson(res, 400, { error: "question is required" });
@@ -671,11 +572,11 @@ const server = createServer(async (req, res) => {
       openSse(res);
       writeSse(res, "context", context);
       writeSse(res, "status", {
-        message: "已整理知识库上下文，准备连接 Agent CLI...",
+        message: "已整理知识库上下文，准备执行固定线性工作流...",
       });
 
       try {
-        const result = await qagentService.askStream(
+        const result = await workflowService.askStream(
           question,
           context,
           {
@@ -704,8 +605,6 @@ const server = createServer(async (req, res) => {
           {
             conversationId,
             businessPrompt,
-            modelName,
-            conversationHistory,
             signal: abortController.signal,
           }
         );

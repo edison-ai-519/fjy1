@@ -14,6 +14,7 @@ import {
   Atom,
   Link2,
   TreePine,
+  FileUp,
 } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
@@ -33,6 +34,7 @@ import { ExplorerPage } from '@/app/pages/ExplorerPage';
 import { AssistantPage } from '@/app/pages/AssistantPage';
 import { LabPage } from '@/app/pages/LabPage';
 import { WorkspacePage } from '@/app/pages/WorkspacePage';
+import { FileWorkflowPage } from '@/app/pages/FileWorkflowPage';
 import { EnterGateIntro } from '@/components/EnterGateIntro';
 import { SearchPanel } from '@/components/SearchPanel';
 import type { Entity } from '@/types/ontology';
@@ -337,6 +339,10 @@ function AppShellContent() {
                   <GitBranch className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">小故Git</span>
                 </TabsTrigger>
+                <TabsTrigger value="file-workflow" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                  <FileUp className="mr-3 h-5 w-5 text-primary" />
+                  <span className="font-black text-sm uppercase tracking-tight">文件工作流</span>
+                </TabsTrigger>
               </TabsList>
 
               <div className="flex flex-col gap-6 pb-2">
@@ -383,6 +389,9 @@ function AppShellContent() {
           <TabsContent value="workspace" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
             <WorkspacePage />
           </TabsContent>
+          <TabsContent value="file-workflow" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
+            <FileWorkflowPage />
+          </TabsContent>
         </Tabs>
       </main>
 
@@ -398,5 +407,4 @@ export function AppShell() {
     </OntologyProvider>
   );
 }
-
 

@@ -5,8 +5,6 @@ set -euo pipefail
 # 获取脚本所在目录
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${ROOT_DIR}/kimi-agent-knowledge-base-collab/app"
-QAGENT_DIR="${ROOT_DIR}/QAgent"
-WEB_RUNTIME_DIR="${ROOT_DIR}/kimi-agent-knowledge-base-collab/.qagent-web-runtime"
 XIAOGUGIT_DIR="${ROOT_DIR}/OntoGit/xiaogugit"
 PROBABILITY_DIR="${ROOT_DIR}/OntoGit/probability"
 GATEWAY_DIR="${ROOT_DIR}/OntoGit/gateway"
@@ -266,18 +264,6 @@ start_frontend() {
   wait_for_port "${FRONTEND_PORT}" "前端"
 }
 
-stop_qagent_gateway() {
-  if [[ ! -d "${QAGENT_DIR}" ]]; then
-    return
-  fi
-
-  echo "关闭旧的 QAgent web runtime gateway..."
-  (
-    cd "${QAGENT_DIR}"
-    node ./bin/qagent.js --cwd "${WEB_RUNTIME_DIR}" gateway stop >/dev/null 2>&1 || true
-  )
-}
-
 print_summary() {
   cat <<EOF
 
@@ -324,7 +310,6 @@ stop_pid_file "${LOG_DIR}/xiaogugit.pid"
 stop_pid_file "${LOG_DIR}/probability.pid"
 stop_pid_file "${LOG_DIR}/ontogit-gateway.pid"
 
-stop_qagent_gateway
 stop_port "${BACKEND_PORT}" "后端"
 stop_port "${FRONTEND_PORT}" "前端"
 stop_port "${XIAOGUGIT_PORT}" "xiaogugit"
