@@ -45,10 +45,10 @@ XG_AUTH_SECRET="${XG_AUTH_SECRET:-xiaogugit-auth-secret}"
 XG_AUTH_USERNAME="${XG_AUTH_USERNAME:-mogong}"
 XG_AUTH_PASSWORD="${XG_AUTH_PASSWORD:-123456}"
 
-# DMXAPI 配置
-DMXAPI_API_KEY="${DMXAPI_API_KEY:-}"
-DMXAPI_BASE_URL="${DMXAPI_BASE_URL:-https://www.dmxapi.cn/v1}"
-DMXAPI_MODEL="${DMXAPI_MODEL:-gpt-5.4}"
+# OpenRouter / DMXAPI 配置（kimi 默认优先 OpenRouter）
+DMXAPI_API_KEY="${DMXAPI_API_KEY:-${OPENROUTER_API_KEY:-}}"
+DMXAPI_BASE_URL="${DMXAPI_BASE_URL:-${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}}"
+DMXAPI_MODEL="${DMXAPI_MODEL:-${OPENROUTER_MODEL:-openai/gpt-4o-mini}}"
 
 mkdir -p "${LOG_DIR}"
 

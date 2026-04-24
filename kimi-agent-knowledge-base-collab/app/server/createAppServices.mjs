@@ -88,9 +88,9 @@ export function createAppServices() {
       gatewayBaseUrl: process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080",
       gatewayApiKey: process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "",
       workflowTimeoutMs: Number(process.env.WORKFLOW_TIMEOUT_MS || 120000),
-      workflowLlmBaseUrl: process.env.WORKFLOW_LLM_BASE_URL || process.env.DMXAPI_BASE_URL || "",
-      workflowLlmApiKey: process.env.WORKFLOW_LLM_API_KEY || process.env.DMXAPI_API_KEY || "",
-      workflowModel: process.env.WORKFLOW_MODEL || process.env.DMXAPI_MODEL || "gpt-5.4",
+      workflowLlmBaseUrl: process.env.WORKFLOW_LLM_BASE_URL || process.env.OPENROUTER_BASE_URL || process.env.DMXAPI_BASE_URL || "https://openrouter.ai/api/v1",
+      workflowLlmApiKey: process.env.WORKFLOW_LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.DMXAPI_API_KEY || "",
+      workflowModel: process.env.WORKFLOW_MODEL || process.env.OPENROUTER_MODEL || process.env.DMXAPI_MODEL || "openai/gpt-4o-mini",
     }),
     appRoot,
   };

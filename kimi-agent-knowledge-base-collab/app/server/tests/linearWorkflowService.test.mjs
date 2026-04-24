@@ -142,6 +142,45 @@ test("LinearWorkflowService stops when stage-1 returns empty entities", async ()
   assert.equal(calledProbability, false);
 });
 
+test("LinearWorkflowService fails fast when stage-1 LLM is unavailable", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-llm-down-"));
+  let calledProbability = false;
+  let calledIngest = false;
+
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ stage }) => {
+      if (stage.includes("节点1")) {
+        throw new Error("workflow LLM is not configured");
+      }
+      return {};
+    },
+    probabilityInvoker: async () => {
+      calledProbability = true;
+      return { probability: "88%", reason: "unused" };
+    },
+    ingestInvoker: async () => {
+      calledIngest = true;
+      return { status: "success", write_result: { commit_id: "c", version_id: 1 } };
+    },
+  });
+
+  const result = await service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "doc.md",
+    mimeType: "text/markdown",
+    content: Buffer.from("文档内容", "utf8"),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.stage_results[0].status, "failed");
+  assert.equal(result.stage_results[1].status, "pending");
+  assert.equal(result.stage_results[2].status, "pending");
+  assert.equal(calledProbability, false);
+  assert.equal(calledIngest, false);
+  assert.equal(result.errors.some((item) => item.stage === "observe"), true);
+});
+
 test("LinearWorkflowService marks stage-6 as failed when ingest fails", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-ingest-fail-"));
   let ingestCount = 0;

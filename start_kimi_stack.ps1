@@ -17,6 +17,9 @@ param(
   [string]$XG_AUTH_SECRET = $env:XG_AUTH_SECRET,
   [string]$XG_AUTH_USERNAME = $env:XG_AUTH_USERNAME,
   [string]$XG_AUTH_PASSWORD = $env:XG_AUTH_PASSWORD,
+  [string]$OPENROUTER_API_KEY = $env:OPENROUTER_API_KEY,
+  [string]$OPENROUTER_BASE_URL = $env:OPENROUTER_BASE_URL,
+  [string]$OPENROUTER_MODEL = $env:OPENROUTER_MODEL,
   [string]$DMXAPI_API_KEY = $env:DMXAPI_API_KEY,
   [string]$DMXAPI_BASE_URL = $env:DMXAPI_BASE_URL,
   [string]$DMXAPI_MODEL = $env:DMXAPI_MODEL,
@@ -143,9 +146,9 @@ function Get-Config {
     } else {
       $GATEWAY_XG_AUTH_USERNAME
     }
-    DMXAPIKey = if ([string]::IsNullOrWhiteSpace($DMXAPI_API_KEY)) { '' } else { $DMXAPI_API_KEY }
-    DMXAPIBaseUrl = if ([string]::IsNullOrWhiteSpace($DMXAPI_BASE_URL)) { 'https://www.dmxapi.cn/v1' } else { $DMXAPI_BASE_URL }
-    DMXAPIModel = if ([string]::IsNullOrWhiteSpace($DMXAPI_MODEL)) { 'gpt-5.4' } else { $DMXAPI_MODEL }
+    DMXAPIKey = if ([string]::IsNullOrWhiteSpace($DMXAPI_API_KEY)) { $OPENROUTER_API_KEY } else { $DMXAPI_API_KEY }
+    DMXAPIBaseUrl = if ([string]::IsNullOrWhiteSpace($DMXAPI_BASE_URL)) { if ([string]::IsNullOrWhiteSpace($OPENROUTER_BASE_URL)) { 'https://openrouter.ai/api/v1' } else { $OPENROUTER_BASE_URL } } else { $DMXAPI_BASE_URL }
+    DMXAPIModel = if ([string]::IsNullOrWhiteSpace($DMXAPI_MODEL)) { if ([string]::IsNullOrWhiteSpace($OPENROUTER_MODEL)) { 'openai/gpt-4o-mini' } else { $OPENROUTER_MODEL } } else { $DMXAPI_MODEL }
   }
 }
 

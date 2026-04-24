@@ -149,30 +149,6 @@ function decodeDocumentText(buffer) {
   return text.replace(/\u0000/g, "").trim();
 }
 
-function heuristicEntitiesFromText(documentText) {
-  const chunks = documentText
-    .split(/\n+/)
-    .map((line) => asText(line))
-    .filter(Boolean)
-    .slice(0, 8);
-
-  if (chunks.length === 0) {
-    return [];
-  }
-
-  return chunks.map((line, index) => {
-    const name = line.length > 28 ? `${line.slice(0, 28)}...` : line;
-    return {
-      name,
-      summary: line,
-      properties: {},
-      abilities: [],
-      citations: [line],
-      id: `ent_${buildSlug(name, "entity")}_${index + 1}`,
-    };
-  });
-}
-
 function makeEntityFilename(entityName, usedNames) {
   const base = buildSlug(entityName, "entity");
   let candidate = `${base}.json`;
@@ -208,13 +184,19 @@ export class LinearWorkflowService {
     this.gatewayBaseUrl = asText(options.gatewayBaseUrl);
     this.gatewayApiKey = asText(options.gatewayApiKey);
     this.workflowTimeoutMs = asNumber(options.workflowTimeoutMs, DEFAULT_TIMEOUT_MS);
-    this.workflowModel = asText(options.workflowModel) || process.env.WORKFLOW_MODEL || process.env.DMXAPI_MODEL || "gpt-5.4";
+    this.workflowModel = asText(options.workflowModel)
+      || process.env.WORKFLOW_MODEL
+      || process.env.OPENROUTER_MODEL
+      || process.env.DMXAPI_MODEL
+      || "openai/gpt-4o-mini";
     this.workflowLlmBaseUrl = asText(options.workflowLlmBaseUrl)
       || process.env.WORKFLOW_LLM_BASE_URL
+      || process.env.OPENROUTER_BASE_URL
       || process.env.DMXAPI_BASE_URL
-      || "";
+      || "https://openrouter.ai/api/v1";
     this.workflowLlmApiKey = asText(options.workflowLlmApiKey)
       || process.env.WORKFLOW_LLM_API_KEY
+      || process.env.OPENROUTER_API_KEY
       || process.env.DMXAPI_API_KEY
       || "";
 
@@ -455,16 +437,11 @@ export class LinearWorkflowService {
 
     try {
       await runStage(0, async () => {
-        let llmResult = null;
-        try {
-          llmResult = await this.llmJsonInvoker({
-            stage: "节点1-观察",
-            instruction: "把文档拆分为实体数组 entities。每个实体必须有 name、summary、properties、abilities、citations（文本片段数组）。",
-            payload: { document_text: documentText },
-          });
-        } catch {
-          llmResult = { entities: heuristicEntitiesFromText(documentText) };
-        }
+        const llmResult = await this.llmJsonInvoker({
+          stage: "节点1-观察",
+          instruction: "把文档拆分为实体数组 entities。每个实体必须有 name、summary、properties、abilities、citations（文本片段数组）。",
+          payload: { document_text: documentText },
+        });
 
         const rawEntities = Array.isArray(llmResult?.entities) ? llmResult.entities : [];
         const entities = rawEntities.map(normalizeEntity).filter((item) => asText(item.name));
@@ -476,23 +453,11 @@ export class LinearWorkflowService {
       });
 
       await runStage(1, async () => {
-        let llmResult = null;
-        try {
-          llmResult = await this.llmJsonInvoker({
-            stage: "节点2-操作",
-            instruction: "根据 entities 提取 relations 数组。每条关系需包含 source、target、relation_type、evidence。",
-            payload: { entities: state.entities, document_text: documentText },
-          });
-        } catch {
-          llmResult = {
-            relations: state.entities.slice(1).map((entity, index) => ({
-              source: state.entities[index].name,
-              target: entity.name,
-              relation_type: "包含",
-              evidence: entity.citations?.[0] || entity.summary,
-            })),
-          };
-        }
+        const llmResult = await this.llmJsonInvoker({
+          stage: "节点2-操作",
+          instruction: "根据 entities 提取 relations 数组。每条关系需包含 source、target、relation_type、evidence。",
+          payload: { entities: state.entities, document_text: documentText },
+        });
 
         const entityByName = new Map(state.entities.map((entity) => [entity.name, entity]));
         const rawRelations = Array.isArray(llmResult?.relations) ? llmResult.relations : [];
@@ -504,23 +469,11 @@ export class LinearWorkflowService {
       });
 
       await runStage(2, async () => {
-        let llmResult = null;
-        try {
-          llmResult = await this.llmJsonInvoker({
-            stage: "节点3-消融",
-            instruction: "对每个实体做消融评估，返回 ablation 数组，字段：entity_id、impact_level、impact_reason、system_risk。",
-            payload: { entities: state.entities, relations: state.relations },
-          });
-        } catch {
-          llmResult = {
-            ablation: state.entities.map((entity) => ({
-              entity_id: entity.id,
-              impact_level: "medium",
-              impact_reason: `${entity.name} 缺失将导致相关能力下降。`,
-              system_risk: "medium",
-            })),
-          };
-        }
+        const llmResult = await this.llmJsonInvoker({
+          stage: "节点3-消融",
+          instruction: "对每个实体做消融评估，返回 ablation 数组，字段：entity_id、impact_level、impact_reason、system_risk。",
+          payload: { entities: state.entities, relations: state.relations },
+        });
 
         const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
         const rawAblation = Array.isArray(llmResult?.ablation) ? llmResult.ablation : [];
