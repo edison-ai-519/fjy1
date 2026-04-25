@@ -101,6 +101,31 @@ describe("loadRuntimeConfig", () => {
     expect(config.runtime.autoMemoryForkMaxAgentSteps).toBe(4);
   });
 
+  it("只有 OpenRouter 风格 apiKey 时也会自动识别 provider", async () => {
+    const tempHome = await makeTempDir("qagent-home-");
+    const tempProject = await makeTempDir("qagent-project-");
+    vi.spyOn(os, "homedir").mockReturnValue(tempHome);
+    await mkdir(path.join(tempHome, ".agent"), { recursive: true });
+    await mkdir(path.join(tempProject, ".agent"), { recursive: true });
+    await writeFile(
+      path.join(tempHome, ".agent", "config.json"),
+      JSON.stringify({
+        model: {
+          apiKey: "sk-or-v1-example",
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadRuntimeConfig({
+      cwd: tempProject,
+    });
+
+    expect(config.model.provider).toBe("openrouter");
+    expect(config.model.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(config.model.apiKey).toBe("sk-or-v1-example");
+  });
+
   it("环境变量 provider 覆盖项目配置时会同步使用对应默认值", async () => {
     const tempHome = await makeTempDir("qagent-home-");
     const tempProject = await makeTempDir("qagent-project-");

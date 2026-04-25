@@ -220,4 +220,30 @@ describe("PersistentShellSession", () => {
     expect(await realpath(normalizeShellPath(result.cwd))).toBe(await realpath(root));
     expect(result.stdout).toContain(filePath);
   });
+
+  it("在 Windows PowerShell 中兼容分号分隔的 cd; dir 链式命令", async () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    const root = await makeTempDir("qagent-powershell-semicolon-");
+    const nested = path.join(root, "nested");
+    const filePath = path.join(nested, "note.txt");
+    await mkdir(nested, { recursive: true });
+    await writeFile(filePath, "hello", "utf8");
+
+    const session = new PersistentShellSession("powershell.exe", os.tmpdir());
+    sessions.push(session);
+
+    const result = await session.execute(
+      `cd ${root}; dir /s /b ${path.join(nested, "*")}`,
+      {
+        timeoutMs: 10_000,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(await realpath(normalizeShellPath(result.cwd))).toBe(await realpath(root));
+    expect(result.stdout).toContain(filePath);
+  });
 });

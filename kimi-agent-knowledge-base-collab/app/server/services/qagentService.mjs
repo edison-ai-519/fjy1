@@ -9,12 +9,119 @@ const WEB_CHAT_CONVERSATION_STATE_VERSION = 2;
 const DEFAULT_STREAM_TIMEOUT_MS = 120_000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 15_000;
 const DEFAULT_EXECUTION_STAGE_DETAIL = "已整理知识库上下文，准备连接 Agent CLI...";
-const WIKIMG_WRAPPER_NAME = "wikimg.sh";
+const IS_WINDOWS = process.platform === "win32";
+const WIKIMG_WRAPPER_NAME = IS_WINDOWS ? "wikimg.cmd" : "wikimg.sh";
 const WIKIMG_HELP_NAME = "wikimg-help.md";
-const NER_WRAPPER_NAME = "ner.sh";
+const NER_WRAPPER_NAME = IS_WINDOWS ? "ner.cmd" : "ner.sh";
 const NER_HELP_NAME = "ner-help.md";
-const RELATION_WRAPPER_NAME = "re.sh";
+const RELATION_WRAPPER_NAME = IS_WINDOWS ? "re.cmd" : "re.sh";
 const RELATION_HELP_NAME = "re-help.md";
+
+function markdownShellLanguage() {
+  return IS_WINDOWS ? "powershell" : "bash";
+}
+
+function runtimeLocalWrapperCommand(wrapperName) {
+  return IS_WINDOWS ? `.\\${wrapperName}` : `./${wrapperName}`;
+}
+
+function runtimeAbsoluteWrapperCommand(wrapperPath) {
+  return IS_WINDOWS ? `& '${wrapperPath}'` : `'${wrapperPath}'`;
+}
+
+function buildPythonCliWrapperContent(moduleName, pythonPathEntries, wrapperName) {
+  const pyWarnings = "ignore:The pynvml package is deprecated.:FutureWarning";
+  const usageCommand = runtimeLocalWrapperCommand(wrapperName);
+  if (IS_WINDOWS) {
+    const pythonPathValue = pythonPathEntries.join(";");
+    return `@echo off
+:: Usage:
+::   ${usageCommand} extract --input story.txt --stdout
+::   ${usageCommand} story.txt
+:: Do not Set-Location into Ontology_Factory source directories.
+setlocal
+set "PYTHONWARNINGS=${pyWarnings}"
+set "PYTHONPATH=${pythonPathValue};%PYTHONPATH%"
+python -m ${moduleName} %*
+exit /b %ERRORLEVEL%
+`;
+  }
+
+  return `#!/usr/bin/env bash
+# Usage:
+#   ${usageCommand} extract --input story.txt --stdout
+#   ${usageCommand} story.txt
+# Do not cd into Ontology_Factory source directories.
+set -euo pipefail
+
+exec env PYTHONWARNINGS=${JSON.stringify(pyWarnings)} PYTHONPATH=${JSON.stringify(pythonPathEntries.join(":"))} python -m ${moduleName} "$@"
+`;
+}
+
+function buildForwardingWrapperContent(wrapperPath, targetWrapperPath) {
+  const relativeTarget = path.relative(path.dirname(wrapperPath), targetWrapperPath) || path.basename(targetWrapperPath);
+  if (IS_WINDOWS) {
+    return `@echo off
+setlocal
+call "%~dp0${relativeTarget.replace(/\//g, "\\")}" %*
+exit /b %ERRORLEVEL%
+`;
+  }
+
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$SCRIPT_DIR/${relativeTarget.replace(/\\/g, "/")}" "$@"
+`;
+}
+
+export function buildModelSpawnEnvironment(modelConfig = {}, baseEnv = process.env) {
+  const env = {
+    ...baseEnv,
+  };
+
+  const provider = typeof modelConfig.provider === "string" ? modelConfig.provider : "";
+  const model = typeof modelConfig.modelName === "string" ? modelConfig.modelName : "";
+  const apiKey = typeof modelConfig.apiKey === "string" ? modelConfig.apiKey : "";
+  const baseUrl = typeof modelConfig.baseUrl === "string" ? modelConfig.baseUrl : "";
+
+  if (provider === "openrouter") {
+    if (apiKey.trim()) {
+      env.OPENROUTER_API_KEY = apiKey.trim();
+      env.QAGENT_API_KEY = apiKey.trim();
+    }
+    if (model.trim()) {
+      env.OPENROUTER_MODEL = model.trim();
+      env.QAGENT_MODEL = model.trim();
+    }
+    if (baseUrl.trim()) {
+      env.OPENROUTER_BASE_URL = baseUrl.trim();
+      env.QAGENT_BASE_URL = baseUrl.trim();
+    }
+    env.QAGENT_PROVIDER = "openrouter";
+    return env;
+  }
+
+  if (provider === "openai") {
+    if (apiKey.trim()) {
+      env.OPENAI_API_KEY = apiKey.trim();
+      env.QAGENT_API_KEY = apiKey.trim();
+    }
+    if (model.trim()) {
+      env.OPENAI_MODEL = model.trim();
+      env.QAGENT_MODEL = model.trim();
+    }
+    if (baseUrl.trim()) {
+      env.OPENAI_BASE_URL = baseUrl.trim();
+      env.QAGENT_BASE_URL = baseUrl.trim();
+    }
+    env.QAGENT_PROVIDER = "openai";
+    return env;
+  }
+
+  return env;
+}
 
 function asNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -600,6 +707,7 @@ export class QAgentService {
 
   async runQAgent(prompt, options = {}) {
     const requestRuntimeRoot = await this.prepareIsolatedRuntime(options);
+    const executionStageModelConfig = await this.resolveExecutionStageModelConfig(requestRuntimeRoot, options);
     const [command, ...baseArgs] = this.getSpawnCommand();
     const providerOverride = await this.detectProviderOverride(requestRuntimeRoot);
     const spawnArgs = [
@@ -616,7 +724,10 @@ export class QAgentService {
       const child = spawn(
         command,
         spawnArgs,
-        this.createSpawnOptions(["ignore", "pipe", "pipe"]),
+        this.createSpawnOptions(
+          ["ignore", "pipe", "pipe"],
+          buildModelSpawnEnvironment(executionStageModelConfig),
+        ),
       );
 
       let stdout = "";
@@ -697,7 +808,10 @@ export class QAgentService {
       const child = spawn(
         command,
         spawnArgs,
-        this.createSpawnOptions(["ignore", "pipe", "pipe"]),
+        this.createSpawnOptions(
+          ["ignore", "pipe", "pipe"],
+          buildModelSpawnEnvironment(executionStageModelConfig),
+        ),
       );
 
       let stdoutBuffer = "";
@@ -1252,12 +1366,13 @@ export class QAgentService {
     return path.join(this.runtimeRoot, ".agent", "web-chat-conversations.json");
   }
 
-  createSpawnOptions(stdio = ["ignore", "pipe", "pipe"]) {
+  createSpawnOptions(stdio = ["ignore", "pipe", "pipe"], extraEnv = {}) {
     return {
       cwd: this.qagentRoot,
       env: {
         ...process.env,
         QAGENT_APPROVAL_MODE: process.env.QAGENT_APPROVAL_MODE || "never",
+        ...extraEnv,
       },
       stdio,
       detached: process.platform !== "win32",
@@ -1523,13 +1638,23 @@ export class QAgentService {
   }
 
   async ensureWikiMGWrapper(targetRuntimeRoot) {
+    await mkdir(targetRuntimeRoot, { recursive: true });
     const wrapperPath = path.join(targetRuntimeRoot, WIKIMG_WRAPPER_NAME);
     const helpPath = path.join(targetRuntimeRoot, WIKIMG_HELP_NAME);
     const wikimgRoot = this.resolveWikiMGRoot();
     const wikimgScript = path.join(wikimgRoot, "wikimg");
     const wikimgSrc = path.join(wikimgRoot, "src");
     const workspaceRoot = this.resolveWikimgWorkspaceRoot();
-    const wrapperContent = `#!/usr/bin/env bash
+    const wrapperContent = IS_WINDOWS
+      ? `@echo off
+setlocal
+set "WIKIMG_ROOT=${wikimgRoot}"
+set "WIKIMG_WORKSPACE_ROOT=${workspaceRoot}"
+set "PYTHONPATH=${wikimgSrc};%PYTHONPATH%"
+"${wikimgScript}" --root "${workspaceRoot}" %*
+exit /b %ERRORLEVEL%
+`
+      : `#!/usr/bin/env bash
 set -euo pipefail
 
 export WIKIMG_ROOT=${JSON.stringify(wikimgRoot)}
@@ -1538,7 +1663,8 @@ export PYTHONPATH=${JSON.stringify(wikimgSrc)}:${"${PYTHONPATH:-}"}
 
 exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@"
 `;
-    const helpContent = `# wikimg.sh
+    const localWrapperCommand = runtimeLocalWrapperCommand(WIKIMG_WRAPPER_NAME);
+    const helpContent = `# ${WIKIMG_WRAPPER_NAME}
 
 这是一个给 QAgent 在隔离 runtime 中使用的本地封装脚本。
 
@@ -1551,12 +1677,12 @@ exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@
 
 ## 用法
 
-\`\`\`bash
-./wikimg.sh init
-./wikimg.sh list
-./wikimg.sh show common:kimi-demo/平台说明
-./wikimg.sh sync --project-id demo
-./wikimg.sh fetch
+\`\`\`${markdownShellLanguage()}
+${localWrapperCommand} init
+${localWrapperCommand} list
+${localWrapperCommand} show common:kimi-demo/平台说明
+${localWrapperCommand} sync --project-id demo
+${localWrapperCommand} fetch
 \`\`\`
 
 ## 说明
@@ -1576,16 +1702,14 @@ exec ${JSON.stringify(wikimgScript)} --root ${JSON.stringify(workspaceRoot)} "$@
   }
 
   async ensureNERWrapper(targetRuntimeRoot) {
+    await mkdir(targetRuntimeRoot, { recursive: true });
     const wrapperPath = path.join(targetRuntimeRoot, NER_WRAPPER_NAME);
     const helpPath = path.join(targetRuntimeRoot, NER_HELP_NAME);
-    const ontologyFactoryRoot = path.resolve(this.projectRoot, "..", "Ontology_Factory");
+    const ontologyFactoryRoot = this.resolveOntologyFactoryRoot();
     const nerSrc = path.join(ontologyFactoryRoot, "ner", "src");
-    const wrapperContent = `#!/usr/bin/env bash
-set -euo pipefail
-
-exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
-`;
-    const helpContent = `# ner.sh
+    const wrapperContent = buildPythonCliWrapperContent("ner.cli", [nerSrc], NER_WRAPPER_NAME);
+    const localWrapperCommand = runtimeLocalWrapperCommand(NER_WRAPPER_NAME);
+    const helpContent = `# ${NER_WRAPPER_NAME}
 
 这是一个给 QAgent 在隔离 runtime 中使用的本地封装脚本。
 
@@ -1593,18 +1717,24 @@ exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
 
 - 自动把 \`PYTHONPATH\` 指向 NER 包
 - 自动调用 \`python -m ner.cli\`
+- NER 底层抽取逻辑使用锁定版本的 \`spacy-llm\`
 
 ## 用法
 
-\`\`\`bash
-./ner.sh extract --input /path/to/text.txt --stdout
-./ner.sh extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
-./ner.sh extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`${markdownShellLanguage()}
+${localWrapperCommand} extract --input /path/to/text.txt --stdout
+${localWrapperCommand} extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
+${localWrapperCommand} extract --input /path/to/text.txt --output /path/to/output.json
 \`\`\`
 
 ## 说明
 
 - 不需要手动设置 \`PYTHONPATH\`
+- 默认会继承当前 QAgent 的模型配置：\`QAGENT_PROVIDER\`、\`QAGENT_API_KEY\`、\`QAGENT_MODEL\`、\`QAGENT_BASE_URL\`
+- 也兼容 \`OPENAI_*\`、\`OPENROUTER_*\` 或显式 CLI 参数覆盖
+- 推荐命令是 \`${localWrapperCommand} extract --input story.txt --stdout\`
+- 如果用户直接在对话里粘贴原始文本，先把文本写到 runtime 下的本地 \`.txt\` 文件，再调用包装脚本
+- 不要手动 \`Set-Location\` 到 NER 源码目录，也不要直接执行 \`python -m ner.cli story.txt\`
 - 如果要在别的工作区执行，请让后端重新生成 runtime
 `;
 
@@ -1614,17 +1744,15 @@ exec env PYTHONPATH=${JSON.stringify(nerSrc)} python -m ner.cli "$@"
   }
 
   async ensureRelationWrapper(targetRuntimeRoot) {
+    await mkdir(targetRuntimeRoot, { recursive: true });
     const wrapperPath = path.join(targetRuntimeRoot, RELATION_WRAPPER_NAME);
     const helpPath = path.join(targetRuntimeRoot, RELATION_HELP_NAME);
-    const ontologyFactoryRoot = path.resolve(this.projectRoot, "..", "Ontology_Factory");
+    const ontologyFactoryRoot = this.resolveOntologyFactoryRoot();
     const relationSrc = path.join(ontologyFactoryRoot, "relation", "src");
     const nerSrc = path.join(ontologyFactoryRoot, "ner", "src");
-    const wrapperContent = `#!/usr/bin/env bash
-set -euo pipefail
-
-exec env PYTHONPATH=${JSON.stringify(`${relationSrc}:${nerSrc}`)} python -m entity_relation.cli "$@"
-`;
-    const helpContent = `# re.sh
+    const wrapperContent = buildPythonCliWrapperContent("entity_relation.cli", [relationSrc, nerSrc], RELATION_WRAPPER_NAME);
+    const localWrapperCommand = runtimeLocalWrapperCommand(RELATION_WRAPPER_NAME);
+    const helpContent = `# ${RELATION_WRAPPER_NAME}
 
 这是一个给 QAgent 在隔离 runtime 中使用的本地封装脚本。
 
@@ -1632,19 +1760,25 @@ exec env PYTHONPATH=${JSON.stringify(`${relationSrc}:${nerSrc}`)} python -m enti
 
 - 自动把 \`PYTHONPATH\` 指向 relation 和 ner 包
 - 自动调用 \`python -m entity_relation.cli\`
+- 关系抽取会先执行同一套 \`spacy-llm\` NER，再执行 RE
 
 ## 用法
 
-\`\`\`bash
-./re.sh extract --input /path/to/text.txt --stdout
-./re.sh extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
-./re.sh extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`${markdownShellLanguage()}
+${localWrapperCommand} extract --input /path/to/text.txt --stdout
+${localWrapperCommand} extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
+${localWrapperCommand} extract --input /path/to/text.txt --output /path/to/output.json
 \`\`\`
 
 ## 说明
 
 - 关系抽取依赖 NER 包，所以会同时注入 relation 与 ner 的路径
 - 不需要手动设置 \`PYTHONPATH\`
+- 默认会继承当前 QAgent 的模型配置：\`QAGENT_PROVIDER\`、\`QAGENT_API_KEY\`、\`QAGENT_MODEL\`、\`QAGENT_BASE_URL\`
+- 也兼容 \`OPENAI_*\`、\`OPENROUTER_*\` 或显式 CLI 参数覆盖
+- 推荐命令是 \`${localWrapperCommand} extract --input story.txt --stdout\`
+- 如果用户直接在对话里粘贴原始文本，先把文本写到 runtime 下的本地 \`.txt\` 文件，再调用包装脚本
+- 不要手动 \`Set-Location\` 到 relation 源码目录，也不要直接执行 \`python -m entity_relation.cli story.txt\`
 `;
 
     await writeFile(wrapperPath, wrapperContent, "utf8");
@@ -1652,13 +1786,33 @@ exec env PYTHONPATH=${JSON.stringify(`${relationSrc}:${nerSrc}`)} python -m enti
     await writeFile(helpPath, helpContent, "utf8");
   }
 
+  async ensureSkillLocalWrapper(skillDir, wrapperName, targetWrapperPath) {
+    await mkdir(skillDir, { recursive: true });
+    const wrapperPath = path.join(skillDir, wrapperName);
+    const wrapperContent = buildForwardingWrapperContent(wrapperPath, targetWrapperPath);
+    await writeFile(wrapperPath, wrapperContent, "utf8");
+    await chmod(wrapperPath, 0o755);
+  }
+
   async ensureOntologyFactorySkills(targetRuntimeRoot) {
+    await mkdir(targetRuntimeRoot, { recursive: true });
     const skillsDir = path.join(targetRuntimeRoot, ".agent", "skills");
     await mkdir(skillsDir, { recursive: true });
+    const ontologyFactoryRoot = this.resolveOntologyFactoryRoot();
+    const nerPackageRoot = path.join(ontologyFactoryRoot, "ner");
+    const relationPackageRoot = path.join(ontologyFactoryRoot, "relation");
+    const nerCliEntry = path.join(nerPackageRoot, "src", "ner", "cli.py");
+    const relationCliEntry = path.join(relationPackageRoot, "src", "entity_relation", "cli.py");
     const nerWrapperPath = path.join(targetRuntimeRoot, NER_WRAPPER_NAME);
     const relationWrapperPath = path.join(targetRuntimeRoot, RELATION_WRAPPER_NAME);
     const wikimgWrapperPath = path.join(targetRuntimeRoot, WIKIMG_WRAPPER_NAME);
     const graphOverlayPath = path.join(targetRuntimeRoot, "knowledge-graph", "overlay.json");
+    const nerLocalWrapperCommand = runtimeLocalWrapperCommand(NER_WRAPPER_NAME);
+    const relationLocalWrapperCommand = runtimeLocalWrapperCommand(RELATION_WRAPPER_NAME);
+    const wikimgLocalWrapperCommand = runtimeLocalWrapperCommand(WIKIMG_WRAPPER_NAME);
+    const nerAbsoluteWrapperCommand = runtimeAbsoluteWrapperCommand(nerWrapperPath);
+    const relationAbsoluteWrapperCommand = runtimeAbsoluteWrapperCommand(relationWrapperPath);
+    const wikimgAbsoluteWrapperCommand = runtimeAbsoluteWrapperCommand(wikimgWrapperPath);
 
     const skills = [
       {
@@ -1675,6 +1829,7 @@ Use this skill when you need to extract entities from Chinese source text, inspe
 ## What This Skill Is For
 
 - Extract entities from a local text file.
+- If the user pasted raw text directly into chat, first save it as a local \`.txt\` file in the runtime root and then run extraction.
 - Narrow extraction to a query-specific snippet before running NER.
 - Export \`NerDocument\` JSON for downstream document and relation processing.
 - Use the CLI output as a read-only document input for later ontology steps.
@@ -1682,22 +1837,20 @@ Use this skill when you need to extract entities from Chinese source text, inspe
 
 ## Important Paths
 
-- Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
-- NER package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner
-- CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/ner/src/ner/cli.py
+- Ontology Factory repo: ${ontologyFactoryRoot}
+- NER package: ${nerPackageRoot}
+- CLI entry: ${nerCliEntry}
 - The wrapper script is created in the conversation's initial runtime directory: \`${nerWrapperPath}\`
 - Start from that initial runtime directory and run the script there directly.
 
 ## Recommended Commands
 
-Use the runtime wrapper script directly:
+Use the runtime wrapper script directly. When the current working directory is the runtime root, prefer the local command form. When you are outside that directory, use the absolute wrapper path.
 
-\`\`\`bash
-\`${nerWrapperPath}\` extract --input /path/to/text.txt --stdout
-\`${nerWrapperPath}\` extract --input /path/to/text.txt --query 光照 --max-sentences 4 --stdout
-\`${nerWrapperPath}\` extract --input /path/to/text.txt --output /path/to/output.json
-\`${nerWrapperPath}\` extract --input /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/sample_text.txt --stdout
-\`${nerWrapperPath}\` extract --input /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/sample_text.txt --query 光照 --max-sentences 4 --stdout
+\`\`\`${markdownShellLanguage()}
+${nerLocalWrapperCommand} extract --input story.txt --stdout
+${nerLocalWrapperCommand} extract --input story.txt --query 光照 --max-sentences 4 --stdout
+${nerAbsoluteWrapperCommand} extract --input C:/path/to/text.txt --output C:/path/to/output.json
 \`\`\`
 
 ## Output
@@ -1714,9 +1867,15 @@ Use the runtime wrapper script directly:
 
 ## Notes
 
-- The extractor uses HanLP first and falls back to rule-based extraction.
-- Optional OpenRouter enhancement is available when the relevant environment variables are configured.
+- The extractor uses the locked \`spacy-llm\` pipeline and the repository-managed prompt and label resources.
+- The wrapper automatically inherits the current QAgent model settings through \`QAGENT_PROVIDER\`, \`QAGENT_API_KEY\`, \`QAGENT_MODEL\`, and \`QAGENT_BASE_URL\`.
+- It also accepts compatible \`OPENAI_*\`, \`OPENROUTER_*\`, or explicit CLI flags when you need an override.
+- On Windows, do not call \`./ner.sh\`; use \`${nerLocalWrapperCommand}\` or \`${nerAbsoluteWrapperCommand}\`.
+- Never \`Set-Location\` into the NER source tree to run \`python -m ner.cli\`.
+- Never pass the input path as a bare positional argument to the Python module. Use the wrapper command with \`extract --input ...\`.
+- If you moved into \`.agent/skills/ner\`, a forwarding \`ner.cmd\` or \`ner.sh\` is also available there, but the runtime-root wrapper remains the preferred entrypoint.
 - Keep the input file local and prefer read-only inspection commands when debugging the pipeline.
+- Uploaded files are typically placed under \`uploads/\`; prefer reusing those files when the user has already uploaded source text.
 - Do not depend on a temporary \`english_story_ner.json\` or similar intermediate file unless the user explicitly asks to persist the raw NER output. For graph display changes, use the NER stdout directly or write the overlay file in the same turn.
 - Prefer \`${nerWrapperPath}\` over calling the Python CLI directly; use \`cli.py\` only when you are debugging the wrapper itself.
 - The conversation starts in the runtime root that already contains \`${nerWrapperPath}\`; do not look for the script elsewhere.
@@ -1726,36 +1885,37 @@ Use the runtime wrapper script directly:
         name: "entity-relation",
         content: `---
 name: entity-relation
-description: Extract entity relations from NER output or local text files with the relation CLI for ontology workflows.
+description: Extract entity relations or attribute-like facts from local text files with the relation CLI for ontology workflows.
 ---
 
 # Entity Relation Skill
 
-Use this skill when you need to derive relations between entities from a local text file or from an existing NER document.
+Use this skill when you need to derive relations or attribute-like facts between entities from a local text file or from an existing NER document.
 
 ## What This Skill Is For
 
 - Convert text into relation candidates using the relation CLI.
+- If the user pasted raw text directly into chat, first save it as a local \`.txt\` file in the runtime root and then run extraction.
 - Reuse NER output as the document basis for relation extraction.
 - Export \`RelationDocument\` JSON for ontology indexing and knowledge graph workflows.
 - Treat \`${relationWrapperPath}\` as the primary entrypoint for this workflow.
 
 ## Important Paths
 
-- Ontology Factory repo: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory
-- Relation package: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation
-- CLI entry: /Users/qiuboyu/CodeLearning/new_fjy/fjy/Ontology_Factory/relation/src/entity_relation/cli.py
+- Ontology Factory repo: ${ontologyFactoryRoot}
+- Relation package: ${relationPackageRoot}
+- CLI entry: ${relationCliEntry}
 - The wrapper script is created in the conversation's initial runtime directory: \`${relationWrapperPath}\`
 - Start from that initial runtime directory and run the script there directly.
 
 ## Recommended Commands
 
-Use the runtime wrapper script directly:
+Use the runtime wrapper script directly. When the current working directory is the runtime root, prefer the local command form. When you are outside that directory, use the absolute wrapper path.
 
-\`\`\`bash
-\`${relationWrapperPath}\` extract --input /path/to/text.txt --stdout
-\`${relationWrapperPath}\` extract --input /path/to/text.txt --query 光照 --max-sentences 6 --stdout
-\`${relationWrapperPath}\` extract --input /path/to/text.txt --output /path/to/output.json
+\`\`\`${markdownShellLanguage()}
+${relationLocalWrapperCommand} extract --input story.txt --stdout
+${relationLocalWrapperCommand} extract --input story.txt --query 光照 --max-sentences 6 --stdout
+${relationAbsoluteWrapperCommand} extract --input C:/path/to/text.txt --output C:/path/to/output.json
 \`\`\`
 
 ## Output
@@ -1771,8 +1931,14 @@ Use the runtime wrapper script directly:
 
 ## Notes
 
-- The relation extractor currently uses NER internally and applies sentence-level heuristics.
-- It is intentionally conservative and works best on focused snippets rather than large blobs of unrelated text.
+- The relation extractor runs the repository's \`spacy-llm\` NER step first and then executes \`spacy-llm\` relation extraction on the same text.
+- The wrapper automatically inherits the current QAgent model settings through \`QAGENT_PROVIDER\`, \`QAGENT_API_KEY\`, \`QAGENT_MODEL\`, and \`QAGENT_BASE_URL\`.
+- It also accepts compatible \`OPENAI_*\`, \`OPENROUTER_*\`, or explicit CLI flags when you need an override.
+- On Windows, do not call \`./re.sh\`; use \`${relationLocalWrapperCommand}\` or \`${relationAbsoluteWrapperCommand}\`.
+- Never \`Set-Location\` into the relation source tree to run \`python -m entity_relation.cli\`.
+- Never pass the input path as a bare positional argument to the Python module. Use the wrapper command with \`extract --input ...\`.
+- If you moved into \`.agent/skills/entity-relation\`, a forwarding \`re.cmd\` or \`re.sh\` is also available there, but the runtime-root wrapper remains the preferred entrypoint.
+- Uploaded files are typically placed under \`uploads/\`; prefer reusing those files when the user has already uploaded source text.
 - Prefer this skill after \`ner\` when you want both entities and relations in the same workflow.
 - Prefer \`${relationWrapperPath}\` over calling the Python CLI directly; use \`cli.py\` only when you are debugging the wrapper itself.
 - The conversation starts in the runtime root that already contains \`${relationWrapperPath}\`; do not look for the script elsewhere.
@@ -1837,7 +2003,9 @@ Then write the merged JSON back to the same file. If you need a command, use a s
 ## Notes
 
 - Use the wrapper scripts from the conversation's initial runtime directory directly.
-- Do not look for \`ner.sh\`, \`re.sh\`, or \`wikimg.sh\` elsewhere.
+- Preferred local wrapper commands are \`${nerLocalWrapperCommand}\`, \`${relationLocalWrapperCommand}\`, and \`${wikimgLocalWrapperCommand}\`.
+- Absolute wrapper commands are \`${nerAbsoluteWrapperCommand}\`, \`${relationAbsoluteWrapperCommand}\`, and \`${wikimgAbsoluteWrapperCommand}\`.
+- Do not look for the wrapper scripts elsewhere.
 - Do not look for \`graph-overlay.sh\` elsewhere because it does not exist.
 - The skill instructions themselves live under the initial runtime directory in \`.agent/skills/<skill-name>/SKILL.md\`.
 - If you need to inspect the skill text, read \`.agent/skills/entity-ner-re-graph-wiki-workflow/SKILL.md\` from the initial runtime directory.
@@ -1924,6 +2092,12 @@ node -e '/* merge overlay JSON here */'
       const skillDir = path.join(skillsDir, skill.name);
       await mkdir(skillDir, { recursive: true });
       await writeFile(path.join(skillDir, "SKILL.md"), skill.content, "utf8");
+      if (skill.name === "ner") {
+        await this.ensureSkillLocalWrapper(skillDir, NER_WRAPPER_NAME, nerWrapperPath);
+      }
+      if (skill.name === "entity-relation") {
+        await this.ensureSkillLocalWrapper(skillDir, RELATION_WRAPPER_NAME, relationWrapperPath);
+      }
     }
   }
 
@@ -1935,8 +2109,8 @@ node -e '/* merge overlay JSON here */'
   resolveWikiMGRoot() {
     const candidates = [
       process.env.WIKIMG_ROOT,
-      path.resolve(this.projectRoot, "..", "Ontology_Factory", "WIKI_MG"),
-      path.resolve(this.projectRoot, "..", "Ontology_Factory"),
+      path.join(this.resolveOntologyFactoryRoot(), "WIKI_MG"),
+      this.resolveOntologyFactoryRoot(),
     ].filter(Boolean);
 
     return candidates.find((candidate) => existsSync(path.join(candidate, "wikimg")))
@@ -1946,10 +2120,24 @@ node -e '/* merge overlay JSON here */'
   resolveWikimgWorkspaceRoot() {
     const candidates = [
       process.env.WIKIMG_WORKSPACE_ROOT,
-      path.resolve(this.projectRoot, "..", "Ontology_Factory"),
+      this.resolveOntologyFactoryRoot(),
     ].filter(Boolean);
 
     return candidates[0];
+  }
+
+  resolveOntologyFactoryRoot() {
+    const candidates = [
+      process.env.ONTOLOGY_FACTORY_ROOT,
+      path.resolve(this.projectRoot, "Ontology_Factory"),
+      path.resolve(this.projectRoot, "..", "Ontology_Factory"),
+      path.resolve(this.projectRoot, "..", "..", "Ontology_Factory"),
+    ].filter(Boolean);
+
+    return candidates.find((candidate) => (
+      existsSync(path.join(candidate, "ner", "src", "ner", "cli.py"))
+      && existsSync(path.join(candidate, "relation", "src", "entity_relation", "cli.py"))
+    )) || candidates[0];
   }
 
   buildConversationRuntimeSlug(conversationId) {

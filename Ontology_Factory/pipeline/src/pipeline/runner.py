@@ -18,8 +18,9 @@ ensure_local_imports()
 
 from entity_relation import extract_relations
 from evolution import build_canonical_entity_payload, build_classification_change_events, build_classification_tasks
+from entity_relation.spacy_llm_runtime import build_default_relation_runtime
 from ner import OpenRouterClient, OpenRouterConfig, extract_entities
-from ner.providers.hanlp_provider import HanLPNerProvider
+from ner.spacy_llm_runtime import build_default_ner_runtime
 from ontology_core import reconcile_document
 from ontology_store import OntologyStore
 from wiki_agent import WikiAgentRuntime
@@ -169,11 +170,14 @@ def _run_wiki_documents(
     docs_dir.mkdir(parents=True, exist_ok=True)
 
     llm_client = OpenRouterClient(OpenRouterConfig.from_mapping(config.llm))
-    provider = HanLPNerProvider(model_name=config.ner.model_name)
+    extraction_config = config.spacy_llm.model_dump(mode="python")
+    ner_runtime = build_default_ner_runtime(extraction_config)
+    relation_runtime = build_default_relation_runtime(extraction_config)
     runtime = WikiAgentRuntime(
         store=store,
         llm_client=llm_client,
-        provider=provider,
+        ner_runtime=ner_runtime,
+        relation_runtime=relation_runtime,
         workspace_root=workspace_root(),
         max_steps=8,
         max_tool_calls=8,
@@ -237,13 +241,11 @@ def _run_wiki_documents(
         ner_document = extract_entities(
             clean_text,
             doc_id=doc_id,
-            use_llm=config.ner.use_llm,
-            provider=provider,
-            llm_client=llm_client,
+            runtime=ner_runtime,
         )
         entities_path = doc_artifact_dir / "entities.json"
         entities_path.write_text(ner_document.model_dump_json(indent=2), encoding="utf-8")
-        relation_document = extract_relations(ner_document)
+        relation_document = extract_relations(ner_document, runtime=relation_runtime)
         relations_path = doc_artifact_dir / "relations.json"
         relations_path.write_text(relation_document.model_dump_json(indent=2), encoding="utf-8")
 
@@ -378,7 +380,9 @@ def _run_documents(
     exports_dir.mkdir(parents=True, exist_ok=True)
 
     llm_client = OpenRouterClient(OpenRouterConfig.from_mapping(config.llm))
-    provider = HanLPNerProvider(model_name=config.ner.model_name)
+    extraction_config = config.spacy_llm.model_dump(mode="python")
+    ner_runtime = build_default_ner_runtime(extraction_config)
+    relation_runtime = build_default_relation_runtime(extraction_config)
 
     processed_documents: list[str] = []
     skipped_documents: list[str] = []
@@ -439,9 +443,7 @@ def _run_documents(
         ner_document = extract_entities(
             clean_text,
             doc_id=doc_id,
-            use_llm=config.ner.use_llm,
-            provider=provider,
-            llm_client=llm_client,
+            runtime=ner_runtime,
         )
         entities_path = doc_artifact_dir / "entities.json"
         entities_path.write_text(ner_document.model_dump_json(indent=2), encoding="utf-8")
@@ -461,7 +463,7 @@ def _run_documents(
             )
             continue
 
-        relation_document = extract_relations(ner_document)
+        relation_document = extract_relations(ner_document, runtime=relation_runtime)
         relations_path = doc_artifact_dir / "relations.json"
         relations_path.write_text(relation_document.model_dump_json(indent=2), encoding="utf-8")
 
@@ -483,7 +485,7 @@ def _run_documents(
             ner_document=ner_document,
             relation_document=relation_document,
             store=store,
-            llm_client=llm_client if config.ner.use_llm else None,
+            llm_client=llm_client if llm_client.is_enabled() else None,
         )
         reconciliation_path = doc_artifact_dir / "reconciliation.json"
         reconciliation_path.write_text(reconciliation.model_dump_json(indent=2), encoding="utf-8")
@@ -621,7 +623,7 @@ def _run_documents(
         "input_root": input_root,
         "pipeline_config": str(Path(pipeline_config).resolve()) if pipeline_config else "",
         "preprocess_config": str(Path(resolved_preprocess_config).resolve()),
-        "llm_enabled": llm_client.is_enabled() and config.ner.use_llm,
+        "llm_enabled": llm_client.is_enabled(),
         "store_path": str(Path(config.storage.database_path).resolve()),
         "processed_documents": processed_documents,
         "skipped_documents": skipped_documents,

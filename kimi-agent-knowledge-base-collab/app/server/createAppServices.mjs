@@ -46,15 +46,16 @@ function resolveQAgentCommand(qagentRoot) {
     return [process.execPath, builtBin];
   }
 
-  const tsxBin = path.join(
+  const tsxCli = path.join(
     qagentRoot,
     "node_modules",
-    ".bin",
-    process.platform === "win32" ? "tsx.cmd" : "tsx",
+    "tsx",
+    "dist",
+    "cli.mjs",
   );
   const sourceEntry = path.join(qagentRoot, "src", "cli", "index.ts");
-  if (existsSync(tsxBin) && existsSync(sourceEntry)) {
-    return [tsxBin, sourceEntry];
+  if (existsSync(tsxCli) && existsSync(sourceEntry)) {
+    return [process.execPath, tsxCli, sourceEntry];
   }
 
   return [process.execPath, builtBin];
