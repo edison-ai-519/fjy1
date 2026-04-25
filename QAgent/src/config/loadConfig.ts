@@ -49,6 +49,10 @@ function readEnvProvider(): ModelProvider | undefined {
   return isModelProvider(envProvider) ? envProvider : undefined;
 }
 
+function looksLikeOpenRouterApiKey(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("sk-or-v1");
+}
+
 function providerDefaultsConfig(
   provider: ModelProvider | undefined,
 ): PartialRuntimeConfig | undefined {
@@ -68,6 +72,17 @@ function resolveProvider(
   cliOptions: CliOptions,
   partials: Array<PartialRuntimeConfig | undefined>,
 ): ModelProvider {
+  const inferredProviderFromApiKey = pickLastDefined<ModelProvider>([
+    ...partials.map((partial) => (
+      looksLikeOpenRouterApiKey(partial?.model?.apiKey)
+        ? "openrouter"
+        : undefined
+    )),
+    looksLikeOpenRouterApiKey(process.env.QAGENT_API_KEY)
+      ? "openrouter"
+      : undefined,
+  ]);
+
   const configuredProvider = pickLastDefined<ModelProvider>([
     ...partials.map((partial) => {
       const provider = partial?.model?.provider;
@@ -75,6 +90,7 @@ function resolveProvider(
         ? provider
         : undefined;
     }),
+    inferredProviderFromApiKey,
     readEnvProvider(),
     isModelProvider(cliOptions.provider) ? cliOptions.provider : undefined,
   ]);

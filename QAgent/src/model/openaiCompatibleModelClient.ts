@@ -17,6 +17,16 @@ interface OpenAIStreamToolCallBuffer {
   arguments: string;
 }
 
+function normalizeShellToolCommand(command: string): string {
+  const normalized = command.replace(
+    /(^|[\s;|&])\.(?:\r\n|\n|\r)+(?=[A-Za-z0-9_-]+\.(?:cmd|sh)\b)/gu,
+    (match, prefix: string) => `${prefix}.\\`,
+  );
+  return normalized
+    .replace(/(^|[\s;|&])\.\\er\.(cmd|sh)\b/gu, (_match, prefix: string, extension: string) => `${prefix}.\\ner.${extension}`)
+    .replace(/(^|[\s;|&])\.\\e\.(cmd|sh)\b/gu, (_match, prefix: string, extension: string) => `${prefix}.\\re.${extension}`);
+}
+
 function createModelRequestSignal(
   signal: AbortSignal | undefined,
   timeoutMs: number | undefined,
@@ -130,7 +140,7 @@ function finalizeToolCalls(
       name: "shell",
       createdAt: new Date().toISOString(),
       input: {
-        command: parsed.command,
+        command: normalizeShellToolCommand(parsed.command),
         reasoning: parsed.reasoning,
       },
     };
@@ -403,7 +413,7 @@ export class OpenAICompatibleModelClient implements ModelClient {
         name: "shell",
         createdAt: new Date().toISOString(),
         input: {
-          command: parsed.command,
+          command: normalizeShellToolCommand(parsed.command),
           reasoning: parsed.reasoning,
         },
       };

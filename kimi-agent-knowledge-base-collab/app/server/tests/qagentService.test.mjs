@@ -5,7 +5,12 @@ import process from "node:process";
 import test from "node:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 
-import { QAgentService } from "../services/qagentService.mjs";
+import { QAgentService, buildModelSpawnEnvironment } from "../services/qagentService.mjs";
+
+const IS_WINDOWS = process.platform === "win32";
+const NER_WRAPPER_NAME = IS_WINDOWS ? "ner.cmd" : "ner.sh";
+const RELATION_WRAPPER_NAME = IS_WINDOWS ? "re.cmd" : "re.sh";
+const WIKIMG_WRAPPER_NAME = IS_WINDOWS ? "wikimg.cmd" : "wikimg.sh";
 
 function createEmptyContext() {
   return {
@@ -185,13 +190,24 @@ test("QAgentService writes the ner and relation wrapper commands into skills", a
 
   const nerSkill = await readFile(path.join(runtimeRoot, ".agent", "skills", "ner", "SKILL.md"), "utf8");
   const relationSkill = await readFile(path.join(runtimeRoot, ".agent", "skills", "entity-relation", "SKILL.md"), "utf8");
-  const nerWrapperPath = path.join(runtimeRoot, "ner.sh");
-  const relationWrapperPath = path.join(runtimeRoot, "re.sh");
+  const nerWrapperPath = path.join(runtimeRoot, NER_WRAPPER_NAME);
+  const relationWrapperPath = path.join(runtimeRoot, RELATION_WRAPPER_NAME);
+  const localNerWrapperPath = path.join(runtimeRoot, ".agent", "skills", "ner", NER_WRAPPER_NAME);
+  const localRelationWrapperPath = path.join(runtimeRoot, ".agent", "skills", "entity-relation", RELATION_WRAPPER_NAME);
+  const localNerWrapper = await readFile(localNerWrapperPath, "utf8");
+  const localRelationWrapper = await readFile(localRelationWrapperPath, "utf8");
 
   assert.equal(nerSkill.includes(nerWrapperPath), true);
   assert.equal(relationSkill.includes(relationWrapperPath), true);
   assert.equal(nerSkill.includes("initial runtime directory"), true);
   assert.equal(relationSkill.includes("initial runtime directory"), true);
+  assert.equal(nerSkill.includes("spacy-llm"), true);
+  assert.equal(relationSkill.includes("spacy-llm"), true);
+  assert.equal(nerSkill.includes("forwarding"), true);
+  assert.equal(relationSkill.includes("forwarding"), true);
+  assert.equal(nerSkill.includes("HanLP"), false);
+  assert.equal(localNerWrapper.length > 0, true);
+  assert.equal(localRelationWrapper.length > 0, true);
 });
 
 test("QAgentService writes the entity workflow skill into the isolated runtime workspace", async () => {
@@ -210,9 +226,9 @@ test("QAgentService writes the entity workflow skill into the isolated runtime w
     path.join(runtimeRoot, ".agent", "skills", "entity-ner-re-graph-wiki-workflow", "SKILL.md"),
     "utf8",
   );
-  const nerWrapperPath = path.join(runtimeRoot, "ner.sh");
-  const relationWrapperPath = path.join(runtimeRoot, "re.sh");
-  const wikimgWrapperPath = path.join(runtimeRoot, "wikimg.sh");
+  const nerWrapperPath = path.join(runtimeRoot, NER_WRAPPER_NAME);
+  const relationWrapperPath = path.join(runtimeRoot, RELATION_WRAPPER_NAME);
+  const wikimgWrapperPath = path.join(runtimeRoot, WIKIMG_WRAPPER_NAME);
 
   assert.equal(workflowSkill.includes(nerWrapperPath), true);
   assert.equal(workflowSkill.includes(relationWrapperPath), true);
@@ -221,6 +237,63 @@ test("QAgentService writes the entity workflow skill into the isolated runtime w
   assert.equal(workflowSkill.includes("wiki/"), true);
   assert.equal(workflowSkill.includes("There is no `graph-overlay.sh`"), true);
   assert.equal(workflowSkill.includes(".agent/skills/entity-ner-re-graph-wiki-workflow/SKILL.md"), true);
+});
+
+test("QAgentService writes platform-native ontology wrapper scripts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-native-wrapper-"));
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: tempDir,
+    projectRoot: tempDir,
+    runtimeRoot: path.join(tempDir, "runtime"),
+  });
+
+  const runtimeRoot = path.join(tempDir, "runtime", ".web-chat-runs", "conversation-test");
+  await mkdir(runtimeRoot, { recursive: true });
+  await service.ensureNERWrapper(runtimeRoot);
+  await service.ensureRelationWrapper(runtimeRoot);
+
+  const nerWrapper = await readFile(path.join(runtimeRoot, NER_WRAPPER_NAME), "utf8");
+  const relationWrapper = await readFile(path.join(runtimeRoot, RELATION_WRAPPER_NAME), "utf8");
+
+  if (IS_WINDOWS) {
+    assert.equal(nerWrapper.includes("python -m ner.cli %*"), true);
+    assert.equal(relationWrapper.includes("python -m entity_relation.cli %*"), true);
+    assert.equal(nerWrapper.includes("set \"PYTHONPATH="), true);
+    assert.equal(relationWrapper.includes("set \"PYTHONPATH="), true);
+  } else {
+    assert.equal(nerWrapper.includes("python -m ner.cli \"$@\""), true);
+    assert.equal(relationWrapper.includes("python -m entity_relation.cli \"$@\""), true);
+    assert.equal(nerWrapper.includes("PYTHONPATH="), true);
+    assert.equal(relationWrapper.includes("PYTHONPATH="), true);
+  }
+});
+
+test("QAgentService resolves Ontology_Factory from the workspace root when app is nested", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "qagent-service-root-resolution-"));
+  const workspaceRoot = path.join(tempDir, "fjy");
+  const projectRoot = path.join(workspaceRoot, "kimi-agent-knowledge-base-collab", "app");
+  const ontologyFactoryRoot = path.join(workspaceRoot, "Ontology_Factory");
+  await mkdir(path.join(projectRoot), { recursive: true });
+  await mkdir(path.join(ontologyFactoryRoot, "ner", "src", "ner"), { recursive: true });
+  await mkdir(path.join(ontologyFactoryRoot, "relation", "src", "entity_relation"), { recursive: true });
+  await writeFile(path.join(ontologyFactoryRoot, "ner", "src", "ner", "cli.py"), "print('ner')\n", "utf8");
+  await writeFile(path.join(ontologyFactoryRoot, "relation", "src", "entity_relation", "cli.py"), "print('relation')\n", "utf8");
+
+  const service = new QAgentService({
+    qagentCommand: [process.execPath, "fake-qagent.mjs"],
+    qagentRoot: tempDir,
+    projectRoot,
+    runtimeRoot: path.join(tempDir, "runtime"),
+  });
+
+  const runtimeRoot = path.join(tempDir, "runtime", ".web-chat-runs", "conversation-test");
+  await service.ensureNERWrapper(runtimeRoot);
+
+  const nerWrapper = await readFile(path.join(runtimeRoot, NER_WRAPPER_NAME), "utf8");
+
+  assert.equal(nerWrapper.includes(path.join(workspaceRoot, "Ontology_Factory", "ner", "src")), true);
+  assert.equal(nerWrapper.includes(path.join(workspaceRoot, "kimi-agent-knowledge-base-collab", "Ontology_Factory")), false);
 });
 
 test("QAgentService writes the selected model into runtime config", async () => {
@@ -240,6 +313,28 @@ test("QAgentService writes the selected model into runtime config", async () => 
   );
 
   assert.equal(config.model.model, "gpt-4.1");
+});
+
+test("QAgentService maps OpenRouter model config into shell environment variables", () => {
+  const env = buildModelSpawnEnvironment(
+    {
+      provider: "openrouter",
+      modelName: "openrouter-model",
+      apiKey: "openrouter-key",
+      baseUrl: "https://openrouter.example/v1",
+    },
+    {
+      EXISTING_FLAG: "keep-me",
+    },
+  );
+
+  assert.equal(env.OPENROUTER_API_KEY, "openrouter-key");
+  assert.equal(env.OPENROUTER_MODEL, "openrouter-model");
+  assert.equal(env.OPENROUTER_BASE_URL, "https://openrouter.example/v1");
+  assert.equal(env.QAGENT_PROVIDER, "openrouter");
+  assert.equal(env.QAGENT_MODEL, "openrouter-model");
+  assert.equal(env.QAGENT_API_KEY, "openrouter-key");
+  assert.equal(env.EXISTING_FLAG, "keep-me");
 });
 
 test("QAgentService can bridge CLI streaming events into deltas and final answer", async () => {

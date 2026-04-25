@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import yaml
-from ner.providers.base import RawEntityMention
+from ner.mentions import RawEntityMention
 
 from pipeline.runner import run_batch_pipeline, run_pipeline
 
@@ -28,7 +28,20 @@ def _write_pipeline_config(path: Path, preprocess_config: Path, store_path: Path
         yaml.safe_dump(
             {
                 "preprocess": {"config_path": str(preprocess_config)},
-                "ner": {"provider": "hanlp", "model_name": "unused", "use_llm": False},
+                "spacy_llm": {
+                    "api_key": "test-key",
+                    "model": "openai/gpt-4o-mini",
+                    "ner": {
+                        "template_path": str(path.parent / "ner_template.jinja"),
+                        "labels_path": str(path.parent / "ner_labels.yml"),
+                        "examples_path": str(path.parent / "ner_examples.yml"),
+                    },
+                    "relation": {
+                        "template_path": str(path.parent / "relation_template.jinja"),
+                        "labels_path": str(path.parent / "relation_labels.yml"),
+                        "examples_path": str(path.parent / "relation_examples.yml"),
+                    },
+                },
                 "llm": {"enabled": False},
                 "dls": {"config_path": str(path.parent / "unused.toml"), "artifact_root": "", "max_concurrency": 1},
                 "output": {"root_dir": str(output_root), "enable_cooccurrence_edges": False},
@@ -38,6 +51,78 @@ def _write_pipeline_config(path: Path, preprocess_config: Path, store_path: Path
         ),
         encoding="utf-8",
     )
+
+
+class DeterministicNerRuntime:
+    def extract_mentions(self, text: str):
+        mentions: list[RawEntityMention] = []
+        for term, label in [("ESP8266", "TECH"), ("OneNet", "TECH"), ("溶氧", "TERM"), ("传感器", "TERM")]:
+            start = text.find(term)
+            if start >= 0:
+                mentions.append(
+                    RawEntityMention(
+                        text=term,
+                        label=label,
+                        start=start,
+                        end=start + len(term),
+                        confidence=0.9,
+                    )
+                )
+        return (
+            mentions,
+            {
+                "extraction_backend": "spacy_llm",
+                "spacy_llm_version": "0.7.4",
+                "label_config_version": "test-ner-v1",
+                "task_name": "spacy.NER.v3",
+            },
+        )
+
+
+class DeterministicRelationRuntime:
+    def extract_relations(self, document):
+        by_name = {
+            entity.normalized_text or entity.text: entity
+            for entity in document.entities
+        }
+        relations = []
+        if "ESP8266" in by_name and "OneNet" in by_name:
+            source = by_name["ESP8266"]
+            target = by_name["OneNet"]
+            relations.append(
+                {
+                    "source_entity_id": source.entity_id,
+                    "target_entity_id": target.entity_id,
+                    "source_text": source.normalized_text,
+                    "target_text": target.normalized_text,
+                    "relation_type": "reports_to",
+                    "confidence": 1.0,
+                    "evidence_sentence": document.source_text,
+                }
+            )
+        elif "溶氧" in by_name and "传感器" in by_name:
+            source = by_name["传感器"]
+            target = by_name["溶氧"]
+            relations.append(
+                {
+                    "source_entity_id": source.entity_id,
+                    "target_entity_id": target.entity_id,
+                    "source_text": source.normalized_text,
+                    "target_text": target.normalized_text,
+                    "relation_type": "monitors",
+                    "confidence": 1.0,
+                    "evidence_sentence": document.source_text,
+                }
+            )
+        return (
+            relations,
+            {
+                "extraction_backend": "spacy_llm",
+                "spacy_llm_version": "0.7.4",
+                "label_config_version": "test-relation-v1",
+                "task_name": "spacy.REL.v1",
+            },
+        )
 
 
 def _fake_classify_graph(**kwargs):
@@ -55,27 +140,6 @@ def _fake_classify_graph(**kwargs):
     ]
 
 
-class DeterministicProvider:
-    def __init__(self, model_name: str = "unused") -> None:
-        self.model_name = model_name
-
-    def extract(self, text: str):
-        mentions: list[RawEntityMention] = []
-        for term, label in [("ESP8266", "TECH"), ("OneNet", "TECH"), ("溶氧", "TERM"), ("传感器", "TERM")]:
-            start = text.find(term)
-            if start >= 0:
-                mentions.append(
-                    RawEntityMention(
-                        text=term,
-                        label=label,
-                        start=start,
-                        end=start + len(term),
-                        confidence=0.9,
-                    )
-                )
-        return mentions
-
-
 def test_run_pipeline_writes_version_and_exports(monkeypatch, tmp_path: Path) -> None:
     input_path = tmp_path / "sample.txt"
     input_path.write_text("溶氧传感器连接ESP8266并上报OneNet。", encoding="utf-8")
@@ -85,7 +149,8 @@ def test_run_pipeline_writes_version_and_exports(monkeypatch, tmp_path: Path) ->
     _write_pipeline_config(pipeline_config, preprocess_config, tmp_path / "store.sqlite3", tmp_path / "pipeline_outputs")
 
     monkeypatch.setattr("pipeline.runner._classify_graph", _fake_classify_graph)
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
 
     result = run_pipeline(
         str(input_path),
@@ -112,7 +177,8 @@ def test_run_batch_pipeline_commits_one_version(monkeypatch, tmp_path: Path) -> 
     _write_pipeline_config(pipeline_config, preprocess_config, tmp_path / "store.sqlite3", tmp_path / "pipeline_outputs")
 
     monkeypatch.setattr("pipeline.runner._classify_graph", _fake_classify_graph)
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
 
     result = run_batch_pipeline(
         str(input_dir),
@@ -143,7 +209,8 @@ def test_canonical_reuse_skips_reclassification_when_signature_unchanged(monkeyp
         return _fake_classify_graph(**kwargs)
 
     monkeypatch.setattr("pipeline.runner._classify_graph", fake_classify)
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
 
     first_result = run_pipeline(
         str(first),
@@ -172,7 +239,8 @@ def test_duplicate_content_hash_is_skipped(monkeypatch, tmp_path: Path) -> None:
     _write_pipeline_config(pipeline_config, preprocess_config, tmp_path / "store.sqlite3", tmp_path / "pipeline_outputs")
 
     monkeypatch.setattr("pipeline.runner._classify_graph", _fake_classify_graph)
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
 
     first_result = run_pipeline(
         str(input_path),

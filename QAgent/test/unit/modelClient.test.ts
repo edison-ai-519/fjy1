@@ -108,3 +108,87 @@ describe("buildModelHeaders", () => {
     );
   });
 });
+
+describe("OpenAICompatibleModelClient tool command normalization", () => {
+  it("会把 JSON 转义后的 .\\ner.cmd 恢复成可执行命令", () => {
+    const config: RuntimeConfig["model"] = {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "or-key",
+      model: "openai/gpt-4.1-mini",
+      temperature: 0.2,
+    };
+    const client = new OpenAICompatibleModelClient(config) as unknown as {
+      parseJsonResponse: (data: Record<string, unknown>) => {
+        toolCalls: Array<{
+          input: {
+            command: string;
+          };
+        }>;
+      };
+    };
+
+    const result = client.parseJsonResponse({
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "tool-1",
+                function: {
+                  arguments: "{\"command\":\".\\ner.cmd extract --input story.txt --stdout\"}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.toolCalls[0]?.input.command).toBe(".\\ner.cmd extract --input story.txt --stdout");
+  });
+
+  it("会在链式命令里修复分号后的 .\\re.cmd", () => {
+    const config: RuntimeConfig["model"] = {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "or-key",
+      model: "openai/gpt-4.1-mini",
+      temperature: 0.2,
+    };
+    const client = new OpenAICompatibleModelClient(config) as unknown as {
+      parseJsonResponse: (data: Record<string, unknown>) => {
+        toolCalls: Array<{
+          input: {
+            command: string;
+          };
+        }>;
+      };
+    };
+
+    const result = client.parseJsonResponse({
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "tool-2",
+                function: {
+                  arguments: "{\"command\":\"cd ..\\\\.agent\\\\skills\\\\entity-relation; .\\re.cmd extract --input story.txt --stdout\"}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(result.toolCalls[0]?.input.command).toBe(
+      "cd ..\\.agent\\skills\\entity-relation; .\\re.cmd extract --input story.txt --stdout",
+    );
+  });
+});

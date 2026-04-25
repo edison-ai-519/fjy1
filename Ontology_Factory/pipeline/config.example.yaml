@@ -1,10 +1,27 @@
 preprocess:
   config_path: "../preprocess/config.yaml"
 
-ner:
-  provider: "hanlp"
-  model_name: "MSRA_NER_BERT_BASE_ZH"
-  use_llm: true
+spacy_llm:
+  api_key_env: "OPENROUTER_API_KEY"
+  base_url: "https://openrouter.ai/api/v1"
+  model_env: "OPENROUTER_MODEL"
+  model: "openai/gpt-4o-mini"
+  timeout_s: 60
+  app_name: "ontology-factory"
+  context_length: 32000
+  temperature: 0
+  max_retries: 3
+  retry_interval_s: 1
+  save_io: false
+  lang: "zh"
+  ner:
+    template_path: "../resources/spacy_llm/ner_template.jinja"
+    labels_path: "../resources/spacy_llm/ner_labels.yml"
+    examples_path: "../resources/spacy_llm/ner_examples.yml"
+  relation:
+    template_path: "../resources/spacy_llm/relation_template.jinja"
+    labels_path: "../resources/spacy_llm/relation_labels.yml"
+    examples_path: "../resources/spacy_llm/relation_examples.yml"
 
 llm:
   enabled: true

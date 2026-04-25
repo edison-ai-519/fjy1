@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from entity_relation import RelationDocument, extract_relations
+from entity_relation.spacy_llm_runtime import SpacyLLMRelationRuntime
 from ner import NerDocument, OpenRouterClient, extract_entities
-from ner.providers.hanlp_provider import HanLPNerProvider
+from ner.spacy_llm_runtime import SpacyLLMNerRuntime
 from ontology_store import OntologyStore
 from wiki_agent.models import (
     AgentTraceRecord,
@@ -49,7 +50,8 @@ class WikiAgentRuntime:
         *,
         store: OntologyStore,
         llm_client: OpenRouterClient | None = None,
-        provider: HanLPNerProvider | None = None,
+        ner_runtime: SpacyLLMNerRuntime | None = None,
+        relation_runtime: SpacyLLMRelationRuntime | None = None,
         workspace_root: str | Path | None = None,
         max_steps: int = 8,
         max_tool_calls: int = 8,
@@ -57,7 +59,8 @@ class WikiAgentRuntime:
     ) -> None:
         self.store = store
         self.llm_client = llm_client
-        self.provider = provider or HanLPNerProvider()
+        self.ner_runtime = ner_runtime
+        self.relation_runtime = relation_runtime
         self.workspace_root = Path(workspace_root or Path.cwd()).resolve()
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
@@ -79,11 +82,12 @@ class WikiAgentRuntime:
         ner_document = ner_document or extract_entities(
             clean_text,
             doc_id=doc_name,
-            use_llm=False,
-            provider=self.provider,
-            llm_client=None,
+            runtime=self.ner_runtime,
         )
-        relation_document = relation_document or extract_relations(ner_document)
+        relation_document = relation_document or extract_relations(
+            ner_document,
+            runtime=self.relation_runtime,
+        )
         merged_metadata = self._build_metadata_bundle(
             doc_name=doc_name,
             ner_document=ner_document,
@@ -97,7 +101,6 @@ class WikiAgentRuntime:
             doc_name=doc_name,
             clean_text=clean_text,
             run_id=run_id,
-            provider=self.provider,
             workspace_root=self.workspace_root,
             target_folder=merged_metadata.get("document_context", {}).get("folder_path") or self.workspace_root,
             document_path=document_path,
@@ -172,11 +175,12 @@ class WikiAgentRuntime:
         ner_document = ner_document or extract_entities(
             clean_text,
             doc_id=doc_name,
-            use_llm=False,
-            provider=self.provider,
-            llm_client=None,
+            runtime=self.ner_runtime,
         )
-        relation_document = relation_document or extract_relations(ner_document)
+        relation_document = relation_document or extract_relations(
+            ner_document,
+            runtime=self.relation_runtime,
+        )
         merged_metadata = metadata_bundle or self._build_metadata_bundle(
             doc_name=doc_name,
             ner_document=ner_document,

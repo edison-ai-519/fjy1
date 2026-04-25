@@ -133,7 +133,7 @@ function normalizePowerShellCommandSegment(command: string): string {
 
 function normalizePowerShellCommand(command: string): string {
   const segments = command
-    .split(/\s*&&\s*/u)
+    .split(/\s*(?:&&|;)\s*/u)
     .map((segment) => segment.trim())
     .filter(Boolean);
   if (segments.length === 0) {

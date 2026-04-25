@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
+from ner.cli_support import build_spacy_llm_runtime_payload, normalize_extract_argv, read_text_file, suppress_known_runtime_warnings
+
+suppress_known_runtime_warnings()
+
 from ner.extractor import extract_entities
-from ner.llm import OpenRouterClient, OpenRouterConfig
+from ner.spacy_llm_runtime import build_default_ner_runtime
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；\n])")
 
@@ -21,28 +26,25 @@ def main() -> int:
     extract_parser.add_argument("--doc-id", default="", help="Optional document identifier.")
     extract_parser.add_argument("--query", default="", help="Optional query term to extract on matched snippets only.")
     extract_parser.add_argument("--max-sentences", type=int, default=6, help="Used with --query to narrow extraction.")
-    extract_parser.add_argument("--openrouter-model", default="", help="OpenRouter model name.")
-    extract_parser.add_argument("--openrouter-api-key", default="", help="OpenRouter API key.")
-    extract_parser.add_argument("--openrouter-base-url", default="https://openrouter.ai/api/v1", help="OpenRouter base url.")
-    args = parser.parse_args()
+    extract_parser.add_argument("--provider", choices=("openai", "openrouter"), default="", help="OpenAI-compatible provider name.")
+    extract_parser.add_argument("--model", default="", help="OpenAI-compatible model name.")
+    extract_parser.add_argument("--api-key", default="", help="OpenAI-compatible API key.")
+    extract_parser.add_argument("--base-url", default="", help="OpenAI-compatible base url.")
+    extract_parser.add_argument("--openrouter-model", default="", help="Legacy OpenRouter model name override.")
+    extract_parser.add_argument("--openrouter-api-key", default="", help="Legacy OpenRouter API key override.")
+    extract_parser.add_argument("--openrouter-base-url", default="", help="Legacy OpenRouter base url override.")
+    args = parser.parse_args(normalize_extract_argv(sys.argv[1:]))
 
     if args.command not in {"extract", None}:
         parser.error(f"unsupported command: {args.command}")
 
     input_path = Path(args.input)
-    text = input_path.read_text(encoding="utf-8")
+    text = read_text_file(input_path)
     if args.query.strip():
         text = _slice_text_by_query(text, args.query.strip(), max_sentences=max(1, int(args.max_sentences)))
     doc_id = args.doc_id or input_path.stem
-    llm_client = OpenRouterClient(
-        OpenRouterConfig(
-            enabled=bool(args.openrouter_model and args.openrouter_api_key),
-            model=args.openrouter_model,
-            api_key=args.openrouter_api_key,
-            base_url=args.openrouter_base_url,
-        )
-    )
-    document = extract_entities(text, doc_id=doc_id, use_llm=llm_client.is_enabled(), llm_client=llm_client)
+    runtime = build_default_ner_runtime(build_spacy_llm_runtime_payload(args))
+    document = extract_entities(text, doc_id=doc_id, runtime=runtime)
     rendered = document.model_dump_json(indent=2)
     if args.output:
         output_path = Path(args.output)

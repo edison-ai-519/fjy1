@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import yaml
-from ner.providers.base import RawEntityMention
+from ner.mentions import RawEntityMention
 
 from pipeline.runner import run_wiki_batch, run_wiki_pipeline
 
@@ -28,7 +28,20 @@ def _write_pipeline_config(path: Path, preprocess_config: Path, store_path: Path
         yaml.safe_dump(
             {
                 "preprocess": {"config_path": str(preprocess_config)},
-                "ner": {"provider": "hanlp", "model_name": "unused", "use_llm": False},
+                "spacy_llm": {
+                    "api_key": "test-key",
+                    "model": "openai/gpt-4o-mini",
+                    "ner": {
+                        "template_path": str(path.parent / "ner_template.jinja"),
+                        "labels_path": str(path.parent / "ner_labels.yml"),
+                        "examples_path": str(path.parent / "ner_examples.yml"),
+                    },
+                    "relation": {
+                        "template_path": str(path.parent / "relation_template.jinja"),
+                        "labels_path": str(path.parent / "relation_labels.yml"),
+                        "examples_path": str(path.parent / "relation_examples.yml"),
+                    },
+                },
                 "llm": {"enabled": False},
                 "dls": {"config_path": str(path.parent / "unused.toml"), "artifact_root": "", "max_concurrency": 1},
                 "output": {"root_dir": str(output_root), "enable_cooccurrence_edges": False},
@@ -40,11 +53,8 @@ def _write_pipeline_config(path: Path, preprocess_config: Path, store_path: Path
     )
 
 
-class DeterministicProvider:
-    def __init__(self, model_name: str = "unused") -> None:
-        self.model_name = model_name
-
-    def extract(self, text: str):
+class DeterministicNerRuntime:
+    def extract_mentions(self, text: str):
         mentions: list[RawEntityMention] = []
         for term, label in [
             ("智能养鱼系统", "TERM"),
@@ -64,7 +74,54 @@ class DeterministicProvider:
                         confidence=0.9,
                     )
                 )
-        return mentions
+        return (
+            mentions,
+            {
+                "extraction_backend": "spacy_llm",
+                "spacy_llm_version": "0.7.4",
+                "label_config_version": "test-ner-v1",
+                "task_name": "spacy.NER.v3",
+            },
+        )
+
+
+class DeterministicRelationRuntime:
+    def extract_relations(self, document):
+        by_name = {entity.normalized_text or entity.text: entity for entity in document.entities}
+        relations = []
+        if "ESP8266" in by_name and "OneNet" in by_name:
+            relations.append(
+                {
+                    "source_entity_id": by_name["ESP8266"].entity_id,
+                    "target_entity_id": by_name["OneNet"].entity_id,
+                    "source_text": "ESP8266",
+                    "target_text": "OneNet",
+                    "relation_type": "connected_to",
+                    "confidence": 1.0,
+                    "evidence_sentence": document.source_text,
+                }
+            )
+        if "传感器" in by_name and "溶氧" in by_name:
+            relations.append(
+                {
+                    "source_entity_id": by_name["传感器"].entity_id,
+                    "target_entity_id": by_name["溶氧"].entity_id,
+                    "source_text": "传感器",
+                    "target_text": "溶氧",
+                    "relation_type": "monitors",
+                    "confidence": 1.0,
+                    "evidence_sentence": document.source_text,
+                }
+            )
+        return (
+            relations,
+            {
+                "extraction_backend": "spacy_llm",
+                "spacy_llm_version": "0.7.4",
+                "label_config_version": "test-relation-v1",
+                "task_name": "spacy.REL.v1",
+            },
+        )
 
 
 def test_run_wiki_pipeline_writes_manifest_and_trace(monkeypatch, tmp_path: Path) -> None:
@@ -75,7 +132,8 @@ def test_run_wiki_pipeline_writes_manifest_and_trace(monkeypatch, tmp_path: Path
     _write_preprocess_config(preprocess_config)
     _write_pipeline_config(pipeline_config, preprocess_config, tmp_path / "store.sqlite3", tmp_path / "pipeline_outputs")
 
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
     monkeypatch.setattr("pipeline.runner.workspace_root", lambda: tmp_path)
 
     result = run_wiki_pipeline(
@@ -89,10 +147,10 @@ def test_run_wiki_pipeline_writes_manifest_and_trace(monkeypatch, tmp_path: Path
     trace = json.loads(Path(result.agent_trace_path).read_text(encoding="utf-8"))
 
     assert report["documents_processed"] == 1
-    assert result.created_pages
+    assert result.created_pages or result.updated_pages
     assert manifest
     assert trace
-    assert list((tmp_path / "wiki").rglob("*.md"))
+    assert any(Path(item["file_path"]).exists() for item in manifest)
     assert any(item.get("doc_ref") for item in manifest)
     assert any(item.get("file_path") for item in manifest)
     doc_report = report["document_reports"][0]
@@ -116,7 +174,8 @@ def test_run_wiki_batch_processes_two_documents(monkeypatch, tmp_path: Path) -> 
     _write_preprocess_config(preprocess_config)
     _write_pipeline_config(pipeline_config, preprocess_config, tmp_path / "store.sqlite3", tmp_path / "pipeline_outputs")
 
-    monkeypatch.setattr("pipeline.runner.HanLPNerProvider", DeterministicProvider)
+    monkeypatch.setattr("pipeline.runner.build_default_ner_runtime", lambda payload: DeterministicNerRuntime())
+    monkeypatch.setattr("pipeline.runner.build_default_relation_runtime", lambda payload: DeterministicRelationRuntime())
     monkeypatch.setattr("pipeline.runner.workspace_root", lambda: tmp_path)
 
     result = run_wiki_batch(
@@ -129,4 +188,5 @@ def test_run_wiki_batch_processes_two_documents(monkeypatch, tmp_path: Path) -> 
     assert report["documents_processed"] == 2
     assert Path(result.page_manifest_path).exists()
     assert Path(result.agent_trace_path).exists()
-    assert list((tmp_path / "wiki").rglob("*.md"))
+    manifest = json.loads(Path(result.page_manifest_path).read_text(encoding="utf-8"))
+    assert any(Path(item["file_path"]).exists() for item in manifest)

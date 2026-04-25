@@ -188,6 +188,61 @@ function mapUiMessageToConversationKind(
   return defaultKind;
 }
 
+export function buildShellSessionEnvironment(
+  config: RuntimeConfig,
+  policyEnvironment?: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(policyEnvironment ?? {}),
+  };
+
+  if (config.model.provider === "openai" || config.model.provider === "openrouter") {
+    environment.QAGENT_PROVIDER = config.model.provider;
+    environment.QAGENT_MODEL_PROVIDER = config.model.provider;
+  }
+
+  if (typeof config.model.apiKey === "string" && config.model.apiKey.trim()) {
+    environment.QAGENT_API_KEY = config.model.apiKey.trim();
+    if (config.model.provider === "openrouter") {
+      environment.OPENROUTER_API_KEY = config.model.apiKey.trim();
+    } else if (config.model.provider === "openai") {
+      environment.OPENAI_API_KEY = config.model.apiKey.trim();
+    }
+  }
+  if (typeof config.model.model === "string" && config.model.model.trim()) {
+    environment.QAGENT_MODEL = config.model.model.trim();
+    if (config.model.provider === "openrouter") {
+      environment.OPENROUTER_MODEL = config.model.model.trim();
+    } else if (config.model.provider === "openai") {
+      environment.OPENAI_MODEL = config.model.model.trim();
+    }
+  }
+  if (typeof config.model.baseUrl === "string" && config.model.baseUrl.trim()) {
+    environment.QAGENT_BASE_URL = config.model.baseUrl.trim();
+    if (config.model.provider === "openrouter") {
+      environment.OPENROUTER_BASE_URL = config.model.baseUrl.trim();
+    } else if (config.model.provider === "openai") {
+      environment.OPENAI_BASE_URL = config.model.baseUrl.trim();
+      environment.OPENAI_API_BASE = config.model.baseUrl.trim();
+    }
+  }
+  if (typeof config.model.appName === "string" && config.model.appName.trim()) {
+    environment.QAGENT_APP_NAME = config.model.appName.trim();
+    if (config.model.provider === "openrouter") {
+      environment.OPENROUTER_APP_NAME = config.model.appName.trim();
+    }
+  }
+  if (typeof config.model.appUrl === "string" && config.model.appUrl.trim()) {
+    environment.QAGENT_APP_URL = config.model.appUrl.trim();
+    if (config.model.provider === "openrouter") {
+      environment.OPENROUTER_SITE_URL = config.model.appUrl.trim();
+    }
+  }
+
+  return environment;
+}
+
 export class HeadAgentRuntime {
   private readonly shellTool: ShellTool;
   private readonly toolRegistry: ToolRegistry;
@@ -217,12 +272,7 @@ export class HeadAgentRuntime {
       new PersistentShellSession(
         options.config.tool.shellExecutable,
         options.snapshot.shellCwd,
-        options.policy.environment
-          ? {
-              ...process.env,
-              ...options.policy.environment,
-            }
-          : undefined,
+        buildShellSessionEnvironment(options.config, options.policy.environment),
       ),
       options.config.runtime.maxToolOutputChars,
     );

@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ner.providers.hanlp_provider import HanLPNerProvider
 from ontology_store import OntologyStore, build_wiki_slug
 from wiki_agent.wikimg_backend import WikimgBackend
 
@@ -41,7 +40,6 @@ class WikiAgentToolbox:
         doc_name: str,
         clean_text: str,
         run_id: str,
-        provider: HanLPNerProvider | None = None,
         workspace_root: str | Path | None = None,
         target_folder: str | Path | None = None,
         document_path: str | Path | None = None,
@@ -51,7 +49,6 @@ class WikiAgentToolbox:
         self.doc_name = doc_name
         self.clean_text = clean_text
         self.run_id = run_id
-        self.provider = provider or HanLPNerProvider()
         self.workspace_root = Path(workspace_root or Path.cwd()).resolve()
         self.target_folder = Path(target_folder or self.workspace_root).resolve()
         self.document_path = Path(document_path).resolve() if document_path else None
