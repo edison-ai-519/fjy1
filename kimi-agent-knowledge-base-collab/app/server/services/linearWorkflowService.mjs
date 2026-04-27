@@ -310,7 +310,7 @@ export class LinearWorkflowService {
     this.llmJsonInvoker = (input) => this.invokeWorkflowLlmJsonWithRetry(input);
     this.probabilityInvoker = options.probabilityInvoker || ((payload) => this.invokeProbability(payload));
     this.baseVersionLoader = options.baseVersionLoader || ((projectId) => this.loadBaseVersionMap(projectId));
-    this.ingestInvoker = options.ingestInvoker || ((payload) => this.invokeWriteAndInfer(payload));
+    this.ingestInvoker = options.ingestInvoker || ((payload) => this.invokeWrite(payload));
   }
 
   getWorkflowConfig() {
@@ -666,6 +666,30 @@ export class LinearWorkflowService {
       return this.gatewayWriteInvoker("/xg/write-and-infer", payload);
     }
     return this.invokeGatewayJson("/xg/write-and-infer", payload);
+  }
+
+  async invokeWrite(payload) {
+    if (!Number.isFinite(Number(payload?.basevision))) {
+      throw new Error("/xg/write failed: missing basevision");
+    }
+    if (this.gatewayLoginInvoker) {
+      await this.gatewayLoginInvoker();
+    } else if (!this.gatewayAccessToken) {
+      await this.ensureGatewayLogin(true).catch(() => null);
+    }
+    const writePayload = {
+      project_id: payload?.project_id,
+      filename: payload?.filename,
+      data: payload?.data,
+      message: payload?.message,
+      agent_name: payload?.agent_name,
+      committer_name: payload?.committer_name,
+      basevision: payload?.basevision,
+    };
+    if (this.gatewayWriteInvoker) {
+      return this.gatewayWriteInvoker("/xg/write", writePayload);
+    }
+    return this.invokeGatewayJson("/xg/write", writePayload);
   }
 
   async ensureGatewayLogin(forceRefresh = false) {

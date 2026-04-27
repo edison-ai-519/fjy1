@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Activity,
@@ -33,10 +33,15 @@ import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { fetchKnowledgeGraph } from '@/features/ontology/api';
-import { fetchWorkflowConfig, retryWorkflowFromStageStream, updateWorkflowConfig } from '@/features/workspace/api';
+import {
+  getLatestWorkflowSession,
+  removeWorkflowSession,
+  retryWorkflowRunFromStage,
+  startWorkflowRun,
+  subscribeWorkflowSession,
+} from '@/features/workflow/runtime';
+import { fetchWorkflowConfig, updateWorkflowConfig } from '@/features/workspace/api';
 import { cn } from '@/lib/utils';
-import { apiFetch, parseSseEvent } from '@/shared/api/http';
-import { notifyRepositorySync } from '@/shared/events/repositorySync';
 import { toast } from 'sonner';
 
 interface WorkflowStageResult {
@@ -226,83 +231,6 @@ function formatDuration(startedAt?: string | null, finishedAt?: string | null): 
   return `${(duration / 1000).toFixed(1)} s`;
 }
 
-function createPendingRunResult(file: File, projectId: string): FileWorkflowRunResponse {
-  return {
-    ok: false,
-    workflow: {
-      mode: 'linear',
-      status: 'running',
-      steps: STAGE_META.map((item) => item.key),
-    },
-    input_file: {
-      originalName: file.name,
-      size: file.size,
-      path: projectId,
-    },
-    stage_results: STAGE_META.map((item, index) => ({
-      stage: item.key,
-      order: index + 1,
-      status: 'pending',
-      started_at: null,
-      finished_at: null,
-      output: null,
-      error: null,
-    })),
-    ingest_results: [],
-    errors: [],
-    runtime_root: '',
-    started_at: new Date().toISOString(),
-  };
-}
-
-function createRetryDraft(
-  prev: FileWorkflowRunResponse,
-  startStage: string,
-): FileWorkflowRunResponse {
-  const targetStage = STAGE_META.find((item) => item.key === startStage);
-  const targetOrder = targetStage ? Number(targetStage.short) : Number.MAX_SAFE_INTEGER;
-  return {
-    ...prev,
-    workflow: {
-      ...prev.workflow,
-      status: 'running',
-    },
-    errors: prev.errors.filter((item) => {
-      const stageMeta = STAGE_META.find((stage) => stage.key === item.stage);
-      return stageMeta ? Number(stageMeta.short) < targetOrder : true;
-    }),
-    ingest_results: targetOrder <= 7 ? [] : prev.ingest_results,
-    stage_results: prev.stage_results.map((stage) => (
-      stage.order >= targetOrder
-        ? {
-          ...stage,
-          status: 'pending',
-          started_at: null,
-          finished_at: null,
-          output: null,
-          error: null,
-        }
-        : stage
-    )),
-  };
-}
-
-function mergeStageResult(
-  stageResults: WorkflowStageResult[],
-  nextStage: WorkflowStageResult,
-): WorkflowStageResult[] {
-  const exists = stageResults.some((stage) => stage.stage === nextStage.stage);
-  if (!exists) return [...stageResults, nextStage].sort((a, b) => a.order - b.order);
-  return stageResults
-    .map((stage) => (stage.stage === nextStage.stage ? { ...stage, ...nextStage } : stage))
-    .sort((a, b) => a.order - b.order);
-}
-
-function appendUniqueLog(prev: WorkflowLogItem[], next: WorkflowLogItem): WorkflowLogItem[] {
-  const merged = [...prev, next];
-  return merged.slice(-120);
-}
-
 function statusTone(status: WorkflowStageResult['status']): string {
   if (status === 'success') return 'text-emerald-500';
   if (status === 'failed') return 'text-red-500';
@@ -337,7 +265,7 @@ function getStageLlmRawText(stageResults: WorkflowStageResult[], stageName: stri
 
 export function FileWorkflowPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [conversationId] = useState(() => `file-workflow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  const [conversationId, setConversationId] = useState<string | null>(() => getLatestWorkflowSession()?.conversationId ?? null);
   const [projectId, setProjectId] = useState('demo');
   const [workflowModel, setWorkflowModel] = useState('openai/gpt-4o-mini');
   const [workflowConfigLoading, setWorkflowConfigLoading] = useState(false);
@@ -347,6 +275,7 @@ export function FileWorkflowPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<FileWorkflowRunResponse | null>(null);
   const [logs, setLogs] = useState<WorkflowLogItem[]>([]);
+  const completedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     const loadWorkflowConfig = async () => {
@@ -366,117 +295,70 @@ export function FileWorkflowPage() {
     void loadWorkflowConfig();
   }, []);
 
-  const fileMeta = useMemo(() => {
-    if (!selectedFile) return null;
-    return {
-      name: selectedFile.name,
-      type: selectedFile.type || 'application/octet-stream',
-      size: formatFileSize(selectedFile.size),
-      updatedAt: new Date(selectedFile.lastModified).toLocaleString(),
-    };
-  }, [selectedFile]);
+  useEffect(() => {
+    const latestSession = getLatestWorkflowSession();
+    if (!latestSession) return;
+    setConversationId(latestSession.conversationId);
+    setProjectId(latestSession.projectId || 'demo');
+    setLastRunAt(latestSession.lastRunAt);
+    setStatusMessage(latestSession.statusMessage);
+    setIsRunning(latestSession.isRunning);
+    setRunResult(latestSession.runResult);
+    setLogs(latestSession.logs);
+  }, []);
 
-  const addLog = (level: WorkflowLogItem['level'], message: string, stage?: string) => {
-    setLogs((prev) => appendUniqueLog(prev, {
-      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      level,
-      message,
-      stage,
-      createdAt: new Date().toLocaleTimeString(),
-    }));
-  };
+  useEffect(() => {
+    if (!conversationId) return;
+    return subscribeWorkflowSession(conversationId, (session) => {
+      setProjectId(session.projectId || 'demo');
+      setLastRunAt(session.lastRunAt);
+      setStatusMessage(session.statusMessage);
+      setIsRunning(session.isRunning);
+      setRunResult(session.runResult);
+      setLogs(session.logs);
+    });
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationId || !runResult || isRunning) return;
+    if (completedSessionRef.current === conversationId) return;
+    completedSessionRef.current = conversationId;
+    if (runResult.ok && projectId.trim()) {
+      void fetchKnowledgeGraph({ refresh: true, projectId: projectId.trim() }).catch(() => undefined);
+    }
+  }, [conversationId, isRunning, projectId, runResult]);
+
+  const fileMeta = useMemo(() => {
+    if (selectedFile) {
+      return {
+        name: selectedFile.name,
+        type: selectedFile.type || 'application/octet-stream',
+        size: formatFileSize(selectedFile.size),
+        updatedAt: new Date(selectedFile.lastModified).toLocaleString(),
+      };
+    }
+    if (!runResult?.input_file?.originalName) return null;
+    return {
+      name: runResult.input_file.originalName,
+      type: 'application/octet-stream',
+      size: formatFileSize(Number(runResult.input_file.size || 0)),
+      updatedAt: '--',
+    };
+  }, [runResult?.input_file?.originalName, runResult?.input_file?.size, selectedFile]);
 
   const resetState = () => {
+    if (conversationId && !isRunning) {
+      removeWorkflowSession(conversationId);
+    }
     setSelectedFile(null);
     setProjectId('demo');
     setLastRunAt(null);
     setStatusMessage('等待文件输入');
     setRunResult(null);
     setLogs([]);
-  };
-
-  const consumeWorkflowStream = async (
-    response: Response,
-    draftResult: FileWorkflowRunResponse,
-    normalizedProjectId: string,
-  ) => {
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => '');
-      throw new Error(text || `请求失败：${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let boundaryIndex = buffer.indexOf('\n\n');
-      while (boundaryIndex !== -1) {
-        const rawEvent = buffer.slice(0, boundaryIndex);
-        buffer = buffer.slice(boundaryIndex + 2);
-        const parsed = parseSseEvent(rawEvent);
-        if (parsed) {
-          if (parsed.event === 'status') {
-            const data = asRecord(parsed.data);
-            const message = asText(data.message) || '工作流状态更新';
-            setStatusMessage(message);
-            addLog('info', message);
-          }
-
-          if (parsed.event === 'workflow_stage') {
-            const stageData = parsed.data as WorkflowStageResult;
-            setRunResult((prev) => {
-              const base = prev ?? draftResult;
-              return {
-                ...base,
-                stage_results: mergeStageResult(base.stage_results, stageData),
-                workflow: {
-                  ...base.workflow,
-                  status: stageData.status === 'failed' ? 'failed' : 'running',
-                },
-              };
-            });
-            addLog(
-              stageData.status === 'failed' ? 'error' : stageData.status === 'success' ? 'success' : 'info',
-              `${stageData.order}. ${stageData.stage} ${stageData.status === 'running' ? '开始' : stageData.status === 'success' ? '完成' : '失败'}`,
-              stageData.stage,
-            );
-          }
-
-          if (parsed.event === 'complete') {
-            const payload = parsed.data as FileWorkflowRunResponse;
-            setRunResult(payload);
-            setLastRunAt(new Date().toLocaleString());
-            if (payload.ok) {
-              const firstFilename = payload.ingest_results?.[0]?.filename;
-              notifyRepositorySync({
-                projectId: normalizedProjectId,
-                filename: firstFilename,
-                source: 'fileWorkflow',
-              });
-              void fetchKnowledgeGraph({ refresh: true, projectId: normalizedProjectId }).catch(() => undefined);
-              setStatusMessage('工作流执行完成，所有结果已同步展示。');
-              addLog('success', '工作流完成，图谱与仓库已同步刷新');
-            } else {
-              const firstError = payload.errors?.[0]?.message || '工作流失败';
-              setStatusMessage(firstError);
-              addLog('error', firstError);
-            }
-          }
-
-          if (parsed.event === 'error') {
-            const data = asRecord(parsed.data);
-            const message = asText(data.message) || '工作流异常中断';
-            setStatusMessage(message);
-            addLog('error', message);
-          }
-        }
-        boundaryIndex = buffer.indexOf('\n\n');
-      }
+    if (!isRunning) {
+      setConversationId(null);
+      completedSessionRef.current = null;
     }
   };
 
@@ -490,61 +372,33 @@ export function FileWorkflowPage() {
       return;
     }
 
-    const normalizedProjectId = projectId.trim();
-    const draft = createPendingRunResult(selectedFile, normalizedProjectId);
-    setRunResult(draft);
-    setLogs([]);
-    setIsRunning(true);
-    setStatusMessage('正在建立流式连接，准备执行七阶段工作流...');
-    addLog('info', '已创建执行草稿，等待后端分阶段返回结果');
-
     try {
-      const response = await apiFetch(
-        `/api/workflow/file/run/stream?fileName=${encodeURIComponent(selectedFile.name)}&projectId=${encodeURIComponent(normalizedProjectId)}&conversationId=${encodeURIComponent(conversationId)}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': selectedFile.type || 'application/octet-stream',
-            Accept: 'text/event-stream',
-          },
-          body: selectedFile,
-        },
-      );
-      await consumeWorkflowStream(response, draft, normalizedProjectId);
+      completedSessionRef.current = null;
+      const nextConversationId = startWorkflowRun({
+        file: selectedFile,
+        projectId: projectId.trim(),
+      });
+      setConversationId(nextConversationId);
     } catch (error) {
       const message = error instanceof Error ? error.message : '文件直传失败';
       setStatusMessage(message);
-      addLog('error', message);
-    } finally {
-      setIsRunning(false);
     }
   };
 
   const handleRetryFromStage = async (startStage: string) => {
-    if (!runResult || !projectId.trim()) {
+    if (!runResult || !projectId.trim() || !conversationId) {
       return;
     }
 
-    const normalizedProjectId = projectId.trim();
-    const draft = createRetryDraft(runResult, startStage);
-    setRunResult(draft);
-    setIsRunning(true);
-    setStatusMessage(`准备从 ${startStage} 继续执行`);
-    addLog('info', `用户触发从 ${startStage} 重试`, startStage);
-
     try {
-      const response = await retryWorkflowFromStageStream({
-        projectId: normalizedProjectId,
-        conversationId,
+      completedSessionRef.current = null;
+      retryWorkflowRunFromStage({
         startStage,
+        conversationId,
       });
-      await consumeWorkflowStream(response, draft, normalizedProjectId);
     } catch (error) {
       const message = error instanceof Error ? error.message : '阶段重试失败';
       setStatusMessage(message);
-      addLog('error', message, startStage);
-    } finally {
-      setIsRunning(false);
     }
   };
 

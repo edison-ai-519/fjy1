@@ -678,6 +678,34 @@ test("LinearWorkflowService invokeWriteAndInfer 会先登录再写入", async ()
   assert.deepEqual(calls, ["auth", "/xg/write-and-infer"]);
 });
 
+test("LinearWorkflowService invokeWrite 会先登录再写入", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-write-"));
+  const calls = [];
+  const service = createService({ runtimeRoot });
+
+  service.gatewayLoginInvoker = async () => {
+    calls.push("auth");
+  };
+  service.gatewayWriteInvoker = async (pathname) => {
+    calls.push(pathname);
+    return { status: "success", commit_id: "ok", version_id: 1 };
+  };
+
+  const result = await service.invokeWrite({ project_id: "demo", basevision: 3 });
+  assert.deepEqual(result, { status: "success", commit_id: "ok", version_id: 1 });
+  assert.deepEqual(calls, ["auth", "/xg/write"]);
+});
+
+test("LinearWorkflowService invokeWrite 缺少 basevision 时会拒绝", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-write-missing-"));
+  const service = createService({ runtimeRoot });
+
+  await assert.rejects(
+    () => service.invokeWrite({ project_id: "demo" }),
+    /missing basevision/,
+  );
+});
+
 test("LinearWorkflowService invokeWriteAndInfer 缺少 basevision 时会拒绝", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-auth-missing-"));
   const service = createService({ runtimeRoot });
