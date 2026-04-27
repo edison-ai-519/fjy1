@@ -1,134 +1,84 @@
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
 
-import { JsonKnowledgeBaseRepository } from "./repositories/jsonKnowledgeBaseRepository.mjs";
-import { DatabaseKnowledgeBaseRepository } from "./repositories/databaseKnowledgeBaseRepository.mjs";
-import { WikiMGKnowledgeBaseRepository } from "./repositories/wikiMGKnowledgeBaseRepository.mjs";
+import { OntoGitKnowledgeBaseRepository } from "./repositories/ontoGitKnowledgeBaseRepository.mjs";
 import { KnowledgeBaseService } from "./services/knowledgeBaseService.mjs";
 import { AssistantSessionStateService } from "./services/assistantSessionStateService.mjs";
 import { ConversationGraphStateService } from "./services/conversationGraphStateService.mjs";
-import { OntoGitLocalCommitService } from "./services/ontoGitLocalCommitService.mjs";
-import { QAgentService } from "./services/qagentService.mjs";
-import { WikiWorkspaceWriterService } from "./services/wikiWorkspaceWriterService.mjs";
-import { ensureKnowledgeDataWorkspace, resolveKnowledgeDataPaths } from "./knowledgeDataPaths.mjs";
+import { LinearWorkflowService } from "./services/linearWorkflowService.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, "..");
 const projectRoot = path.resolve(appRoot, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
-const qagentRuntimeRoot = path.join(projectRoot, ".qagent-web-runtime");
-const defaultWikiMGRoot = path.resolve(workspaceRoot, "Ontology_Factory");
-
-function resolveQAgentRoot() {
-  const candidates = [
-    process.env.QAGENT_ROOT,
-    path.resolve(projectRoot, "../QAgent"),
-    path.resolve(projectRoot, "../QAgent-master"),
-  ].filter(Boolean);
-
-  return (
-    candidates.find((candidate) => existsSync(path.join(candidate, "package.json")))
-    || candidates[0]
-  );
-}
-
-function resolveQAgentCommand(qagentRoot) {
-  if (process.env.QAGENT_BIN) {
-    return [process.execPath, process.env.QAGENT_BIN];
-  }
-
-  const builtBin = path.join(qagentRoot, "bin", "qagent.js");
-  const builtDist = path.join(qagentRoot, "dist", "cli", "index.js");
-  if (existsSync(builtBin) && existsSync(builtDist)) {
-    return [process.execPath, builtBin];
-  }
-
-  const tsxCli = path.join(
-    qagentRoot,
-    "node_modules",
-    "tsx",
-    "dist",
-    "cli.mjs",
-  );
-  const sourceEntry = path.join(qagentRoot, "src", "cli", "index.ts");
-  if (existsSync(tsxCli) && existsSync(sourceEntry)) {
-    return [process.execPath, tsxCli, sourceEntry];
-  }
-
-  return [process.execPath, builtBin];
-}
+const workflowRuntimeRoot = path.join(projectRoot, ".workflow-runtime");
 
 export function createAppServices() {
-  const repositoryMode = process.env.KNOWLEDGE_BASE_PROVIDER || "json";
-  const qagentRoot = resolveQAgentRoot();
-  const knowledgeDataPaths = resolveKnowledgeDataPaths({
-    workspaceRoot,
-    env: process.env,
-    defaultWikiMGCodeRoot: defaultWikiMGRoot,
-  });
-  ensureKnowledgeDataWorkspace(knowledgeDataPaths);
+  const ontoGitProjectId = process.env.ONTOGIT_PROJECT_ID || "demo";
+  const gatewayBaseUrl = process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080";
+  const gatewayApiKeyRaw = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "";
+  const gatewayApiKey = gatewayApiKeyRaw && gatewayApiKeyRaw !== "change-me" ? gatewayApiKeyRaw : "";
+  const authUsername = process.env.ONTOGIT_AUTH_USERNAME || process.env.XG_AUTH_USERNAME || "mogong";
+  const authPassword = process.env.ONTOGIT_AUTH_PASSWORD || process.env.XG_AUTH_PASSWORD || "123456";
 
-  let repository;
-
-  if (repositoryMode === "database") {
-    repository = new DatabaseKnowledgeBaseRepository({
-      databaseUrl: process.env.DATABASE_URL,
-    });
-  } else if (repositoryMode === "wikimg") {
-    repository = new WikiMGKnowledgeBaseRepository({
-      workspaceRoot: knowledgeDataPaths.wikimgWorkspaceRoot,
-      sourceWorkspaceRoot: knowledgeDataPaths.wikimgCodeRoot,
-      profile: process.env.WIKIMG_PROFILE || "kimi",
-      wikimgScriptPath: knowledgeDataPaths.wikimgScriptPath,
-      pythonBin: process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3"),
-      ontoGitStorageRoot: knowledgeDataPaths.ontoGitStorageRoot,
-    });
-  } else {
-    repository = new JsonKnowledgeBaseRepository({
-      dataRoot: path.join(appRoot, "public", "data"),
-      dbFilePath: path.join(appRoot, "data", "knowledge-base-db.json"),
-    });
-  }
-
-  const ontoGitCommitService = new OntoGitLocalCommitService({
-    storageRoot: knowledgeDataPaths.ontoGitStorageRoot,
-  });
-  const wikiWorkspaceWriter = new WikiWorkspaceWriterService({
-    docsRoot: knowledgeDataPaths.wikiDocsRoot,
+  const repository = new OntoGitKnowledgeBaseRepository({
+    gatewayBaseUrl,
+    gatewayApiKey,
+    authUsername,
+    authPassword,
   });
 
   return {
     knowledgeBaseService: new KnowledgeBaseService(repository, {
-      projectId: process.env.ONTOGIT_PROJECT_ID || "demo",
-      sourceCommitter: ({ projectId, filename, data, message, agentName, committerName }) => (
-        ontoGitCommitService.writeVersion({
+      projectId: ontoGitProjectId,
+      sourceCommitter: ({ projectId, filename, data, message, agentName, committerName, basevision, inferenceMessage, inferenceAgentName, inferenceCommitterName }) => (
+        repository.writeWorkflowEntity({
           projectId,
           filename,
           data,
           message,
           agentName,
           committerName,
+          basevision,
+          inferenceMessage,
+          inferenceAgentName,
+          inferenceCommitterName,
         })
-      ),
-      wikiWriter: ({ layer, slug, markdown }) => (
-        wikiWorkspaceWriter.writeDocument({ layer, slug, markdown })
       ),
     }),
     assistantSessionStateService: new AssistantSessionStateService({
-      runtimeRoot: qagentRuntimeRoot,
+      runtimeRoot: workflowRuntimeRoot,
     }),
     conversationGraphStateService: new ConversationGraphStateService({
-      runtimeRoot: qagentRuntimeRoot,
+      runtimeRoot: workflowRuntimeRoot,
     }),
-    localWorkspaceService: ontoGitCommitService,
-    qagentService: new QAgentService({
-      qagentCommand: resolveQAgentCommand(qagentRoot),
-      qagentRoot,
-      projectRoot,
-      runtimeRoot: qagentRuntimeRoot,
+    localWorkspaceService: repository,
+    workflowService: new LinearWorkflowService({
+      runtimeRoot: workflowRuntimeRoot,
+      gatewayBaseUrl: process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080",
+      gatewayApiKey: process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "",
+      gatewayAuthUsername: authUsername,
+      gatewayAuthPassword: authPassword,
+      gatewayLoginInvoker: () => repository.ensureGatewayLogin(true),
+      gatewayRequestInvoker: (pathname, options) => repository.requestGatewayJson(pathname, options),
+      gatewayWriteInvoker: (pathname, payload, options) => repository.invokeGatewayJson(pathname, payload, options),
+      baseVersionLoader: async (projectId) => {
+        const timelines = await repository.getJsonFileTimelines(projectId);
+        const map = new Map();
+        for (const timeline of timelines) {
+          const commits = Array.isArray(timeline?.commits) ? timeline.commits : [];
+          const latest = commits.at(-1);
+          const versionId = Number(latest?.versionId ?? latest?.version_id ?? 0);
+          map.set(timeline.filename, Number.isFinite(versionId) && versionId > 0 ? versionId : 0);
+        }
+        return map;
+      },
+      workflowTimeoutMs: Number(process.env.WORKFLOW_TIMEOUT_MS || 120000),
+      workflowLlmBaseUrl: process.env.WORKFLOW_LLM_BASE_URL || process.env.OPENROUTER_BASE_URL || process.env.DMXAPI_BASE_URL || "https://openrouter.ai/api/v1",
+      workflowLlmApiKey: process.env.WORKFLOW_LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.DMXAPI_API_KEY || "",
+      workflowModel: process.env.WORKFLOW_MODEL || process.env.OPENROUTER_MODEL || process.env.DMXAPI_MODEL || "openai/gpt-4o-mini",
     }),
     appRoot,
   };

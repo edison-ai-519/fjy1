@@ -5,8 +5,6 @@ set -euo pipefail
 # 获取脚本所在目录
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${ROOT_DIR}/kimi-agent-knowledge-base-collab/app"
-QAGENT_DIR="${ROOT_DIR}/QAgent"
-WEB_RUNTIME_DIR="${ROOT_DIR}/kimi-agent-knowledge-base-collab/.qagent-web-runtime"
 XIAOGUGIT_DIR="${ROOT_DIR}/OntoGit/xiaogugit"
 PROBABILITY_DIR="${ROOT_DIR}/OntoGit/probability"
 GATEWAY_DIR="${ROOT_DIR}/OntoGit/gateway"
@@ -17,8 +15,9 @@ LOG_DIR="${ROOT_DIR}/.run-logs"
 BACKEND_PORT="${PORT:-8787}"
 FRONTEND_PORT="${VITE_PORT:-5173}"
 XIAOGUGIT_PORT=8001
-PROBABILITY_PORT=5000
+PROBABILITY_PORT=5001
 GATEWAY_PORT=8080
+ONTOGIT_GATEWAY_URL="${ONTOGIT_GATEWAY_URL:-http://81.70.12.214:8080}"
 
 find_python() {
   for cmd in python python3 py; do
@@ -39,7 +38,6 @@ WIKIMG_ROOT="${WIKIMG_ROOT:-${WIKIMG_ROOT_DIR}}"
 KNOWLEDGE_DATA_ROOT="${KNOWLEDGE_DATA_ROOT:-${ROOT_DIR}/knowledge-data}"
 ONTOGIT_STORAGE_ROOT="${ONTOGIT_STORAGE_ROOT:-${KNOWLEDGE_DATA_ROOT}/store}"
 WIKIMG_PROFILE="${WIKIMG_PROFILE:-kimi}"
-KNOWLEDGE_BASE_PROVIDER="${KNOWLEDGE_BASE_PROVIDER:-wikimg}"
 
 # 认证配置
 GATEWAY_SERVICE_API_KEY="${GATEWAY_SERVICE_API_KEY:-xgk_79689a3af4225035d2de7551ff1b2b69070636b2fbb12205}"
@@ -47,10 +45,10 @@ XG_AUTH_SECRET="${XG_AUTH_SECRET:-xiaogugit-auth-secret}"
 XG_AUTH_USERNAME="${XG_AUTH_USERNAME:-mogong}"
 XG_AUTH_PASSWORD="${XG_AUTH_PASSWORD:-123456}"
 
-# DMXAPI 配置
-DMXAPI_API_KEY="${DMXAPI_API_KEY:-}"
-DMXAPI_BASE_URL="${DMXAPI_BASE_URL:-https://www.dmxapi.cn/v1}"
-DMXAPI_MODEL="${DMXAPI_MODEL:-gpt-5.4}"
+# OpenRouter / DMXAPI 配置（kimi 默认优先 OpenRouter）
+DMXAPI_API_KEY="${DMXAPI_API_KEY:-${OPENROUTER_API_KEY:-}}"
+DMXAPI_BASE_URL="${DMXAPI_BASE_URL:-${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}}"
+DMXAPI_MODEL="${DMXAPI_MODEL:-${OPENROUTER_MODEL:-openai/gpt-4o-mini}}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -230,9 +228,10 @@ start_ontogit_services() {
   echo "启动 OntoGit gateway..."
   local gateway_env="GATEWAY_XIAOGUGIT_URL='http://127.0.0.1:${XIAOGUGIT_PORT}' GATEWAY_PROBABILITY_URL='http://127.0.0.1:${PROBABILITY_PORT}' GATEWAY_XG_AUTH_SECRET='${XG_AUTH_SECRET}' GATEWAY_XG_AUTH_USERNAME='${XG_AUTH_USERNAME}' GATEWAY_SERVICE_API_KEY='${GATEWAY_SERVICE_API_KEY}'"
   
-  if [[ -f "${GATEWAY_DIR}/gateway.exe" ]]; then
+  if [[ -f "${GATEWAY_DIR}/gateway.exe" && -x "${GATEWAY_DIR}/gateway.exe" ]]; then
     start_detached "${GATEWAY_DIR}" "${LOG_DIR}/ontogit-gateway.log" "${LOG_DIR}/ontogit-gateway.pid" "${gateway_env}" "./gateway.exe"
   elif has_cmd go; then
+    echo "gateway.exe 不可执行，改用 go run 启动 gateway..."
     start_detached "${GATEWAY_DIR}" "${LOG_DIR}/ontogit-gateway.log" "${LOG_DIR}/ontogit-gateway.pid" "${gateway_env}" "go run ."
   else
     echo "警告: 未找到 gateway.exe 或 go 命令，无法启动 OntoGit gateway。"
@@ -249,7 +248,7 @@ start_backend() {
     "${APP_DIR}" \
     "${LOG_DIR}/kimi-backend.log" \
     "${LOG_DIR}/kimi-backend.pid" \
-    "KNOWLEDGE_BASE_PROVIDER='${KNOWLEDGE_BASE_PROVIDER}' WIKIMG_ROOT='${WIKIMG_ROOT}' KNOWLEDGE_DATA_ROOT='${KNOWLEDGE_DATA_ROOT}' WIKIMG_PROFILE='${WIKIMG_PROFILE}' ONTOGIT_STORAGE_ROOT='${ONTOGIT_STORAGE_ROOT}' WIKIMG_ONTOGIT_STORAGE_ROOT='${ONTOGIT_STORAGE_ROOT}' PYTHON_BIN='${PYTHON_BIN}' PORT='${BACKEND_PORT}'" \
+    "WIKIMG_ROOT='${WIKIMG_ROOT}' KNOWLEDGE_DATA_ROOT='${KNOWLEDGE_DATA_ROOT}' WIKIMG_PROFILE='${WIKIMG_PROFILE}' ONTOGIT_STORAGE_ROOT='${ONTOGIT_STORAGE_ROOT}' WIKIMG_ONTOGIT_STORAGE_ROOT='${ONTOGIT_STORAGE_ROOT}' WIKIMG_ONTOGIT_GATEWAY_URL='${ONTOGIT_GATEWAY_URL}' XG_GATEWAY_URL='${ONTOGIT_GATEWAY_URL}' GATEWAY_URL='${ONTOGIT_GATEWAY_URL}' PYTHON_BIN='${PYTHON_BIN}' PORT='${BACKEND_PORT}'" \
     "node ./server.mjs"
   wait_for_http "http://127.0.0.1:${BACKEND_PORT}/api/health" "后端"
 }
@@ -263,18 +262,6 @@ start_frontend() {
     "" \
     "npm run dev -- --host 0.0.0.0 --port '${FRONTEND_PORT}'"
   wait_for_port "${FRONTEND_PORT}" "前端"
-}
-
-stop_qagent_gateway() {
-  if [[ ! -d "${QAGENT_DIR}" ]]; then
-    return
-  fi
-
-  echo "关闭旧的 QAgent web runtime gateway..."
-  (
-    cd "${QAGENT_DIR}"
-    node ./bin/qagent.js --cwd "${WEB_RUNTIME_DIR}" gateway stop >/dev/null 2>&1 || true
-  )
 }
 
 print_summary() {
@@ -323,7 +310,6 @@ stop_pid_file "${LOG_DIR}/xiaogugit.pid"
 stop_pid_file "${LOG_DIR}/probability.pid"
 stop_pid_file "${LOG_DIR}/ontogit-gateway.pid"
 
-stop_qagent_gateway
 stop_port "${BACKEND_PORT}" "后端"
 stop_port "${FRONTEND_PORT}" "前端"
 stop_port "${XIAOGUGIT_PORT}" "xiaogugit"

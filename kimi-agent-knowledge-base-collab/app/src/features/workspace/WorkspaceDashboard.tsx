@@ -25,6 +25,11 @@ export function WorkspaceDashboard() {
 
   return (
     <div className="space-y-6">
+      {workspace.errorMessage && (
+        <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {workspace.errorMessage}
+        </div>
+      )}
       <div className="grid gap-6 lg:grid-cols-12">
         <div className="lg:col-span-3 flex flex-col space-y-6">
           <ProjectListPanel

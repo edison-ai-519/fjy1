@@ -7,7 +7,9 @@ import {
   type XgTimeline,
   type XgWriteResult,
 } from '@/lib/xgApi';
-import { buildApiUrl, parseJson } from '@/shared/api/http';
+import { apiFetch, clearStoredAccessToken, parseJson, setStoredAccessToken } from '@/shared/api/http';
+import { notifyRepositorySync } from '@/shared/events/repositorySync';
+import { validateWorkflowEntityFileData } from '@/features/workspace/workflowEntityFormat';
 
 export type { XgProject, XgTimeline, XgTimelineCommit, XgWriteResult } from '@/lib/xgApi';
 
@@ -23,43 +25,22 @@ export interface ProbabilityResult {
   reason: string;
 }
 
-export async function fetchXgProjects(): Promise<XgProject[]> {
-  try {
-    const localResponse = await fetch(buildApiUrl('/api/workspace/projects'));
-    return normalizeXgProjectsResponse(await parseJson<unknown>(localResponse));
-  } catch {
-    // Keep the gateway path available for legacy projects when local workspace listing is unavailable.
-  }
+export interface WorkflowConfig {
+  workflowModel: string;
+}
 
-  const response = await fetch(buildApiUrl('/api/xg/projects'));
+export async function fetchXgProjects(): Promise<XgProject[]> {
+  const response = await apiFetch('/api/xg/projects');
   return normalizeXgProjectsResponse(await parseJson<unknown>(response));
 }
 
 export async function fetchXgRead(projectId: string, filename: string, commitId?: string): Promise<unknown> {
-  const localUrl = buildApiUrl(
-    `/api/workspace/projects/${encodeURIComponent(projectId)}/read/${encodePathSegments(filename)}${commitId ? `?commit_id=${commitId}` : ''}`,
-  );
-  try {
-    const localResponse = await fetch(localUrl);
-    return normalizeXgReadResponse(await parseJson<unknown>(localResponse));
-  } catch {
-    // Local graph-ingest files live under knowledge-data/store. Fall back to the gateway for legacy projects.
-  }
-
-  const url = buildApiUrl(`/api/xg/read/${projectId}/${filename}${commitId ? `?commit_id=${commitId}` : ''}`);
-  const response = await fetch(url);
+  const response = await apiFetch(`/api/xg/read/${encodeURIComponent(projectId)}/${encodePathSegments(filename)}${commitId ? `?commit_id=${commitId}` : ''}`);
   return normalizeXgReadResponse(await parseJson<unknown>(response));
 }
 
 export async function fetchXgTimelines(projectId: string): Promise<XgTimeline[]> {
-  try {
-    const localResponse = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}/timelines`));
-    return normalizeXgTimelinesResponse(await parseJson<unknown>(localResponse));
-  } catch {
-    // Keep the gateway path available for projects that do not exist in the local knowledge-data store.
-  }
-
-  const response = await fetch(buildApiUrl(`/api/xg/timelines/${projectId}`));
+  const response = await apiFetch(`/api/xg/timelines/${encodeURIComponent(projectId)}`);
   return normalizeXgTimelinesResponse(await parseJson<unknown>(response));
 }
 
@@ -70,21 +51,28 @@ export async function writeXgAndInfer(input: {
   message: string;
   agent_name?: string;
   committer_name?: string;
-  basevision?: number;
+  basevision: number;
   inference_message?: string;
   inference_agent_name?: string;
   inference_committer_name?: string;
 }): Promise<XgWriteResult> {
-  const response = await fetch(buildApiUrl('/api/xg/write-and-infer'), {
+  const validation = validateWorkflowEntityFileData(input.data);
+  if (!validation.ok) {
+    throw new Error(`写入拦截：仅支持标准工作流实体 JSON。${validation.error}`);
+  }
+
+  const response = await apiFetch('/api/xg/write-and-infer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
-  return normalizeXgWriteResult(await parseJson<unknown>(response));
+  const result = normalizeXgWriteResult(await parseJson<unknown>(response));
+  notifyRepositorySync({ projectId: input.project_id, filename: input.filename, source: 'writeXgAndInfer' });
+  return result;
 }
 
 export async function fetchProbabilityReason(concept: unknown): Promise<ProbabilityResult> {
-  const response = await fetch(buildApiUrl('/api/probability/api/llm/probability-reason'), {
+  const response = await apiFetch('/api/probability/api/llm/probability-reason', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(concept),
@@ -92,19 +80,49 @@ export async function fetchProbabilityReason(concept: unknown): Promise<Probabil
   return parseJson<ProbabilityResult>(response);
 }
 
+export async function fetchWorkflowConfig(): Promise<WorkflowConfig> {
+  const response = await apiFetch('/api/workflow/config');
+  return parseJson<WorkflowConfig>(response);
+}
+
+export async function updateWorkflowConfig(workflowModel: string): Promise<WorkflowConfig> {
+  const response = await apiFetch('/api/workflow/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflowModel }),
+  });
+  return parseJson<WorkflowConfig>(response);
+}
+
+export async function retryWorkflowFromStageStream(input: {
+  projectId: string;
+  conversationId: string;
+  startStage: string;
+}): Promise<Response> {
+  return apiFetch(
+    `/api/workflow/file/retry/stream?projectId=${encodeURIComponent(input.projectId)}&conversationId=${encodeURIComponent(input.conversationId)}&startStage=${encodeURIComponent(input.startStage)}`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'text/event-stream',
+      },
+    },
+  );
+}
+
 export async function fetchOfficialRecommend(projectId: string, filename: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl(`/api/xg/version-recommend/official?project_id=${projectId}&filename=${filename}`));
+  const response = await apiFetch(`/api/xg/version-recommend/official?project_id=${projectId}&filename=${filename}`);
   return parseJson(response);
 }
 
 export async function fetchCommunityRecommend(projectId: string, filename: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl(`/api/xg/version-recommend/community?project_id=${projectId}&filename=${filename}`));
+  const response = await apiFetch(`/api/xg/version-recommend/community?project_id=${projectId}&filename=${filename}`);
   return parseJson(response);
 }
 
 export async function rollbackXgVersion(projectId: string, commitId: string): Promise<unknown> {
   const params = new URLSearchParams({ project_id: projectId, commit_id: commitId });
-  const response = await fetch(buildApiUrl(`/api/xg/rollback?${params.toString()}`), {
+  const response = await apiFetch(`/api/xg/rollback?${params.toString()}`, {
     method: 'POST',
   });
 
@@ -118,12 +136,12 @@ export async function rollbackXgVersion(projectId: string, commitId: string): Pr
 
 export async function fetchXgDiff(projectId: string, filename: string, base: string, target: string): Promise<unknown> {
   const params = new URLSearchParams({ project_id: projectId, filename, base, target });
-  const response = await fetch(buildApiUrl(`/api/xg/diff?${params.toString()}`));
+  const response = await apiFetch(`/api/xg/diff?${params.toString()}`);
   return parseJson(response);
 }
 
 export async function initXgProject(projectData: { project_id: string; name?: string; description?: string }): Promise<unknown> {
-  const response = await fetch(buildApiUrl('/api/workspace/projects/init'), {
+  const response = await apiFetch('/api/xg/projects/init', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(projectData),
@@ -132,7 +150,7 @@ export async function initXgProject(projectData: { project_id: string; name?: st
 }
 
 export async function updateXgProjectName(projectId: string, name: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}`), {
+  const response = await apiFetch(`/api/xg/projects/${encodeURIComponent(projectId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -141,7 +159,7 @@ export async function updateXgProjectName(projectId: string, name: string): Prom
 }
 
 export async function setOfficialRecommend(projectId: string, filename: string, versionId: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl('/api/xg/version-recommend/official/set'), {
+  const response = await apiFetch('/api/xg/version-recommend/official/set', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, filename, version_id: versionId }),
@@ -162,7 +180,7 @@ export interface DashboardSummary {
 }
 
 export async function fetchDashboardSummary(): Promise<DashboardSummary> {
-  const response = await fetch(buildApiUrl('/api/dashboard/summary'));
+  const response = await apiFetch('/api/dashboard/summary');
   return parseJson<DashboardSummary>(response);
 }
 
@@ -176,7 +194,7 @@ export interface RouteDoc {
 }
 
 export async function fetchRoutes(): Promise<RouteDoc[]> {
-  const response = await fetch(buildApiUrl('/api/routes'));
+  const response = await apiFetch('/api/routes');
   return parseJson<RouteDoc[]>(response);
 }
 
@@ -186,7 +204,7 @@ export interface HealthStatus {
 }
 
 export async function fetchHealth(): Promise<HealthStatus> {
-  const response = await fetch(buildApiUrl('/health'));
+  const response = await apiFetch('/health');
   return parseJson<HealthStatus>(response);
 }
 
@@ -199,34 +217,42 @@ export interface AuthUser {
 }
 
 export async function login(username: string, password: string): Promise<{ access_token: string }> {
-  const response = await fetch(buildApiUrl('/auth/login'), {
+  const response = await apiFetch('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  return parseJson<{ access_token: string }>(response);
+  const payload = await parseJson<{ access_token: string }>(response);
+  if (payload.access_token) {
+    setStoredAccessToken(payload.access_token);
+  }
+  return payload;
 }
 
 export async function logout(): Promise<void> {
-  await fetch(buildApiUrl('/auth/logout'), { method: 'POST' });
+  try {
+    await apiFetch('/auth/logout', { method: 'POST' });
+  } finally {
+    clearStoredAccessToken();
+  }
 }
 
 export async function fetchMe(): Promise<AuthUser> {
-  const response = await fetch(buildApiUrl('/auth/me'));
+  const response = await apiFetch('/auth/me');
   return parseJson<AuthUser>(response);
 }
 
 // --- New Admin & Advanced Endpoints ---
 
 export async function deleteXgProject(projectId: string): Promise<unknown> {
-  const response = await fetch(buildApiUrl(`/api/workspace/projects/${encodeURIComponent(projectId)}`), {
+  const response = await apiFetch(`/api/xg/projects/${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
   });
   return parseJson(response);
 }
 
 export async function fetchProbabilityScoreOnly(concept: unknown): Promise<{ probability: number }> {
-  const response = await fetch(buildApiUrl('/api/probability/api/llm/probability'), {
+  const response = await apiFetch('/api/probability/api/llm/probability', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(concept),

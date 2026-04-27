@@ -10,13 +10,16 @@ param(
   [string]$KnowledgeDataRoot = $env:KNOWLEDGE_DATA_ROOT,
   [string]$WIKIMG_PROFILE = $env:WIKIMG_PROFILE,
   [string]$SharedStorageRoot = $env:ONTOGIT_STORAGE_ROOT,
-  [string]$KNOWLEDGE_BASE_PROVIDER = $env:KNOWLEDGE_BASE_PROVIDER,
+  [string]$ONTOGIT_GATEWAY_URL = $env:ONTOGIT_GATEWAY_URL,
   [string]$GATEWAY_SERVICE_API_KEY = $env:GATEWAY_SERVICE_API_KEY,
   [string]$GATEWAY_XG_AUTH_SECRET = $env:GATEWAY_XG_AUTH_SECRET,
   [string]$GATEWAY_XG_AUTH_USERNAME = $env:GATEWAY_XG_AUTH_USERNAME,
   [string]$XG_AUTH_SECRET = $env:XG_AUTH_SECRET,
   [string]$XG_AUTH_USERNAME = $env:XG_AUTH_USERNAME,
   [string]$XG_AUTH_PASSWORD = $env:XG_AUTH_PASSWORD,
+  [string]$OPENROUTER_API_KEY = $env:OPENROUTER_API_KEY,
+  [string]$OPENROUTER_BASE_URL = $env:OPENROUTER_BASE_URL,
+  [string]$OPENROUTER_MODEL = $env:OPENROUTER_MODEL,
   [string]$DMXAPI_API_KEY = $env:DMXAPI_API_KEY,
   [string]$DMXAPI_BASE_URL = $env:DMXAPI_BASE_URL,
   [string]$DMXAPI_MODEL = $env:DMXAPI_MODEL,
@@ -100,11 +103,9 @@ function Get-Config {
     ScriptPath = $scriptPath
     PowerShellExecutable = Get-PowerShellExecutablePath
     AppDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\app'
-    QAgentDir = Join-Path $rootDir 'QAgent'
     XiaoGuGitDir = Join-Path $rootDir 'OntoGit\xiaogugit'
     ProbabilityDir = Join-Path $rootDir 'OntoGit\probability'
     GatewayDir = Join-Path $rootDir 'OntoGit\gateway'
-    WebRuntimeDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\.qagent-web-runtime'
     LogDir = Join-Path $rootDir '.run-logs'
     BackendLogFile = Join-Path $rootDir '.run-logs\kimi-backend.log'
     FrontendLogFile = Join-Path $rootDir '.run-logs\kimi-frontend.log'
@@ -122,14 +123,14 @@ function Get-Config {
     BackendPort = $backendPort
     FrontendPort = $frontendPort
     XiaoGuGitPort = 8001
-    ProbabilityPort = 5000
+    ProbabilityPort = 5001
     GatewayPort = 8080
+    OntoGitGatewayUrl = if ([string]::IsNullOrWhiteSpace($ONTOGIT_GATEWAY_URL)) { 'http://81.70.12.214:8080' } else { $ONTOGIT_GATEWAY_URL }
     PythonBin = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
     WikiMgRoot = $wikiMgRoot
     KnowledgeDataRoot = $knowledgeDataRoot
     SharedStorageRoot = $sharedStorageRoot
     WikiMgProfile = if ([string]::IsNullOrWhiteSpace($WIKIMG_PROFILE)) { 'kimi' } else { $WIKIMG_PROFILE }
-    KnowledgeBaseProvider = if ([string]::IsNullOrWhiteSpace($KNOWLEDGE_BASE_PROVIDER)) { 'wikimg' } else { $KNOWLEDGE_BASE_PROVIDER }
     WikiMgCliPath = Join-Path $wikiMgRoot 'WIKI_MG\wikimg'
     GatewayServiceAPIKey = if ([string]::IsNullOrWhiteSpace($GATEWAY_SERVICE_API_KEY)) { "xgk_79689a3af4225035d2de7551ff1b2b69070636b2fbb12205" } else { $GATEWAY_SERVICE_API_KEY }
     AuthSecret = if ([string]::IsNullOrWhiteSpace($XG_AUTH_SECRET)) { 'xiaogugit-auth-secret' } else { $XG_AUTH_SECRET }
@@ -145,9 +146,9 @@ function Get-Config {
     } else {
       $GATEWAY_XG_AUTH_USERNAME
     }
-    DMXAPIKey = if ([string]::IsNullOrWhiteSpace($DMXAPI_API_KEY)) { '' } else { $DMXAPI_API_KEY }
-    DMXAPIBaseUrl = if ([string]::IsNullOrWhiteSpace($DMXAPI_BASE_URL)) { 'https://www.dmxapi.cn/v1' } else { $DMXAPI_BASE_URL }
-    DMXAPIModel = if ([string]::IsNullOrWhiteSpace($DMXAPI_MODEL)) { 'gpt-5.4' } else { $DMXAPI_MODEL }
+    DMXAPIKey = if ([string]::IsNullOrWhiteSpace($DMXAPI_API_KEY)) { $OPENROUTER_API_KEY } else { $DMXAPI_API_KEY }
+    DMXAPIBaseUrl = if ([string]::IsNullOrWhiteSpace($DMXAPI_BASE_URL)) { if ([string]::IsNullOrWhiteSpace($OPENROUTER_BASE_URL)) { 'https://openrouter.ai/api/v1' } else { $OPENROUTER_BASE_URL } } else { $DMXAPI_BASE_URL }
+    DMXAPIModel = if ([string]::IsNullOrWhiteSpace($DMXAPI_MODEL)) { if ([string]::IsNullOrWhiteSpace($OPENROUTER_MODEL)) { 'openai/gpt-4o-mini' } else { $OPENROUTER_MODEL } } else { $DMXAPI_MODEL }
   }
 }
 
@@ -191,7 +192,7 @@ function Assert-Prerequisites {
   Assert-Command -CommandName 'npm'
   Assert-Command -CommandName $Config.PythonBin
 
-  foreach ($dir in @($Config.AppDir, $Config.QAgentDir, $Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)) {
+  foreach ($dir in @($Config.AppDir, $Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)) {
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
       throw "Required directory not found: $dir"
     }
@@ -200,7 +201,6 @@ function Assert-Prerequisites {
     throw "WiKiMG CLI not found: $($Config.WikiMgCliPath)"
   }
 
-  Install-NpmDependenciesIfNeeded -Directory $Config.QAgentDir -Name 'QAgent'
   Install-NpmDependenciesIfNeeded -Directory $Config.AppDir -Name 'Kimi app'
 }
 
@@ -470,7 +470,7 @@ function Get-ChildArgs {
     '-KnowledgeDataRoot', $Config.KnowledgeDataRoot,
     '-WIKIMG_PROFILE', $Config.WikiMgProfile,
     '-SharedStorageRoot', $Config.SharedStorageRoot,
-    '-KNOWLEDGE_BASE_PROVIDER', $Config.KnowledgeBaseProvider,
+    '-ONTOGIT_GATEWAY_URL', $Config.OntoGitGatewayUrl,
     '-GATEWAY_SERVICE_API_KEY', $Config.GatewayServiceAPIKey,
     '-GATEWAY_XG_AUTH_SECRET', $Config.GatewayXGAuthSecret,
     '-GATEWAY_XG_AUTH_USERNAME', $Config.GatewayXGAuthUsername,
@@ -812,23 +812,6 @@ function Start-OntoGitServices {
   Start-OntoGitGateway -Config $Config
 }
 
-function Stop-QAgentGateway {
-  param([Parameter(Mandatory)][psobject]$Config)
-
-  if (-not (Test-Path -LiteralPath $Config.QAgentDir -PathType Container)) {
-    return
-  }
-
-  Write-Host 'Stopping old QAgent web runtime gateway...'
-  Push-Location $Config.QAgentDir
-  try {
-    & node '.\bin\qagent.js' --cwd $Config.WebRuntimeDir gateway stop *> $null
-  } catch {
-  } finally {
-    Pop-Location
-  }
-}
-
 function Invoke-LoggedCommand {
   param(
     [Parameter(Mandatory)][string]$LogPath,
@@ -852,12 +835,15 @@ function Invoke-BackendProcess {
 
   Push-Location $Config.AppDir
   try {
-    $env:KNOWLEDGE_BASE_PROVIDER = $Config.KnowledgeBaseProvider
     $env:WIKIMG_ROOT = $Config.WikiMgRoot
     $env:KNOWLEDGE_DATA_ROOT = $Config.KnowledgeDataRoot
     $env:WIKIMG_PROFILE = $Config.WikiMgProfile
     $env:ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
     $env:WIKIMG_ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
+    $env:ONTOGIT_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:WIKIMG_ONTOGIT_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:XG_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:GATEWAY_URL = $Config.OntoGitGatewayUrl
     $env:PYTHON_BIN = $Config.PythonBin
     $env:PORT = [string]$Config.BackendPort
     Write-LogBanner -Path $CurrentLogFile -Lines @('Starting Kimi backend', "APP_DIR: $($Config.AppDir)", "PORT: $($Config.BackendPort)")
@@ -915,7 +901,6 @@ function Start-KimiStack {
   Write-Host 'Stopping old processes...'
   Stop-PidFileProcess -PidFile $Config.BackendPidFile
   Stop-PidFileProcess -PidFile $Config.FrontendPidFile
-  Stop-QAgentGateway -Config $Config
   Stop-OntoGitService -Name 'xiaogugit' -PidFile $Config.XiaoGuGitPidFile -Port $Config.XiaoGuGitPort
   Stop-OntoGitService -Name 'probability' -PidFile $Config.ProbabilityPidFile -Port $Config.ProbabilityPort
   Stop-OntoGitService -Name 'gateway' -PidFile $Config.GatewayPidFile -Port $Config.GatewayPort

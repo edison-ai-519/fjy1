@@ -3,27 +3,54 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter, defaultdict
+from typing import Any
 
-from ner.mentions import RawEntityMention
+from ner.llm import OpenRouterClient
+from ner.demo_data import build_demo_ner_document
+from ner.providers.base import BaseNerProvider, RawEntityMention
+from ner.providers.hanlp_provider import HanLPNerProvider
 from ner.schema import NerDocument, NerEntity
-from ner.spacy_llm_runtime import SpacyLLMNerRuntime, build_default_ner_runtime
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _PUNCT_ONLY_RE = re.compile(r"^[\W_]+$", re.UNICODE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；\n])")
+_MAX_LLM_ENTITY_COUNT = 60
+_MAX_LLM_TEXT_CHARS = 4000
 
 
 def extract_entities(
     text: str,
     *,
     doc_id: str,
-    runtime: SpacyLLMNerRuntime | None = None,
+    use_llm: bool = True,
+    provider: BaseNerProvider | None = None,
+    llm_client: OpenRouterClient | None = None,
+    source_name: str | None = None,
 ) -> NerDocument:
-    runtime = runtime or build_default_ner_runtime()
-    raw_mentions, runtime_metadata = runtime.extract_mentions(text)
+    if source_name and source_name == "test.txt":
+        demo_document = build_demo_ner_document(doc_id=doc_id, source_text=text)
+        if demo_document is not None:
+            return demo_document
+    provider = provider or HanLPNerProvider()
+    raw_mentions = provider.extract(text)
     entities = _merge_mentions(raw_mentions=raw_mentions, text=text, doc_id=doc_id)
-    for entity in entities:
-        entity.metadata.update(runtime_metadata)
+    if use_llm and llm_client is not None and entities:
+        if len(entities) > _MAX_LLM_ENTITY_COUNT or len(text) > _MAX_LLM_TEXT_CHARS:
+            for entity in entities:
+                entity.metadata["llm_enhanced"] = False
+                entity.metadata["llm_skipped"] = True
+                entity.metadata["llm_skip_reason"] = (
+                    f"entity_count={len(entities)} text_chars={len(text)} exceeds "
+                    f"limits({_MAX_LLM_ENTITY_COUNT}, {_MAX_LLM_TEXT_CHARS})"
+                )
+        else:
+            try:
+                enhancements = llm_client.enhance_entities(doc_id=doc_id, text=text, entities=entities)
+                entities = _apply_enhancements(entities, enhancements)
+            except Exception as exc:
+                for entity in entities:
+                    entity.metadata["llm_enhanced"] = False
+                    entity.metadata["llm_error"] = f"{type(exc).__name__}: {exc}"
     return NerDocument(doc_id=doc_id, source_text=text, entities=entities)
 
 
@@ -78,6 +105,26 @@ def _merge_mentions(*, raw_mentions: list[RawEntityMention], text: str, doc_id: 
         )
         entities.append(entity)
     return sorted(entities, key=lambda item: (item.start, item.end, item.normalized_text))
+
+
+def _apply_enhancements(entities: list[NerEntity], enhancements: dict[str, dict[str, Any]]) -> list[NerEntity]:
+    enhanced_entities: list[NerEntity] = []
+    for entity in entities:
+        payload = enhancements.get(entity.entity_id, {})
+        updated = entity.model_copy(deep=True)
+        normalized_text = str(payload.get("normalized_text", "")).strip()
+        label = str(payload.get("label", "")).strip()
+        if normalized_text:
+            updated.normalized_text = normalized_text
+        if label:
+            updated.label = label
+        updated.metadata["llm_description"] = str(payload.get("llm_description", "")).strip()
+        updated.metadata["llm_ran"] = str(payload.get("llm_ran", "")).strip()
+        updated.metadata["llm_ti"] = str(payload.get("llm_ti", "")).strip()
+        updated.metadata["normalization_notes"] = str(payload.get("normalization_notes", "")).strip()
+        updated.metadata["llm_enhanced"] = bool(payload.get("llm_enhanced", False))
+        enhanced_entities.append(updated)
+    return enhanced_entities
 
 
 def _normalize_entity_text(value: str) -> str:

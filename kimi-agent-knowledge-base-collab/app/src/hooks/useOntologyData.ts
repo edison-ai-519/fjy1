@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { fetchKnowledgeGraph, fetchOntologies, searchEntities as searchEntitiesRequest } from '@/features/ontology/api';
+import { subscribeRepositorySync } from '@/shared/events/repositorySync';
 import type { KnowledgeGraphData, Entity, OntologyModule } from '@/types/ontology';
+import { getStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 
 export function useOntologyData() {
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraphData | null>(null);
   const [philosophicalOntology, setPhilosophicalOntology] = useState<OntologyModule | null>(null);
   const [formalOntology, setFormalOntology] = useState<OntologyModule | null>(null);
   const [scientificOntology, setScientificOntology] = useState<OntologyModule | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(getStoredSelectedProjectId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +21,7 @@ export function useOntologyData() {
       setError(null);
 
       const [kgData, ontologies] = await Promise.all([
-        fetchKnowledgeGraph({ refresh: options.forceRefresh }),
+        fetchKnowledgeGraph({ refresh: options.forceRefresh, projectId: selectedProjectId }),
         fetchOntologies(),
       ]);
 
@@ -37,7 +40,7 @@ export function useOntologyData() {
 
   useEffect(() => {
     void refreshKnowledgeGraph();
-  }, []);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -45,7 +48,17 @@ export function useOntologyData() {
     }, 10000);
 
     return () => window.clearInterval(interval);
-  }, []);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    return subscribeRepositorySync(() => {
+      void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
+    });
+  }, [selectedProjectId]);
+
+  useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
+    setSelectedProjectId(projectId);
+  }), []);
 
   const getEntityById = (id: string): Entity | undefined => {
     return knowledgeGraph?.entity_index[id];
@@ -53,7 +66,7 @@ export function useOntologyData() {
 
   const searchEntities = async (query: string): Promise<Entity[]> => {
     if (!query.trim()) return [];
-    return searchEntitiesRequest(query);
+    return searchEntitiesRequest(query, selectedProjectId);
   };
 
   const getEntitiesByDomain = (domain: string): Entity[] => {
@@ -90,5 +103,6 @@ export function useOntologyData() {
     getEntitiesByLevel,
     getRelatedEntities,
     refreshKnowledgeGraph,
+    selectedProjectId,
   };
 }

@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-WORKSPACE_ROOT = BASE_DIR.parents[1]
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -77,8 +76,18 @@ class Settings:
     auth_cookie_name: str
     auth_username: str
     auth_password: str
+    service_api_key: str
     inference_url: str
     inference_timeout: int
+    inference_retry_attempts: int
+    inference_retry_backoff_seconds: float
+    redis_enabled: bool
+    redis_host: str
+    redis_port: int
+    redis_password: str
+    redis_db: int
+    redis_key_prefix: str
+    redis_socket_timeout: float
 
     @property
     def docs_url(self) -> str | None:
@@ -111,19 +120,17 @@ def get_settings() -> Settings:
     if env == "production":
         default_host = "0.0.0.0"
         default_port = 8000
-        default_storage_root = str(WORKSPACE_ROOT / "knowledge-data" / "store")
+        default_storage_root = str(BASE_DIR / "storage" / "prod")
         default_docs_enabled = False
         default_reload = False
     else:
         default_host = "127.0.0.1"
         default_port = 8000
-        default_storage_root = str(WORKSPACE_ROOT / "knowledge-data" / "store")
+        default_storage_root = str(BASE_DIR / "storage" / "dev")
         default_docs_enabled = True
         default_reload = True
 
-    knowledge_data_root = values.get("KNOWLEDGE_DATA_ROOT", "").strip()
-    derived_storage_root = str((Path(knowledge_data_root) / "store").resolve()) if knowledge_data_root else default_storage_root
-    storage_root = values.get("XG_STORAGE_ROOT", derived_storage_root)
+    storage_root = values.get("XG_STORAGE_ROOT", default_storage_root)
     storage_path = Path(storage_root)
     if not storage_path.is_absolute():
         storage_path = (BASE_DIR / storage_path).resolve()
@@ -139,6 +146,21 @@ def get_settings() -> Settings:
         auth_cookie_name=values.get("XG_AUTH_COOKIE_NAME", "xg_session"),
         auth_username=values.get("XG_AUTH_USERNAME", "mogong"),
         auth_password=values.get("XG_AUTH_PASSWORD", "123456"),
+        service_api_key=(
+            values.get("XG_SERVICE_API_KEY")
+            or values.get("XG_API_KEY")
+            or values.get("GATEWAY_SERVICE_API_KEY")
+            or ""
+        ).strip(),
         inference_url=values.get("XG_INFERENCE_URL", "http://127.0.0.1:5000/api/llm/probability-reason").strip(),
         inference_timeout=_read_int(values, "XG_INFERENCE_TIMEOUT", 10),
+        inference_retry_attempts=_read_int(values, "XG_INFERENCE_RETRY_ATTEMPTS", 3),
+        inference_retry_backoff_seconds=float(values.get("XG_INFERENCE_RETRY_BACKOFF_SECONDS", "0.5")),
+        redis_enabled=_read_bool(values, "XG_REDIS_ENABLED", False),
+        redis_host=values.get("XG_REDIS_HOST", "127.0.0.1").strip(),
+        redis_port=_read_int(values, "XG_REDIS_PORT", 6379),
+        redis_password=values.get("XG_REDIS_PASSWORD", "").strip(),
+        redis_db=_read_int(values, "XG_REDIS_DB", 0),
+        redis_key_prefix=values.get("XG_REDIS_KEY_PREFIX", "xg").strip() or "xg",
+        redis_socket_timeout=float(values.get("XG_REDIS_SOCKET_TIMEOUT", "1.5")),
     )

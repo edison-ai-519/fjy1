@@ -1,5 +1,5 @@
 const API_BASE_URL =
-  window.API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
+  window.API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:5001`;
 const APP_MODE = window.APP_MODE || "probability";
 const API_URL =
   APP_MODE === "probability-reason"

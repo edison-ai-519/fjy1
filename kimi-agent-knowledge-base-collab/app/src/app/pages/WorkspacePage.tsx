@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { GitBranch, Activity, LayoutDashboard } from 'lucide-react';
 
 import { WorkspaceDashboard } from '@/features/workspace/WorkspaceDashboard';
-import { SystemHubPage } from '@/app/pages/SystemHubPage';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+
+const SystemHubPage = lazy(() => import('@/app/pages/SystemHubPage').then((module) => ({ default: module.SystemHubPage })));
 
 export function WorkspacePage() {
   const [viewMode, setViewMode] = useState<'business' | 'tech-hub'>('business');
@@ -71,13 +72,20 @@ export function WorkspacePage() {
               <WorkspaceDashboard />
             </div>
           ) : (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
-              <SystemHubPage />
-            </div>
+            <Suspense
+              fallback={
+                <div className="min-h-[320px] flex items-center justify-center rounded-3xl border border-border/40 bg-card/60">
+                  <div className="text-sm text-muted-foreground">正在加载技术中台...</div>
+                </div>
+              }
+            >
+              <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <SystemHubPage />
+              </div>
+            </Suspense>
           )}
         </div>
       </div>
     </div>
   );
 }
-

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import {
   BookOpen,
   Blocks,
@@ -14,6 +14,7 @@ import {
   Atom,
   Link2,
   TreePine,
+  FileUp,
 } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
@@ -29,13 +30,26 @@ import { useOntologyAssistantState } from '@/hooks/useOntologyAssistantState';
 import { OntologyProvider } from '@/features/ontology/context';
 import { LAYER_FILTERS } from '@/features/ontology/layerFilters';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
-import { ExplorerPage } from '@/app/pages/ExplorerPage';
-import { AssistantPage } from '@/app/pages/AssistantPage';
-import { LabPage } from '@/app/pages/LabPage';
-import { WorkspacePage } from '@/app/pages/WorkspacePage';
 import { EnterGateIntro } from '@/components/EnterGateIntro';
 import { SearchPanel } from '@/components/SearchPanel';
 import type { Entity } from '@/types/ontology';
+
+const AssistantPage = lazy(() => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage })));
+const ExplorerPage = lazy(() => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage })));
+const FileWorkflowPage = lazy(() => import('@/app/pages/FileWorkflowPage').then((module) => ({ default: module.FileWorkflowPage })));
+const LabPage = lazy(() => import('@/app/pages/LabPage').then((module) => ({ default: module.LabPage })));
+const WorkspacePage = lazy(() => import('@/app/pages/WorkspacePage').then((module) => ({ default: module.WorkspacePage })));
+
+function PageLoader({ label }: { label: string }) {
+  return (
+    <div className="h-full w-full flex items-center justify-center bg-background">
+      <div className="text-center space-y-3">
+        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <p className="text-sm text-muted-foreground">{label}</p>
+      </div>
+    </div>
+  );
+}
 
 const GlobalSidebar = ({
   domainCount,
@@ -337,6 +351,10 @@ function AppShellContent() {
                   <GitBranch className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">小故Git</span>
                 </TabsTrigger>
+                <TabsTrigger value="file-workflow" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                  <FileUp className="mr-3 h-5 w-5 text-primary" />
+                  <span className="font-black text-sm uppercase tracking-tight">文件工作流</span>
+                </TabsTrigger>
               </TabsList>
 
               <div className="flex flex-col gap-6 pb-2">
@@ -359,29 +377,42 @@ function AppShellContent() {
 
 
           <TabsContent value="assistant" className="mt-0 h-full min-h-0 min-w-0 flex-1 animate-in fade-in duration-300">
-            <AssistantPage
-              activeSession={assistantState.activeSession}
-              businessPrompt={assistantState.businessPrompt}
-              executionStages={assistantState.currentExecutionStages}
-              isBusy={assistantState.isBusy}
-              modelName={assistantState.modelName}
-              onAsk={assistantState.onAsk}
-              onBusinessPromptChange={assistantState.setBusinessPrompt}
-              onDraftChange={assistantState.onDraftChange}
-              onModelNameChange={assistantState.setModelName}
-              onUploadFile={assistantState.onUploadFile}
-              onStop={assistantState.onStop}
-              selectedEntityName={selectedEntity?.name}
-            />
+            <Suspense fallback={<PageLoader label="正在加载问答助手..." />}>
+              <AssistantPage
+                activeSession={assistantState.activeSession}
+                businessPrompt={assistantState.businessPrompt}
+                executionStages={assistantState.currentExecutionStages}
+                isBusy={assistantState.isBusy}
+                modelName={assistantState.modelName}
+                onAsk={assistantState.onAsk}
+                onBusinessPromptChange={assistantState.setBusinessPrompt}
+                onDraftChange={assistantState.onDraftChange}
+                onModelNameChange={assistantState.setModelName}
+                onUploadFile={assistantState.onUploadFile}
+                onStop={assistantState.onStop}
+                selectedEntityName={selectedEntity?.name}
+              />
+            </Suspense>
           </TabsContent>
           <TabsContent value="lab" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
-            <LabPage onSelectEntity={(e) => selectEntity(e)} />
+            <Suspense fallback={<PageLoader label="正在加载本体实验室..." />}>
+              <LabPage onSelectEntity={(e) => selectEntity(e)} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="explorer" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
-            <ExplorerPage onSelectEntity={handleSelectEntity} />
+            <Suspense fallback={<PageLoader label="正在加载本体图谱..." />}>
+              <ExplorerPage onSelectEntity={handleSelectEntity} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="workspace" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
-            <WorkspacePage />
+            <Suspense fallback={<PageLoader label="正在加载工作台..." />}>
+              <WorkspacePage />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="file-workflow" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
+            <Suspense fallback={<PageLoader label="正在加载文件工作流..." />}>
+              <FileWorkflowPage />
+            </Suspense>
           </TabsContent>
         </Tabs>
       </main>
@@ -398,5 +429,3 @@ export function AppShell() {
     </OntologyProvider>
   );
 }
-
-

@@ -18,8 +18,8 @@
 ├─ .env.example              # agent 本地环境变量示例
 ├─ git_query_tools.py       # Git 查询工具定义与 GatewayClient
 ├─ git_query_agent.py       # 自然语言查询 Agent（规划 + 调工具 + 生成答案）
-├─ run_git_query_agent.sh   # Git Query Agent CLI 入口
-├─ run_git_tool.sh          # 单工具直调 CLI 入口
+├─ run_git_query_agent.py   # Git Query Agent CLI 入口
+├─ run_git_tool.py          # 单工具直调 CLI 入口
 ├─ requirements.txt         # agent 目录依赖
 ├─ warehouse_agent.py       # 数据仓库治理 Agent
 └─ frontend_agent.html      # Agent 控制台原型页面
@@ -122,13 +122,13 @@ pip install -r requirements.txt
 6. 执行：
 
 ```bash
-bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" --project-id demo
+python run_git_query_agent.py "学校当前社区推荐版本是什么？" --project-id demo
 ```
 
 如果你的 Gateway 需要登录，再补上：
 
 ```bash
-bash run_git_query_agent.sh "student 的官方推荐版本是什么？" --project-id demo --username mogong --password 123456
+python run_git_query_agent.py "student 的官方推荐版本是什么？" --project-id demo --username mogong --password 123456
 ```
 
 ## Git Query Agent
@@ -166,10 +166,8 @@ bash run_git_query_agent.sh "student 的官方推荐版本是什么？" --projec
 入口文件：
 
 ```bash
-bash run_git_query_agent.sh "学校当前推荐版本是什么？" --project-id demo
+python run_git_query_agent.py "学校当前推荐版本是什么？" --project-id demo
 ```
-
-如果你是从上层 `qagent` 调用，建议优先把 `agent/run_git_query_agent.sh` 作为自然语言总入口来用；当你已经明确知道要调哪一个底层工具时，再回退到 `run_git_tool.sh`，这样更稳定也更容易编排。
 
 常见参数：
 
@@ -180,42 +178,21 @@ bash run_git_query_agent.sh "学校当前推荐版本是什么？" --project-id 
 - `--api-key`：Gateway 服务 API Key
 - `--bearer-token`：Gateway Bearer Token
 - `--username` / `--password`：先登录 Gateway 再查询
-- `--start-gateway`：当 `/health` 不可达时，自动尝试启动 `gateway`
-- `--gateway-dir`：`gateway` 项目目录，默认是 `../gateway`
-- `--gateway-start-mode`：启动方式，可选 `auto`、`go`、`docker`
-- `--gateway-wait-seconds`：启动后等待健康检查通过的秒数，默认 30
 - `--include-raw`：返回原始 LLM 响应
 
 示例 1：使用默认配置
 
 ```bash
-bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" --project-id demo
+python run_git_query_agent.py "学校当前社区推荐版本是什么？" --project-id demo
 ```
 
 示例 2：先登录再问答
 
 ```bash
-bash run_git_query_agent.sh "student 的官方推荐版本是什么？" \
+python run_git_query_agent.py "student 的官方推荐版本是什么？" \
   --project-id demo \
   --username mogong \
   --password 123456
-```
-
-示例 3：gateway 没启动时自动拉起再查询
-
-```bash
-bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" \
-  --project-id demo \
-  --start-gateway
-```
-
-如果你想强制用 Go 方式启动：
-
-```bash
-bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" \
-  --project-id demo \
-  --start-gateway \
-  --gateway-start-mode go
 ```
 
 输出为 JSON，核心字段通常包括：
@@ -239,13 +216,6 @@ bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" \
 }
 ```
 
-给 `qagent` 的调用建议：
-
-- 先用 `run_git_query_agent.sh` 处理自然语言问题
-- 如果返回 `unsupported`，再判断是否需要改写问题或切到 `run_git_tool.sh`
-- 如果需要精确调用某个底层能力，直接用 `run_git_tool.sh` 会更可控
-- skill 文档位于 `docs/qagent-skills/git-query-agent-cli/SKILL.md`，其中会明确说明仓库内的相对路径 `agent/` 和可用能力范围
-
 ## 单工具直调
 
 如果你不想经过“自然语言规划 -> 选工具 -> 生成答案”这一步，可以直接调用工具。
@@ -253,7 +223,7 @@ bash run_git_query_agent.sh "学校当前社区推荐版本是什么？" \
 入口文件：
 
 ```bash
-bash run_git_tool.sh get_official_recommendation --project-id demo --filename student.json
+python run_git_tool.py get_official_recommendation --project-id demo --filename student.json
 ```
 
 支持的 `tool_name`：
@@ -264,13 +234,13 @@ bash run_git_tool.sh get_official_recommendation --project-id demo --filename st
 示例：
 
 ```bash
-bash run_git_tool.sh get_community_top_version --project-id demo --filename school.json
+python run_git_tool.py get_community_top_version --project-id demo --filename school.json
 ```
 
 也可以先登录：
 
 ```bash
-bash run_git_tool.sh get_official_recommendation \
+python run_git_tool.py get_official_recommendation \
   --project-id demo \
   --filename teacher.json \
   --username mogong \
@@ -279,8 +249,8 @@ bash run_git_tool.sh get_official_recommendation \
 
 注意：
 
-- 当前 `run_git_tool.sh` 的 CLI 只暴露了 `--filename`，没有直接暴露 `--ontology-name`
-- 如果你需要基于本体名调用，可以直接在 Python 中调用 `run_tool(...)` 或使用 `run_git_query_agent.sh`
+- 当前 `run_git_tool.py` 的 CLI 只暴露了 `--filename`，没有直接暴露 `--ontology-name`
+- 如果你需要基于本体名调用，可以直接在 Python 中调用 `run_tool(...)` 或使用 `run_git_query_agent.py`
 
 ### Python 直调示例
 
@@ -446,7 +416,7 @@ README 当前将它视为原型资源，而不是已完整接线的生产页面�
 如果你准备继续完善这个目录，优先级建议如下：
 
 1. 为 `warehouse_agent.py` 增加 CLI 入口
-2. 为 `run_git_tool.sh` 增加 `--ontology-name` 参数
+2. 为 `run_git_tool.py` 增加 `--ontology-name` 参数
 3. 扩展更多 query tools，例如版本详情、差异、时间线、官方历史、社区排行
 4. 给 `frontend_agent.html` 接入真实后端接口
 5. 为工具执行链补充自动化测试
@@ -458,7 +428,7 @@ README 当前将它视为原型资源，而不是已完整接线的生产页面�
 当前已经形成可用链路：
 
 ```text
-用户自然语言问题 -> run_git_query_agent.sh -> git_query_agent.py -> git_query_tools.py -> gateway -> xiaogugit
+用户自然语言问题 -> run_git_query_agent.py -> git_query_agent.py -> git_query_tools.py -> gateway -> xiaogugit
 ```
 
 Gateway 可通过 `X-API-Key` 完成服务调用鉴权，因此 CLI 和前端都不需要每次手动登录。
@@ -494,3 +464,4 @@ Agent 本身不直接读写 Redis。它通过 Gateway 调用 `xiaogugit`，由 `
 - 官方推荐优先走 Redis 缓存。
 - 本体名称解析优先走 Redis 索引。
 - Redis 不可用时自动回退到当前文件 / Git 扫描。
+
