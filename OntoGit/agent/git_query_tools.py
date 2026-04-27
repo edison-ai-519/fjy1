@@ -19,14 +19,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return values
 
-    try:
-        # 优先尝试 utf-8，并支持带 BOM 的文件
-        content = path.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        # 兼容性备选：使用 latin-1 强制读取而非崩溃
-        content = path.read_text(encoding="latin-1")
-
-    for raw_line in content.splitlines():
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -118,12 +111,7 @@ class GatewayClient:
         request = Request(url=url, headers=headers, method=method.upper(), data=body)
         try:
             with urlopen(request, timeout=self.timeout) as response:
-                raw_data = response.read()
-                try:
-                    response_text = raw_data.decode("utf-8")
-                except UnicodeDecodeError:
-                    # 如果 utf-8 失败，尝试带 BOM 的处理，如果是 0xff 开头通常是编码问题
-                    response_text = raw_data.decode("utf-8-sig", errors="replace")
+                response_text = response.read().decode("utf-8")
         except HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"gateway returned HTTP {exc.code}: {body_text}") from exc

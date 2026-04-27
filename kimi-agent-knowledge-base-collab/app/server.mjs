@@ -8,10 +8,14 @@ import {
   buildGatewayProxyHeaders,
   shouldRetryWithServiceAuthFallback,
 } from "./server/xgProxy.mjs";
+import { validateWorkflowEntityFileData } from "./server/workflowEntityFormat.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const XG_GATEWAY_URL = process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080";
-const XG_GATEWAY_API_KEY = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "change-me";
+const XG_GATEWAY_API_KEY_RAW = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "";
+const XG_GATEWAY_API_KEY = XG_GATEWAY_API_KEY_RAW && XG_GATEWAY_API_KEY_RAW !== "change-me" ? XG_GATEWAY_API_KEY_RAW : "";
+const XG_GATEWAY_AUTH_USERNAME = process.env.ONTOGIT_AUTH_USERNAME || process.env.XG_AUTH_USERNAME || "mogong";
+const XG_GATEWAY_AUTH_PASSWORD = process.env.ONTOGIT_AUTH_PASSWORD || process.env.XG_AUTH_PASSWORD || "123456";
 const {
   knowledgeBaseService,
   assistantSessionStateService,
@@ -20,25 +24,35 @@ const {
   workflowService,
   appRoot,
 } = createAppServices();
+let gatewayAccessToken = "";
+let gatewayLoginPromise = null;
 
-function sendJson(res, status, payload) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
+function getCorsHeaders() {
+  return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-API-Key,X-File-Name,X-Conversation-Id",
+  };
+}
+
+function writeWithCors(res, status, headers, body) {
+  res.writeHead(status, {
+    ...headers,
+    ...getCorsHeaders(),
   });
-  res.end(JSON.stringify(payload));
+  res.end(body);
+}
+
+function sendJson(res, status, payload) {
+  writeWithCors(res, status, {
+    "Content-Type": "application/json; charset=utf-8",
+  }, JSON.stringify(payload));
 }
 
 function sendText(res, status, text, contentType = "text/plain; charset=utf-8") {
-  res.writeHead(status, {
+  writeWithCors(res, status, {
     "Content-Type": contentType,
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
-  });
-  res.end(text);
+  }, text);
 }
 
 function openSse(res) {
@@ -46,9 +60,7 @@ function openSse(res) {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS,DELETE",
-    "Access-Control-Allow-Headers": "Content-Type,X-File-Name,X-Conversation-Id",
+    ...getCorsHeaders(),
   });
   res.write(": connected\n\n");
 }
@@ -97,6 +109,50 @@ async function readRequestBodyBuffer(req) {
   return chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
 }
 
+async function ensureGatewayAccessToken() {
+  if (gatewayAccessToken) {
+    return gatewayAccessToken;
+  }
+  if (gatewayLoginPromise) {
+    return gatewayLoginPromise;
+  }
+  if (!XG_GATEWAY_AUTH_USERNAME || !XG_GATEWAY_AUTH_PASSWORD) {
+    throw new Error("Gateway login failed: missing credentials");
+  }
+
+  gatewayLoginPromise = (async () => {
+    const loginUrl = new URL("/auth/login", XG_GATEWAY_URL);
+    const response = await fetch(loginUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        username: XG_GATEWAY_AUTH_USERNAME,
+        password: XG_GATEWAY_AUTH_PASSWORD,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
+      throw new Error(`Gateway login failed: ${detail}`);
+    }
+
+    const token = typeof payload?.access_token === "string" ? payload.access_token.trim() : "";
+    if (!token) {
+      throw new Error("Gateway login failed: missing access_token");
+    }
+    gatewayAccessToken = token;
+    return gatewayAccessToken;
+  })();
+
+  try {
+    return await gatewayLoginPromise;
+  } finally {
+    gatewayLoginPromise = null;
+  }
+}
+
 function proxyRequest(targetUrl, method, headers, bodyBuffer) {
   return new Promise((resolve, reject) => {
     const proxyReq = httpRequest(targetUrl, { method, headers }, (proxyRes) => {
@@ -122,6 +178,48 @@ function proxyRequest(targetUrl, method, headers, bodyBuffer) {
   });
 }
 
+async function buildServiceGatewayHeaders(sourceHeaders, targetHost) {
+  const headers = buildGatewayProxyHeaders(sourceHeaders, {
+    host: targetHost,
+    apiKey: XG_GATEWAY_API_KEY,
+  });
+
+  try {
+    const accessToken = await ensureGatewayAccessToken();
+    delete headers["X-API-Key"];
+    delete headers["x-api-key"];
+    delete headers.cookie;
+    delete headers.Cookie;
+    headers.Authorization = `Bearer ${accessToken}`;
+  } catch (error) {
+    const hasAuthHeader = Boolean(
+      headers.Authorization
+      || headers.authorization
+      || headers["X-API-Key"]
+      || headers["x-api-key"]
+      || headers.Cookie
+      || headers.cookie,
+    );
+    if (!hasAuthHeader) {
+      throw error;
+    }
+  }
+
+  const hasAuthHeader = Boolean(
+    headers.Authorization
+    || headers.authorization
+    || headers["X-API-Key"]
+    || headers["x-api-key"]
+    || headers.Cookie
+    || headers.cookie,
+  );
+  if (!hasAuthHeader) {
+    throw new Error("Gateway authentication is unavailable");
+  }
+
+  return headers;
+}
+
 const server = createServer(async (req, res) => {
   try {
     if (!req.url) {
@@ -141,8 +239,29 @@ const server = createServer(async (req, res) => {
         ok: true,
         workflowAvailable: true,
         workflowMode: "linear",
-        provider: process.env.KNOWLEDGE_BASE_PROVIDER || "json",
+        provider: "ontogit",
+        knowledgeGraphSource: "ontogit-gateway",
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workflow/config") {
+      sendJson(res, 200, workflowService.getWorkflowConfig());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/config") {
+      const body = await parseBody(req);
+      const workflowModel = typeof body?.workflowModel === "string"
+        ? body.workflowModel.trim()
+        : "";
+
+      if (!workflowModel) {
+        sendJson(res, 400, { error: "workflowModel is required" });
+        return;
+      }
+
+      sendJson(res, 200, workflowService.setWorkflowModel(workflowModel));
       return;
     }
 
@@ -150,14 +269,15 @@ const server = createServer(async (req, res) => {
       if (url.searchParams.get("refresh") === "1" && typeof knowledgeBaseService.repository?.invalidateCache === "function") {
         knowledgeBaseService.repository.invalidateCache();
       }
-      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph());
+      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph(url.searchParams.get("project_id") || undefined));
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/knowledge-graph/slice") {
       const body = await parseBody(req);
       const refs = Array.isArray(body?.refs) ? body.refs.filter((ref) => typeof ref === "string") : [];
-      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraphSlice(refs));
+      const projectId = typeof body?.project_id === "string" ? body.project_id : undefined;
+      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraphSlice(refs, projectId));
       return;
     }
 
@@ -250,17 +370,53 @@ const server = createServer(async (req, res) => {
 
       try {
         const bodyBuffer = await readRequestBodyBuffer(req);
+        if (req.method === "POST" && url.pathname === "/api/xg/write-and-infer") {
+          const parsed = bodyBuffer.byteLength > 0 ? JSON.parse(bodyBuffer.toString("utf8")) : {};
+          const validation = validateWorkflowEntityFileData(parsed?.data);
+          if (!validation.ok) {
+            sendJson(res, 400, {
+              error: "Only workflow entity JSON format is accepted",
+              detail: validation.error,
+            });
+            return;
+          }
+        }
+
+        let gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
+        const usingServiceAuth = Boolean(gatewayHeaders.Authorization);
+
         let proxyRes = await proxyRequest(
           targetUrl,
           req.method,
-          buildGatewayProxyHeaders(req.headers, {
-            host: targetUrl.host,
-            apiKey: XG_GATEWAY_API_KEY,
-          }),
+          gatewayHeaders,
           bodyBuffer,
         );
 
-        if (shouldRetryWithServiceAuthFallback(req.headers, proxyRes.statusCode, XG_GATEWAY_API_KEY)) {
+        if (proxyRes.statusCode === 401 && usingServiceAuth) {
+          gatewayAccessToken = "";
+          gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
+          proxyRes = await proxyRequest(
+            targetUrl,
+            req.method,
+            gatewayHeaders,
+            bodyBuffer,
+          );
+        } else if (proxyRes.statusCode === 401) {
+          const accessToken = await ensureGatewayAccessToken();
+          proxyRes = await proxyRequest(
+            targetUrl,
+            req.method,
+            {
+              ...buildGatewayProxyHeaders(req.headers, {
+                host: targetUrl.host,
+                apiKey: XG_GATEWAY_API_KEY,
+                forceApiKey: true,
+              }),
+              Authorization: `Bearer ${accessToken}`,
+            },
+            bodyBuffer,
+          );
+        } else if (shouldRetryWithServiceAuthFallback(req.headers, proxyRes.statusCode, XG_GATEWAY_API_KEY)) {
           proxyRes = await proxyRequest(
             targetUrl,
             req.method,
@@ -273,8 +429,29 @@ const server = createServer(async (req, res) => {
           );
         }
 
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        res.end(proxyRes.body);
+        writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
+      } catch (err) {
+        sendJson(res, 502, { error: "Gateway error", detail: err.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/auth/")) {
+      const targetUrl = new URL(url.pathname + url.search, XG_GATEWAY_URL);
+
+      try {
+        const bodyBuffer = await readRequestBodyBuffer(req);
+        const proxyRes = await proxyRequest(
+          targetUrl,
+          req.method,
+          buildGatewayProxyHeaders(req.headers, {
+            host: targetUrl.host,
+            apiKey: XG_GATEWAY_API_KEY,
+          }),
+          bodyBuffer,
+        );
+
+        writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
       } catch (err) {
         sendJson(res, 502, { error: "Gateway error", detail: err.message });
       }
@@ -284,22 +461,38 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/probability/")) {
       const targetPath = url.pathname.replace("/api/probability/", "/probability/");
       const targetUrl = new URL(targetPath + url.search, XG_GATEWAY_URL);
-      
-      const proxyReq = httpRequest(targetUrl, {
-        method: req.method,
-        headers: buildGatewayProxyHeaders(req.headers, {
-          host: targetUrl.host,
-        }),
-      }, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        proxyRes.pipe(res);
-      });
 
-      proxyReq.on("error", (err) => {
+      try {
+        const bodyBuffer = await readRequestBodyBuffer(req);
+        let gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
+        const usingServiceAuth = Boolean(gatewayHeaders.Authorization);
+
+        let proxyRes = await proxyRequest(targetUrl, req.method, gatewayHeaders, bodyBuffer);
+        if (proxyRes.statusCode === 401 && usingServiceAuth) {
+          gatewayAccessToken = "";
+          gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
+          proxyRes = await proxyRequest(targetUrl, req.method, gatewayHeaders, bodyBuffer);
+        } else if (proxyRes.statusCode === 401) {
+          const accessToken = await ensureGatewayAccessToken();
+          proxyRes = await proxyRequest(
+            targetUrl,
+            req.method,
+            {
+              ...buildGatewayProxyHeaders(req.headers, {
+                host: targetUrl.host,
+                apiKey: XG_GATEWAY_API_KEY,
+                forceApiKey: true,
+              }),
+              Authorization: `Bearer ${accessToken}`,
+            },
+            bodyBuffer,
+          );
+        }
+
+        writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
+      } catch (err) {
         sendJson(res, 502, { error: "Gateway error", detail: err.message });
-      });
-
-      req.pipe(proxyReq);
+      }
       return;
     }
 
@@ -328,7 +521,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/search") {
       const query = url.searchParams.get("q") || "";
-      sendJson(res, 200, await knowledgeBaseService.searchEntities(query));
+      sendJson(res, 200, await knowledgeBaseService.searchEntities(query, url.searchParams.get("project_id") || undefined));
       return;
     }
 
@@ -371,9 +564,18 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/editor/preview") {
       const body = await parseBody(req);
+      if (body.mode && body.mode !== "json") {
+        sendJson(res, 400, { error: "仅支持标准工作流实体 JSON（mode 必须为 json）" });
+        return;
+      }
+      const validation = validateWorkflowEntityFileData(body.source);
+      if (!validation.ok) {
+        sendJson(res, 400, { error: `仅支持标准工作流实体 JSON。${validation.error}` });
+        return;
+      }
       sendJson(res, 200, await knowledgeBaseService.previewEditorDraft({
         entityId: typeof body.entityId === "string" ? body.entityId : undefined,
-        mode: typeof body.mode === "string" ? body.mode : "json",
+        mode: "json",
         layer: typeof body.layer === "string" ? body.layer : undefined,
         slug: typeof body.slug === "string" ? body.slug : "",
         source: body.source,
@@ -383,9 +585,18 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/editor/commit") {
       const body = await parseBody(req);
+      if (body.mode && body.mode !== "json") {
+        sendJson(res, 400, { error: "仅支持标准工作流实体 JSON（mode 必须为 json）" });
+        return;
+      }
+      const validation = validateWorkflowEntityFileData(body.source);
+      if (!validation.ok) {
+        sendJson(res, 400, { error: `仅支持标准工作流实体 JSON。${validation.error}` });
+        return;
+      }
       sendJson(res, 200, await knowledgeBaseService.commitEditorDraft({
         entityId: typeof body.entityId === "string" ? body.entityId : undefined,
-        mode: typeof body.mode === "string" ? body.mode : "json",
+        mode: "json",
         projectId: typeof body.projectId === "string" ? body.projectId : "demo",
         layer: typeof body.layer === "string" ? body.layer : undefined,
         slug: typeof body.slug === "string" ? body.slug : "",
@@ -543,7 +754,134 @@ const server = createServer(async (req, res) => {
         conversationId,
       });
 
+      if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
+        knowledgeBaseService.repository.invalidateCache();
+      }
+
       sendJson(res, result.ok ? 200 : 502, result);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/file/run/stream") {
+      const fileName = typeof url.searchParams.get("fileName") === "string"
+        ? url.searchParams.get("fileName").trim()
+        : "";
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      const bodyBuffer = await readRequestBodyBuffer(req);
+
+      if (!fileName) {
+        sendJson(res, 400, { error: "fileName is required" });
+        return;
+      }
+      if (bodyBuffer.byteLength === 0) {
+        sendJson(res, 400, { error: "file content is empty" });
+        return;
+      }
+      if (!projectId) {
+        sendJson(res, 400, { error: "projectId is required" });
+        return;
+      }
+
+      openSse(res);
+      writeSse(res, "status", {
+        message: "文件已接收，准备启动七阶段工作流",
+      });
+
+      try {
+        const result = await workflowService.runFileWorkflow({
+          fileName: decodeURIComponent(fileName),
+          projectId: decodeURIComponent(projectId),
+          mimeType: typeof req.headers["content-type"] === "string"
+            ? req.headers["content-type"]
+            : "application/octet-stream",
+          content: bodyBuffer,
+          conversationId,
+          handlers: {
+            onStatus(message) {
+              writeSse(res, "status", { message });
+            },
+            onStageUpdate(stageResult) {
+              writeSse(res, "workflow_stage", stageResult);
+            },
+          },
+        });
+
+        if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
+          knowledgeBaseService.repository.invalidateCache();
+        }
+
+        writeSse(res, "complete", result);
+        res.end();
+      } catch (error) {
+        writeSse(res, "error", {
+          message: error instanceof Error ? error.message : "Unknown workflow error",
+        });
+        res.end();
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/file/retry/stream") {
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      const startStage = typeof url.searchParams.get("startStage") === "string"
+        ? url.searchParams.get("startStage").trim()
+        : "";
+
+      if (!projectId) {
+        sendJson(res, 400, { error: "projectId is required" });
+        return;
+      }
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+      if (!startStage) {
+        sendJson(res, 400, { error: "startStage is required" });
+        return;
+      }
+
+      openSse(res);
+      writeSse(res, "status", {
+        message: `准备从 ${startStage} 重新执行工作流`,
+      });
+
+      try {
+        const result = await workflowService.retryFileWorkflowFromStage({
+          conversationId: decodeURIComponent(conversationId),
+          projectId: decodeURIComponent(projectId),
+          startStage: decodeURIComponent(startStage),
+          handlers: {
+            onStatus(message) {
+              writeSse(res, "status", { message });
+            },
+            onStageUpdate(stageResult) {
+              writeSse(res, "workflow_stage", stageResult);
+            },
+          },
+        });
+
+        if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
+          knowledgeBaseService.repository.invalidateCache();
+        }
+
+        writeSse(res, "complete", result);
+        res.end();
+      } catch (error) {
+        writeSse(res, "error", {
+          message: error instanceof Error ? error.message : "Unknown workflow retry error",
+        });
+        res.end();
+      }
       return;
     }
 

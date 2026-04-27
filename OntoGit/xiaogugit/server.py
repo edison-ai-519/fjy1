@@ -21,6 +21,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("xiaogugit.api")
+SAFE_ERROR_DETAIL = "请稍后重试"
 
 settings = get_settings()
 app = FastAPI(
@@ -31,10 +32,27 @@ app = FastAPI(
     redoc_url=settings.redoc_url,
     openapi_url=settings.openapi_url,
 )
-xg = XiaoGuGitManager(root_dir=settings.storage_root)
+xg = XiaoGuGitManager(
+    root_dir=settings.storage_root,
+    redis_enabled=settings.redis_enabled,
+    redis_host=settings.redis_host,
+    redis_port=settings.redis_port,
+    redis_password=settings.redis_password,
+    redis_db=settings.redis_db,
+    redis_key_prefix=settings.redis_key_prefix,
+    redis_socket_timeout=settings.redis_socket_timeout,
+)
 inference_client = DangGuInferenceClient(
     inference_url=settings.inference_url,
     timeout=settings.inference_timeout,
+    retry_attempts=settings.inference_retry_attempts,
+    retry_backoff_seconds=settings.inference_retry_backoff_seconds,
+)
+logger.info(
+    "inference client configured: url=%s timeout=%ss retries=%s",
+    settings.inference_url or "(empty — probability calls will be skipped)",
+    settings.inference_timeout,
+    settings.inference_retry_attempts,
 )
 _project_locks_guard = Lock()
 _project_locks: dict[str, Lock] = {}
@@ -71,6 +89,25 @@ def _get_project_lock(project_id: str) -> Lock:
             lock = Lock()
             _project_locks[project_id] = lock
         return lock
+
+
+def _ensure_development_demo_project() -> None:
+    if settings.env != "development":
+        return
+
+    try:
+        xg.get_project_info("demo")
+        logger.info("development demo project already exists")
+    except FileNotFoundError:
+        logger.info("development demo project missing, initializing it now")
+        xg.init_project("demo", name="demo", description="", status="开发中")
+    except Exception as exc:
+        logger.warning("failed to ensure development demo project: %s", exc)
+
+
+@app.on_event("startup")
+async def startup_init_demo_project() -> None:
+    _ensure_development_demo_project()
 
 
 class WriteReq(BaseModel):
@@ -178,7 +215,29 @@ def _extract_bearer_token(request: Request) -> str | None:
     return token or None
 
 
+def _extract_api_key(request: Request) -> str | None:
+    api_key = request.headers.get("x-api-key") or request.headers.get("apikey") or ""
+    if api_key.strip():
+        return api_key.strip()
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("apikey "):
+        return authorization[7:].strip() or None
+    return None
+
+
+def _api_key_matches(request: Request) -> bool:
+    expected_api_key = settings.service_api_key.strip()
+    request_api_key = _extract_api_key(request)
+    if not expected_api_key or not request_api_key:
+        return False
+    return hmac.compare_digest(request_api_key.encode("utf-8"), expected_api_key.encode("utf-8"))
+
+
 def _get_authenticated_user(request: Request) -> str | None:
+    if _api_key_matches(request):
+        return settings.auth_username
+
     token = _extract_bearer_token(request) or request.cookies.get(settings.auth_cookie_name)
     payload = _decode_access_token(token)
     username = payload.get("username") if payload else None
@@ -211,6 +270,9 @@ async def require_login(request: Request, call_next):
         )
         return response
     if _get_authenticated_user(request):
+        if request.method == "POST" and request.url.path == "/write-and-infer":
+            client_host = request.client.host if request.client else "-"
+            logger.info("incoming POST /write-and-infer (client=%s)", client_host)
         start = time.perf_counter()
         response = await call_next(request)
         duration_ms = (time.perf_counter() - start) * 1000
@@ -228,11 +290,12 @@ async def require_login(request: Request, call_next):
 
 
 def _handle_error(exc: Exception):
+    logger.exception("request failed: %s", exc)
     if isinstance(exc, ValueError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=SAFE_ERROR_DETAIL) from exc
     if isinstance(exc, FileNotFoundError):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=SAFE_ERROR_DETAIL) from exc
+    raise HTTPException(status_code=500, detail=SAFE_ERROR_DETAIL) from exc
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -343,14 +406,6 @@ async def project_detail(project_id: str):
         _handle_error(exc)
 
 
-@app.delete("/projects/{project_id}")
-async def delete_project_route(project_id: str):
-    try:
-        return xg.delete_project(project_id)
-    except Exception as exc:
-        _handle_error(exc)
-
-
 @app.post("/projects/status")
 async def update_project_status(req: ProjectStatusReq):
     try:
@@ -363,6 +418,14 @@ async def update_project_status(req: ProjectStatusReq):
 async def list_project_files(project_id: str):
     try:
         return {"files": xg.list_files(project_id)}
+    except Exception as exc:
+        _handle_error(exc)
+
+
+@app.get("/ontology-resolve")
+async def ontology_resolve(project_id: str, query: str):
+    try:
+        return xg.resolve_ontology_query(project_id, query)
     except Exception as exc:
         _handle_error(exc)
 
@@ -462,7 +525,7 @@ async def delete(req: DeleteReq):
         _handle_error(exc)
 
 
-@app.get("/read/{project_id}/{filename:path}")
+@app.get("/read/{project_id}/{filename}")
 async def read(project_id: str, filename: str, commit_id: Optional[str] = Query(None)):
     try:
         data = xg.read_version(project_id, filename, commit_id)
@@ -533,7 +596,44 @@ async def version_rollback(project_id: str, version_id: str, filename: Optional[
 @app.post("/write-and-infer")
 async def write_and_infer(req: WriteInferReq):
     try:
+        logger.info(
+            "write-and-infer: accepted project_id=%s filename=%s basevision=%s",
+            req.project_id,
+            req.filename,
+            req.basevision,
+        )
         with _get_project_lock(req.project_id):
+            def infer_probability_with_fallback():
+                result = inference_client.infer_change(
+                    {
+                        "project_id": req.project_id,
+                        "filename": req.filename,
+                        "data": req.data,
+                    }
+                )
+                if not str(result.get("probability", "")).strip():
+                    logger.info(
+                        "[DangGuInference] empty probability from contextual payload, retrying legacy payload"
+                    )
+                    result = inference_client.infer_change(req.data)
+                if not str(result.get("probability", "")).strip():
+                    raise RuntimeError("inference service returned empty probability")
+                return result
+
+            def sync_amended_commit_id(write_result):
+                version_id = write_result.get("version_id")
+                if version_id is None:
+                    return write_result
+                try:
+                    tree = xg.get_file_version_tree(req.project_id, req.filename)
+                    for version in tree.get("versions", []):
+                        if str(version.get("version_id")) == str(version_id):
+                            write_result["commit_id"] = version.get("id") or write_result.get("commit_id")
+                            break
+                except Exception as exc:
+                    logger.warning("failed to sync amended commit id: %s", exc)
+                return write_result
+
             write_result = xg.write_version(
                 req.project_id,
                 req.filename,
@@ -543,7 +643,91 @@ async def write_and_infer(req: WriteInferReq):
                 req.committer_name,
                 req.basevision,
             )
+            logger.info(
+                "write-and-infer: write_result project_id=%s filename=%s status=%s version_id=%s commit_id=%s",
+                req.project_id,
+                req.filename,
+                write_result.get("status"),
+                write_result.get("version_id"),
+                write_result.get("commit_id"),
+            )
             if write_result.get("status") != "success":
+                current_data = xg.read_version(req.project_id, req.filename)
+                if isinstance(current_data, dict) and not str(current_data.get("probability", "")).strip():
+                    try:
+                        logger.info(
+                            "write-and-infer: current data missing probability, requesting inference project_id=%s filename=%s write_status=%s",
+                            req.project_id,
+                            req.filename,
+                            write_result.get("status"),
+                        )
+                        inference_result = infer_probability_with_fallback()
+                        logger.info(
+                            "[DangGuInference] %s",
+                            json.dumps(
+                                {
+                                    "project_id": req.project_id,
+                                    "filename": req.filename,
+                                    "probability": inference_result.get("probability", ""),
+                                    "reason": inference_result.get("reason", ""),
+                                    "status": inference_result.get("status", ""),
+                                    "detail": inference_result.get("detail", ""),
+                                    "write_status": write_result.get("status", "no_change"),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                        updated_data = xg.update_current_version_fields(
+                            req.project_id,
+                            req.filename,
+                            {
+                                "probability": inference_result.get("probability", ""),
+                            },
+                        )
+                        sync_amended_commit_id(write_result)
+                        logger.info(
+                            "write-and-infer: probability backfilled after no-change write project_id=%s filename=%s version_id=%s commit_id=%s probability=%s",
+                            req.project_id,
+                            req.filename,
+                            write_result.get("version_id"),
+                            write_result.get("commit_id"),
+                            inference_result.get("probability", ""),
+                        )
+                        return {
+                            "status": "success",
+                            "write_result": write_result,
+                            "inference_result": inference_result,
+                            "probability_update_result": {
+                                "status": "success",
+                                "filename": req.filename,
+                                "version_id": write_result.get("version_id"),
+                                "commit_id": write_result.get("commit_id"),
+                                "updated_fields": ["probability"],
+                                "detail": "content unchanged; probability field was missing and has been updated",
+                            },
+                            "data": updated_data,
+                        }
+                    except Exception as exc:
+                        logger.warning(
+                            "write-and-infer probability update failed after no-change write: project_id=%s filename=%s error=%s",
+                            req.project_id,
+                            req.filename,
+                            exc,
+                        )
+                        return {
+                            "status": "partial_success",
+                            "write_result": write_result,
+                            "inference_result": locals().get("inference_result"),
+                            "probability_update_result": {
+                                "status": "failed",
+                                "filename": req.filename,
+                                "version_id": write_result.get("version_id"),
+                                "commit_id": write_result.get("commit_id"),
+                                "updated_fields": ["probability"],
+                                "detail": SAFE_ERROR_DETAIL,
+                            },
+                            "data": None,
+                        }
                 return {
                     "status": write_result.get("status", "no_change"),
                     "write_result": write_result,
@@ -552,7 +736,13 @@ async def write_and_infer(req: WriteInferReq):
                 }
 
             try:
-                inference_result = inference_client.infer_change(req.data)
+                logger.info(
+                    "write-and-infer: requesting inference for new version project_id=%s filename=%s version_id=%s",
+                    req.project_id,
+                    req.filename,
+                    write_result.get("version_id"),
+                )
+                inference_result = infer_probability_with_fallback()
                 logger.info(
                     "[DangGuInference] %s",
                     json.dumps(
@@ -568,14 +758,29 @@ async def write_and_infer(req: WriteInferReq):
                     ),
                 )
 
-                updated_data = xg.update_working_copy_fields(
+                updated_data = xg.update_current_version_fields(
                     req.project_id,
                     req.filename,
                     {
                         "probability": inference_result.get("probability", ""),
                     },
                 )
+                sync_amended_commit_id(write_result)
+                logger.info(
+                    "write-and-infer: probability backfilled project_id=%s filename=%s version_id=%s commit_id=%s probability=%s",
+                    req.project_id,
+                    req.filename,
+                    write_result.get("version_id"),
+                    write_result.get("commit_id"),
+                    inference_result.get("probability", ""),
+                )
             except Exception as exc:
+                logger.warning(
+                    "write-and-infer probability update failed: project_id=%s filename=%s error=%s",
+                    req.project_id,
+                    req.filename,
+                    exc,
+                )
                 return {
                     "status": "partial_success",
                     "write_result": write_result,
@@ -586,7 +791,7 @@ async def write_and_infer(req: WriteInferReq):
                         "version_id": write_result.get("version_id"),
                         "commit_id": write_result.get("commit_id"),
                         "updated_fields": ["probability"],
-                        "detail": str(exc),
+                        "detail": SAFE_ERROR_DETAIL,
                     },
                     "data": None,
                 }

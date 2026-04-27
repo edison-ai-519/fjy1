@@ -1,31 +1,29 @@
 # React + TypeScript + Vite
 
-## 快速启动 WiKiMG 后端
+## 快速启动 OntoGit 后端
 
 在 `app` 目录下执行：
 
 ```bash
-./start-wikimg-backend.sh
-```
-
-或者：
-
-```bash
-npm run server:wikimg
+npm run server
 ```
 
 可选环境变量：
 
 ```bash
-PORT=8788 WIKIMG_ROOT=/Users/qiuboyu/CodeLearning/FJY/Ontology_Factory ./start-wikimg-backend.sh
+PORT=8788 npm run server
 ```
 
 默认值：
 
-- `KNOWLEDGE_BASE_PROVIDER=wikimg`
-- `WIKIMG_PROFILE=kimi`
-- `WIKIMG_ROOT=../../Ontology_Factory`（相对 `app` 自动解析）
+- `KNOWLEDGE_IO_ROOT=./knowledge-data`
+- `ONTOGIT_STORAGE_ROOT=./knowledge-data/store`
 - `PORT=8787`
+
+## 统一数据格式说明
+
+- 唯一允许的本体实体 JSON 格式文档：`/Users/qiuboyu/CodeLearning/new_fjy/fjy/kimi-agent-knowledge-base-collab/app/docs/WORKFLOW_ENTITY_JSON_FORMAT.md`
+- 当前系统仅支持该 JSON 格式，其他历史格式与兼容路径已拦截/废弃。
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

@@ -1,17 +1,23 @@
 services:
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: gateway/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
     container_name: data-infra-gateway
     restart: unless-stopped
+    env_file:
+      - .env
+      - .env.${GATEWAY_ENV:-development}
     environment:
       GATEWAY_ADDR: :8080
       GATEWAY_XIAOGUGIT_URL: ${GATEWAY_XIAOGUGIT_URL:-http://host.docker.internal:8000}
-      GATEWAY_PROBABILITY_URL: ${GATEWAY_PROBABILITY_URL:-http://host.docker.internal:5001}
-      GATEWAY_SERVICE_API_KEY: ${GATEWAY_SERVICE_API_KEY:-change-me}
-      GATEWAY_XG_AUTH_SECRET: ${GATEWAY_XG_AUTH_SECRET:-}
-      GATEWAY_XG_AUTH_USERNAME: ${GATEWAY_XG_AUTH_USERNAME:-mogong}
+      GATEWAY_PROBABILITY_URL: ${GATEWAY_PROBABILITY_URL:-http://host.docker.internal:5000}
+      GATEWAY_AGENT_DIR: /app/agent
+      GATEWAY_MYSQL_DSN: ${GATEWAY_MYSQL_DSN:-root:123456@tcp(host.docker.internal:3306)/app?parseTime=true&charset=utf8mb4&loc=Local}
+      TZ: Asia/Shanghai
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     extra_hosts:

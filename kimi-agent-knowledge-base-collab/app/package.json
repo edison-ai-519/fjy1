@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "server": "node ./server.mjs",
-    "server:wikimg": "bash ./start-wikimg-backend.sh",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "tsx --test ./tests/**/*.test.* ./src/**/*.test.*",
@@ -86,4 +85,3 @@
     "vite": "^7.2.4"
   }
 }
-

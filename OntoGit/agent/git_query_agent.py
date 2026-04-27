@@ -73,17 +73,11 @@ def build_client() -> OpenAI:
     if not api_key:
         raise RuntimeError("DMXAPI_API_KEY is not configured. Please set it in agent/.env.")
 
-    return OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=45.0,
-        max_retries=2,
-    )
+    return OpenAI(api_key=api_key, base_url=base_url)
 
 
 def get_default_model() -> str:
-    val = _load_env_values().get("DMXAPI_MODEL", "gpt-5.4")
-    return str(val or "gpt-5.4").strip() or "gpt-5.4"
+    return _load_env_values().get("DMXAPI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
 
 
 def build_input(message: str, system_prompt: str | None) -> str | list[dict[str, Any]]:
@@ -110,18 +104,12 @@ def extract_text_from_chat_completion(response: Any) -> str:
 
 
 def call_llm(client: OpenAI, model: str, message: str, system_prompt: str | None) -> tuple[str, dict[str, Any]]:
-    # 强制在 Base URL 包含 openrouter 时使用标准 chat.completions
-    is_openrouter = "openrouter.ai" in str(client.base_url).lower()
-
-    if hasattr(client, "responses") and not is_openrouter:
-        try:
-            response = client.responses.create(
-                model=model,
-                input=build_input(message, system_prompt),
-            )
-            return getattr(response, "output_text", "") or "", response.model_dump()
-        except Exception as e:
-            logger.warning("Failed calling custom .responses API, falling back to chat.completions: %s", e)
+    if hasattr(client, "responses"):
+        response = client.responses.create(
+            model=model,
+            input=build_input(message, system_prompt),
+        )
+        return getattr(response, "output_text", "") or "", response.model_dump()
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
@@ -158,37 +146,6 @@ def get_planner_prompt() -> str:
         "可用 tools 如下："
         + json.dumps(tools, ensure_ascii=False)
     )
-
-
-def _fallback_format_answer(tool_result: dict[str, Any]) -> str:
-    """如果 LLM 返回为空或出错，根据结构化结果生成一个基础的中文汇总。"""
-    tool_name = tool_result.get("tool_name")
-    project_id = tool_result.get("project_id", "demo")
-    filename = tool_result.get("filename", "unknown")
-
-    if tool_name == "find_governance_gaps":
-        summary = tool_result.get("summary", {})
-        findings = tool_result.get("findings", [])
-        text = f"项目 {project_id} 治理扫描完成。分析了 {summary.get('analyzed_file_count', 0)} 个本体文件，共发现 {summary.get('gap_count', 0)} 个治理缺口。\n"
-        if findings:
-            text += "主要问题包括：\n"
-            for f in findings[:5]:
-                text += f"- [{f.get('severity', 'low').upper()}] {f.get('filename')}: {f.get('title')}。建议：{f.get('suggestion')}\n"
-        return text
-
-    if tool_name in ["get_official_recommendation", "get_community_top_version"]:
-        v_id = tool_result.get("recommended_version_id")
-        msg = tool_result.get("message") or "无描述"
-        type_str = "官方推荐" if tool_name == "get_official_recommendation" else "社区最高星标"
-        if v_id:
-            return f"查询到 {filename} 的{type_str}版本为 V{v_id}（{msg}）。"
-        return f"查询成功，但目前该本体在项目 {project_id} 中尚无{type_str}版本记录。"
-
-    if tool_name == "get_file_timeline":
-        count = tool_result.get("version_count", 0)
-        return f"本体 {filename} 共有 {count} 个历史版本。最新版本号：V{tool_result.get('latest_version_id')}。"
-
-    return f"工具 {tool_name} 执行成功，已获取到结构化数据。请参考控制台输出的 tool_result 详情。"
 
 
 def get_answer_prompt() -> str:
@@ -244,7 +201,7 @@ class GitQueryAgent:
         model: str | None = None,
         gateway_client: GatewayClient | None = None,
     ) -> None:
-        self.model = str(model or get_default_model()).strip() or get_default_model()
+        self.model = (model or get_default_model()).strip() or get_default_model()
         self.gateway_client = gateway_client or GatewayClient()
 
     def plan(
@@ -328,18 +285,13 @@ class GitQueryAgent:
             system_prompt=get_answer_prompt(),
         )
 
-        final_answer = str(answer_text or "").strip()
-        if not final_answer:
-            logger.warning("LLM returned empty answer, falling back to structured summary.")
-            final_answer = _fallback_format_answer(tool_result)
-
         result = {
             "model": self.model,
             "status": "success",
             "question": question,
             "plan": plan,
             "tool_result": tool_result,
-            "answer": final_answer,
+            "answer": answer_text.strip(),
             "planner_text": plan_result["text"],
         }
         if include_raw:

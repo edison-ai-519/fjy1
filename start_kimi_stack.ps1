@@ -10,7 +10,7 @@ param(
   [string]$KnowledgeDataRoot = $env:KNOWLEDGE_DATA_ROOT,
   [string]$WIKIMG_PROFILE = $env:WIKIMG_PROFILE,
   [string]$SharedStorageRoot = $env:ONTOGIT_STORAGE_ROOT,
-  [string]$KNOWLEDGE_BASE_PROVIDER = $env:KNOWLEDGE_BASE_PROVIDER,
+  [string]$ONTOGIT_GATEWAY_URL = $env:ONTOGIT_GATEWAY_URL,
   [string]$GATEWAY_SERVICE_API_KEY = $env:GATEWAY_SERVICE_API_KEY,
   [string]$GATEWAY_XG_AUTH_SECRET = $env:GATEWAY_XG_AUTH_SECRET,
   [string]$GATEWAY_XG_AUTH_USERNAME = $env:GATEWAY_XG_AUTH_USERNAME,
@@ -125,12 +125,12 @@ function Get-Config {
     XiaoGuGitPort = 8001
     ProbabilityPort = 5001
     GatewayPort = 8080
+    OntoGitGatewayUrl = if ([string]::IsNullOrWhiteSpace($ONTOGIT_GATEWAY_URL)) { 'http://81.70.12.214:8080' } else { $ONTOGIT_GATEWAY_URL }
     PythonBin = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
     WikiMgRoot = $wikiMgRoot
     KnowledgeDataRoot = $knowledgeDataRoot
     SharedStorageRoot = $sharedStorageRoot
     WikiMgProfile = if ([string]::IsNullOrWhiteSpace($WIKIMG_PROFILE)) { 'kimi' } else { $WIKIMG_PROFILE }
-    KnowledgeBaseProvider = if ([string]::IsNullOrWhiteSpace($KNOWLEDGE_BASE_PROVIDER)) { 'wikimg' } else { $KNOWLEDGE_BASE_PROVIDER }
     WikiMgCliPath = Join-Path $wikiMgRoot 'WIKI_MG\wikimg'
     GatewayServiceAPIKey = if ([string]::IsNullOrWhiteSpace($GATEWAY_SERVICE_API_KEY)) { "xgk_79689a3af4225035d2de7551ff1b2b69070636b2fbb12205" } else { $GATEWAY_SERVICE_API_KEY }
     AuthSecret = if ([string]::IsNullOrWhiteSpace($XG_AUTH_SECRET)) { 'xiaogugit-auth-secret' } else { $XG_AUTH_SECRET }
@@ -470,7 +470,7 @@ function Get-ChildArgs {
     '-KnowledgeDataRoot', $Config.KnowledgeDataRoot,
     '-WIKIMG_PROFILE', $Config.WikiMgProfile,
     '-SharedStorageRoot', $Config.SharedStorageRoot,
-    '-KNOWLEDGE_BASE_PROVIDER', $Config.KnowledgeBaseProvider,
+    '-ONTOGIT_GATEWAY_URL', $Config.OntoGitGatewayUrl,
     '-GATEWAY_SERVICE_API_KEY', $Config.GatewayServiceAPIKey,
     '-GATEWAY_XG_AUTH_SECRET', $Config.GatewayXGAuthSecret,
     '-GATEWAY_XG_AUTH_USERNAME', $Config.GatewayXGAuthUsername,
@@ -835,12 +835,15 @@ function Invoke-BackendProcess {
 
   Push-Location $Config.AppDir
   try {
-    $env:KNOWLEDGE_BASE_PROVIDER = $Config.KnowledgeBaseProvider
     $env:WIKIMG_ROOT = $Config.WikiMgRoot
     $env:KNOWLEDGE_DATA_ROOT = $Config.KnowledgeDataRoot
     $env:WIKIMG_PROFILE = $Config.WikiMgProfile
     $env:ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
     $env:WIKIMG_ONTOGIT_STORAGE_ROOT = $Config.SharedStorageRoot
+    $env:ONTOGIT_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:WIKIMG_ONTOGIT_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:XG_GATEWAY_URL = $Config.OntoGitGatewayUrl
+    $env:GATEWAY_URL = $Config.OntoGitGatewayUrl
     $env:PYTHON_BIN = $Config.PythonBin
     $env:PORT = [string]$Config.BackendPort
     Write-LogBanner -Path $CurrentLogFile -Lines @('Starting Kimi backend', "APP_DIR: $($Config.AppDir)", "PORT: $($Config.BackendPort)")
