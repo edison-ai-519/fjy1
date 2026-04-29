@@ -24,6 +24,7 @@ const {
   workflowService,
   appRoot,
 } = createAppServices();
+const workflowControllers = new Map();
 let gatewayAccessToken = "";
 let gatewayLoginPromise = null;
 
@@ -246,7 +247,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/workflow/config") {
-      sendJson(res, 200, workflowService.getWorkflowConfig());
+      await workflowService.refreshWorkflowConfigFromResolver();
+      const config = workflowService.getWorkflowConfig();
+      sendJson(res, 200, { ...config, version: "v1.0.1-10percent-fix" });
       return;
     }
 
@@ -789,8 +792,12 @@ const server = createServer(async (req, res) => {
 
       openSse(res);
       writeSse(res, "status", {
-        message: "文件已接收，准备启动七阶段工作流",
+        message: "文件已接收，准备启动八阶段工作流",
       });
+
+      const controller = new AbortController();
+      const runKey = conversationId || "default";
+      workflowControllers.set(runKey, controller);
 
       try {
         const result = await workflowService.runFileWorkflow({
@@ -801,6 +808,7 @@ const server = createServer(async (req, res) => {
             : "application/octet-stream",
           content: bodyBuffer,
           conversationId,
+          signal: controller.signal,
           handlers: {
             onStatus(message) {
               writeSse(res, "status", { message });
@@ -817,11 +825,26 @@ const server = createServer(async (req, res) => {
 
         writeSse(res, "complete", result);
         res.end();
-      } catch (error) {
-        writeSse(res, "error", {
-          message: error instanceof Error ? error.message : "Unknown workflow error",
-        });
         res.end();
+      } finally {
+        if (workflowControllers.get(runKey) === controller) {
+          workflowControllers.delete(runKey);
+        }
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/terminate") {
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "default";
+      const controller = workflowControllers.get(conversationId);
+      if (controller) {
+        controller.abort();
+        workflowControllers.delete(conversationId);
+        sendJson(res, 200, { ok: true, message: "Workflow termination signal sent" });
+      } else {
+        sendJson(res, 404, { error: "No running workflow found for this conversation" });
       }
       return;
     }
@@ -852,14 +875,19 @@ const server = createServer(async (req, res) => {
 
       openSse(res);
       writeSse(res, "status", {
-        message: `准备从 ${startStage} 重新执行工作流`,
+        message: `正在从 ${startStage} 重试工作流`,
       });
+
+      const controller = new AbortController();
+      const runKey = conversationId;
+      workflowControllers.set(runKey, controller);
 
       try {
         const result = await workflowService.retryFileWorkflowFromStage({
-          conversationId: decodeURIComponent(conversationId),
           projectId: decodeURIComponent(projectId),
-          startStage: decodeURIComponent(startStage),
+          conversationId,
+          startStage,
+          signal: controller.signal,
           handlers: {
             onStatus(message) {
               writeSse(res, "status", { message });
@@ -876,11 +904,11 @@ const server = createServer(async (req, res) => {
 
         writeSse(res, "complete", result);
         res.end();
-      } catch (error) {
-        writeSse(res, "error", {
-          message: error instanceof Error ? error.message : "Unknown workflow retry error",
-        });
         res.end();
+      } finally {
+        if (workflowControllers.get(runKey) === controller) {
+          workflowControllers.delete(runKey);
+        }
       }
       return;
     }

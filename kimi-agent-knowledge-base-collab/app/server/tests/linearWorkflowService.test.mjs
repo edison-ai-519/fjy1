@@ -57,6 +57,9 @@ test("LinearWorkflowService executes 7-stage workflow and generates unique filen
           ],
         };
       }
+      if (stage.includes("小故-")) {
+        return { probability: "86%", reason: "默认小故判断" };
+      }
       return {
         ablation: [
           {
@@ -151,6 +154,9 @@ test("LinearWorkflowService retries invalid JSON with higher temperatures", asyn
           ],
         };
       }
+      if (stage.includes("小故-")) {
+        return { probability: "70%", reason: "默认小故判断" };
+      }
         return {
           ablation: [
             {
@@ -223,6 +229,9 @@ test("LinearWorkflowService accepts stage-2 relation arrays directly", async () 
             evidence: "编制单位：北邮本体工厂项目组",
           },
         ];
+      }
+      if (stage.includes("小故-")) {
+        return { probability: "70%", reason: "默认小故判断" };
       }
       return {
         ablation: [
@@ -298,6 +307,9 @@ test("LinearWorkflowService accepts stage-1 entity arrays directly", async () =>
           },
         ];
       }
+      if (stage.includes("小故-")) {
+        return { probability: "70%", reason: "默认小故判断" };
+      }
       return {};
     },
     probabilityInvoker: async () => ({ probability: "70%", reason: "ok" }),
@@ -353,6 +365,9 @@ test("LinearWorkflowService accepts stage-3 ablation arrays directly", async () 
           },
         ];
       }
+      if (stage.includes("小故-")) {
+        return { probability: "70%", reason: "默认小故判断" };
+      }
       return { };
     },
     probabilityInvoker: async () => ({ probability: "70%", reason: "ok" }),
@@ -373,6 +388,165 @@ test("LinearWorkflowService accepts stage-3 ablation arrays directly", async () 
   assert.equal(result.ok, true);
   assert.equal(result.stage_results.find((item) => item.stage === "ablation")?.output?.ablation_count, 1);
   assert.equal(result.stage_results.find((item) => item.stage === "ablation")?.output?.ablation?.[0]?.entity_name, "本体工厂");
+});
+
+test("LinearWorkflowService 生成消融候选后分开计算保留/去除概率，并在代码侧完成小故判定", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-ablation-panels-"));
+  const llmCalls = [];
+
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ stage, payload }) => {
+      llmCalls.push({ stage, payload });
+      if (stage.includes("节点1")) {
+        return {
+          entities: [
+            {
+              name: "实体A",
+              summary: "核心模块",
+              properties: { kind: "module" },
+              abilities: ["识别"],
+              citations: ["实体A负责核心识别链路"],
+            },
+            {
+              name: "实体B",
+              summary: "辅助模块",
+              properties: { kind: "module" },
+              abilities: ["补充"],
+              citations: ["实体B用于补充说明"],
+            },
+          ],
+        };
+      }
+      if (stage.includes("节点2")) {
+        return { relations: [] };
+      }
+      if (stage.includes("节点3-消融候选")) {
+        return {
+          ablation_candidates: [
+            {
+              entity_id: "ent_entity_1",
+              entity_name: "实体A",
+              remove_target: "实体A",
+              retain_target: "实体A",
+              keep_role: "保留后维持核心识别链路",
+              remove_impact: "去除后识别准确率明显下降",
+              observation: "保留版信息完整，去除版关键字段缺失",
+              evidence: "实体A负责核心识别链路",
+            },
+            {
+              entity_id: "ent_entity_2",
+              entity_name: "实体B",
+              remove_target: "实体B",
+              retain_target: "实体B",
+              keep_role: "提供补充说明",
+              remove_impact: "去除后影响较小",
+              observation: "主体结果基本一致",
+              evidence: "实体B用于补充说明",
+            },
+          ],
+        };
+      }
+      if (stage.includes("小故-保留概率")) {
+        if (payload?.focus_entity?.entity_name === "实体A") {
+          return {
+            entity_id: "ent_entity_1",
+            entity_name: "实体A",
+            probability: "84%",
+            reason: "保留后核心识别链路完整",
+          };
+        }
+        return {
+          entity_id: "ent_entity_2",
+          entity_name: "实体B",
+          probability: "68%",
+          reason: "保留后只提供补充说明",
+        };
+      }
+      if (stage.includes("小故-去除概率")) {
+        if (payload?.focus_entity?.entity_name === "实体A") {
+          return {
+            entity_id: "ent_entity_1",
+            entity_name: "实体A",
+            probability: "52%",
+            reason: "去除后缺少核心识别链路",
+          };
+        }
+        return {
+          entity_id: "ent_entity_2",
+          entity_name: "实体B",
+          probability: "58%",
+          reason: "去除后主体结果仍可维持",
+        };
+      }
+      return {
+        ablation_candidates: [
+          {
+            entity_id: "ent_entity_1",
+            entity_name: "实体A",
+            remove_target: "实体A",
+            retain_target: "实体A",
+            keep_role: "保留后维持核心识别链路",
+            remove_impact: "去除后识别准确率明显下降",
+            observation: "保留版信息完整，去除版关键字段缺失",
+            evidence: "实体A负责核心识别链路",
+          },
+          {
+            entity_id: "ent_entity_2",
+            entity_name: "实体B",
+            remove_target: "实体B",
+            retain_target: "实体B",
+            keep_role: "提供补充说明",
+            remove_impact: "去除后影响较小",
+            observation: "主体结果基本一致",
+            evidence: "实体B用于补充说明",
+          },
+        ],
+      };
+    },
+    probabilityInvoker: async () => ({ probability: "70%", reason: "ok" }),
+    baseVersionLoader: async () => new Map(),
+    ingestInvoker: async () => ({
+      status: "success",
+      write_result: { commit_id: "commit-1", version_id: 1 },
+    }),
+  });
+
+  const result = await service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "doc.md",
+    mimeType: "text/markdown",
+    content: Buffer.from("# 实体A\n实体A负责核心识别链路\n实体B用于补充说明\n", "utf8"),
+  });
+
+  const ablationStage = result.stage_results.find((item) => item.stage === "ablation");
+  assert.equal(result.ok, true);
+  assert.equal(result.stage_results.length, 7);
+  assert.equal(ablationStage?.output?.ablation_count, 2);
+  assert.equal(ablationStage?.output?.ablation_candidates?.length, 2);
+  assert.equal(ablationStage?.output?.ablation_judges?.length, 2);
+  assert.equal(ablationStage?.output?.ablation_judges?.[0]?.keep_probability, "84%");
+  assert.equal(ablationStage?.output?.ablation_judges?.[0]?.remove_probability, "52%");
+  assert.equal(ablationStage?.output?.ablation_judges?.[0]?.probability_gap, "32%");
+  assert.equal(ablationStage?.output?.ablation_judges?.[0]?.small_reason, true);
+  assert.equal(ablationStage?.output?.ablation_judges?.[1]?.keep_probability, "68%");
+  assert.equal(ablationStage?.output?.ablation_judges?.[1]?.remove_probability, "58%");
+  assert.equal(ablationStage?.output?.ablation_judges?.[1]?.probability_gap, "10%");
+  assert.equal("small_reason" in (ablationStage?.output?.ablation_judges?.[1] || {}), false);
+  assert.equal(result.entity_files[0]?.data?.ablation?.small_reason, true);
+  assert.equal("small_reason" in (result.entity_files[1]?.data?.ablation || {}), false);
+    assert.deepEqual(
+      llmCalls
+      .filter((item) => item.stage.includes("节点3") || item.stage.includes("小故-"))
+      .map((item) => item.stage),
+      [
+        "节点3-消融候选",
+        "小故-保留概率",
+        "小故-去除概率",
+        "小故-保留概率",
+        "小故-去除概率",
+      ],
+    );
 });
 
 test("LinearWorkflowService stops when stage-1 returns empty entities", async () => {
@@ -489,6 +663,133 @@ test("LinearWorkflowService keeps raw LLM text when response is invalid JSON", a
   }
 });
 
+test("LinearWorkflowService 会在调用前刷新 workflow LLM 配置", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-refresh-config-"));
+  const originalFetch = globalThis.fetch;
+  const observed = {
+    url: "",
+    authorization: "",
+    model: "",
+  };
+
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    observed.url = url;
+    observed.authorization = options.headers.Authorization;
+    observed.model = body.model;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: "{\"entities\":[]}",
+            },
+          },
+        ],
+      }),
+    };
+  };
+
+  try {
+    const service = new LinearWorkflowService({
+      runtimeRoot,
+      workflowTimeoutMs: 5_000,
+      workflowEnvResolver: () => ({
+        workflowLlmApiKey: "dynamic-key",
+        workflowLlmBaseUrl: "https://example.com/api/v1",
+        workflowModel: "openai/gpt-4.1-mini",
+      }),
+    });
+
+    const result = await service.invokeWorkflowLlmJson({
+      stage: "节点1-观察",
+      instruction: "提取实体",
+      payload: { documentText: "文档内容" },
+    });
+
+    assert.deepEqual(result.data, { entities: [] });
+    assert.equal(service.workflowLlmApiKey, "dynamic-key");
+    assert.equal(service.workflowLlmBaseUrl, "https://example.com/api/v1");
+    assert.equal(service.workflowModel, "openai/gpt-4.1-mini");
+    assert.equal(observed.url, "https://example.com/api/v1/chat/completions");
+    assert.equal(observed.authorization, "Bearer dynamic-key");
+    assert.equal(observed.model, "openai/gpt-4.1-mini");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LinearWorkflowService invokeWorkflowLlmJson 支持通过 json_schema 约束输出结构", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-schema-"));
+  const originalFetch = globalThis.fetch;
+  let observedResponseFormat = null;
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    observedResponseFormat = body.response_format;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: "{\"probability\":\"84%\",\"reason\":\"结构完整\"}",
+            },
+          },
+        ],
+      }),
+    };
+  };
+
+  try {
+    const service = new LinearWorkflowService({
+      runtimeRoot,
+      workflowLlmApiKey: "test-key",
+      workflowLlmBaseUrl: "http://127.0.0.1:9999",
+      workflowTimeoutMs: 5_000,
+    });
+
+    const result = await service.invokeWorkflowLlmJson({
+      stage: "小故-保留概率",
+      instruction: "判断保留概率",
+      payload: { entity_id: "ent_entity_1" },
+      responseSchema: {
+        name: "probability_decision",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            probability: { type: "string" },
+            reason: { type: "string" },
+          },
+          required: ["probability", "reason"],
+        },
+      },
+    });
+
+    assert.deepEqual(result.data, { probability: "84%", reason: "结构完整" });
+    assert.deepEqual(observedResponseFormat, {
+      type: "json_schema",
+      json_schema: {
+        name: "probability_decision",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            probability: { type: "string" },
+            reason: { type: "string" },
+          },
+          required: ["probability", "reason"],
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("LinearWorkflowService fails before observe when auth precheck fails", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-auth-precheck-"));
   let calledObserve = false;
@@ -558,6 +859,9 @@ test("LinearWorkflowService marks stage-6 as failed when ingest fails", async ()
       if (stage.includes("节点2")) {
         return { relations: [] };
       }
+      if (stage.includes("小故-")) {
+        return { probability: "75%", reason: "默认小故判断" };
+      }
       return {
         ablation: [
           { entity_id: "ent_a_1", impact_level: "high", impact_reason: "A", system_risk: "high" },
@@ -622,6 +926,9 @@ test("LinearWorkflowService can retry from failed stage with saved snapshot", as
             { entity_id: "ent_a_1", impact_level: "high", impact_reason: "A", system_risk: "high" },
           ],
         };
+      }
+      if (stage.includes("小故-")) {
+        return { probability: "75%", reason: "默认小故判断" };
       }
       return {};
     },

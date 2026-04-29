@@ -43,7 +43,11 @@
 
 ### `ablation`
 - 对象类型（可为空对象）
-- 常用字段：`impact_level`、`impact_reason`、`system_risk`
+- 最小必填字段：`entity_id`、`entity_name`
+- 基础字段：`impact_level`、`impact_reason`、`system_risk`
+- 候选字段：`remove_target`、`retain_target`、`keep_role`、`remove_impact`、`observation`、`evidence`
+- 判定字段：`keep_probability`、`remove_probability`、`probability_gap`、`judge_reason`
+- 命中标记：`small_reason` 只允许写入 `true`，未命中时保持空缺
 
 ## 3. 合法示例
 

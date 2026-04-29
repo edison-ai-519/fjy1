@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -14,14 +16,186 @@ const appRoot = path.resolve(__dirname, "..");
 const projectRoot = path.resolve(appRoot, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
 const workflowRuntimeRoot = path.join(projectRoot, ".workflow-runtime");
+const WINDOWS_GLOBAL_ENV_NAMES = [
+  "ONTOGIT_PROJECT_ID",
+  "XG_GATEWAY_URL",
+  "GATEWAY_URL",
+  "XG_GATEWAY_API_KEY",
+  "GATEWAY_SERVICE_API_KEY",
+  "ONTOGIT_AUTH_USERNAME",
+  "XG_AUTH_USERNAME",
+  "ONTOGIT_AUTH_PASSWORD",
+  "XG_AUTH_PASSWORD",
+  "WORKFLOW_TIMEOUT_MS",
+  "WORKFLOW_LLM_BASE_URL",
+  "OPENROUTER_BASE_URL",
+  "DMXAPI_BASE_URL",
+  "WORKFLOW_LLM_API_KEY",
+  "OPENROUTER_API_KEY",
+  "DMXAPI_API_KEY",
+  "WORKFLOW_MODEL",
+  "OPENROUTER_MODEL",
+  "DMXAPI_MODEL",
+];
 
-export function createAppServices() {
-  const ontoGitProjectId = process.env.ONTOGIT_PROJECT_ID || "demo";
-  const gatewayBaseUrl = process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080";
-  const gatewayApiKeyRaw = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "";
+function asText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function safeJsonParse(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function readAgentConfig(options = {}) {
+  const configPath = asText(options.configPath)
+    || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, ".agent", "config.json") : "")
+    || (process.env.HOME ? path.join(process.env.HOME, ".agent", "config.json") : "");
+  if (!configPath) {
+    return {};
+  }
+
+  try {
+    const content = readFileSync(configPath, "utf8");
+    return safeObject(safeJsonParse(content));
+  } catch {
+    return {};
+  }
+}
+
+function resolveAgentConfigValue(agentConfig, paths) {
+  for (const pathParts of paths) {
+    let current = agentConfig;
+    for (const part of pathParts) {
+      current = current && typeof current === "object" ? current[part] : undefined;
+    }
+    const value = asText(current);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function resolveEnvValue(keys, windowsGlobalEnv) {
+  for (const key of keys) {
+    const processValue = asText(process.env[key]);
+    if (processValue) {
+      return processValue;
+    }
+
+    const windowsValue = asText(windowsGlobalEnv[key]);
+    if (windowsValue) {
+      return windowsValue;
+    }
+  }
+
+  return "";
+}
+
+let envCache = null;
+let lastCacheTime = 0;
+const CACHE_TTL = 60_000; // 缓存 1 分钟
+
+export function readWindowsGlobalEnv(names, options = {}) {
+  if (process.platform !== "win32") {
+    return {};
+  }
+
+  const now = Date.now();
+  if (envCache && (now - lastCacheTime < CACHE_TTL)) {
+    return envCache;
+  }
+
+  const uniqueNames = [...new Set((Array.isArray(names) ? names : []).map(asText).filter(Boolean))];
+  if (uniqueNames.length === 0) {
+    return {};
+  }
+
+  const exec = typeof options.exec === "function" ? options.exec : execFileSync;
+  const powershellPath = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "powershell.exe";
+  const quotedNames = uniqueNames.map((name) => `'${name.replace(/'/g, "''")}'`).join(", ");
+  const command = [
+    "$result = @{}",
+    `$names = @(${quotedNames})`,
+    "foreach ($name in $names) {",
+    "  $value = [Environment]::GetEnvironmentVariable($name, 'User')",
+    "  if (-not $value) { $value = [Environment]::GetEnvironmentVariable($name, 'Machine') }",
+    "  if ($value) { $result[$name] = $value }",
+    "}",
+    "$result | ConvertTo-Json -Compress",
+  ].join("; ");
+
+  try {
+    const output = exec(
+      powershellPath,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+      {
+        encoding: "utf8",
+        timeout: 3_000,
+        windowsHide: true,
+      },
+    );
+    const parsed = safeJsonParse(output);
+    envCache = safeObject(parsed);
+    lastCacheTime = now;
+    return envCache;
+  } catch {
+    return {};
+  }
+}
+
+export function createAppServices(options = {}) {
+  const readAgentConfigSnapshot = () => safeObject(
+    typeof options.agentConfigReader === "function"
+      ? options.agentConfigReader()
+      : readAgentConfig({ configPath: options.agentConfigPath }),
+  );
+  const readWindowsGlobalEnvSnapshot = () => safeObject(
+    typeof options.windowsEnvReader === "function"
+      ? options.windowsEnvReader(WINDOWS_GLOBAL_ENV_NAMES)
+      : readWindowsGlobalEnv(WINDOWS_GLOBAL_ENV_NAMES),
+  );
+  const agentConfig = readAgentConfigSnapshot();
+  const windowsGlobalEnv = readWindowsGlobalEnvSnapshot();
+  const ontoGitProjectId = resolveEnvValue(["ONTOGIT_PROJECT_ID"], windowsGlobalEnv) || "demo";
+  const gatewayBaseUrl = resolveEnvValue(["XG_GATEWAY_URL", "GATEWAY_URL"], windowsGlobalEnv) || "http://127.0.0.1:8080";
+  const gatewayApiKeyRaw = resolveEnvValue(["XG_GATEWAY_API_KEY", "GATEWAY_SERVICE_API_KEY"], windowsGlobalEnv);
   const gatewayApiKey = gatewayApiKeyRaw && gatewayApiKeyRaw !== "change-me" ? gatewayApiKeyRaw : "";
-  const authUsername = process.env.ONTOGIT_AUTH_USERNAME || process.env.XG_AUTH_USERNAME || "mogong";
-  const authPassword = process.env.ONTOGIT_AUTH_PASSWORD || process.env.XG_AUTH_PASSWORD || "123456";
+  const authUsername = resolveEnvValue(["ONTOGIT_AUTH_USERNAME", "XG_AUTH_USERNAME"], windowsGlobalEnv) || "mogong";
+  const authPassword = resolveEnvValue(["ONTOGIT_AUTH_PASSWORD", "XG_AUTH_PASSWORD"], windowsGlobalEnv) || "123456";
+  const workflowTimeoutMs = Number(resolveEnvValue(["WORKFLOW_TIMEOUT_MS"], windowsGlobalEnv) || 120000);
+  const workflowLlmBaseUrl = resolveEnvValue(["WORKFLOW_LLM_BASE_URL", "OPENROUTER_BASE_URL", "DMXAPI_BASE_URL"], windowsGlobalEnv)
+    || resolveAgentConfigValue(agentConfig, [["model", "baseUrl"], ["model", "baseURL"], ["model", "apiBaseUrl"], ["model", "api_base_url"]])
+    || "https://openrouter.ai/api/v1";
+  const workflowLlmApiKey = resolveEnvValue(["WORKFLOW_LLM_API_KEY", "OPENROUTER_API_KEY", "DMXAPI_API_KEY"], windowsGlobalEnv)
+    || resolveAgentConfigValue(agentConfig, [["model", "apiKey"], ["model", "api_key"]]);
+  const workflowModel = resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], windowsGlobalEnv)
+    || resolveAgentConfigValue(agentConfig, [["model", "name"], ["model", "model"]])
+    || "openai/gpt-4o-mini";
+  const workflowEnvResolver = () => {
+    const nextAgentConfig = readAgentConfigSnapshot();
+    const nextWindowsGlobalEnv = readWindowsGlobalEnvSnapshot();
+    return {
+      workflowLlmBaseUrl: resolveEnvValue(["WORKFLOW_LLM_BASE_URL", "OPENROUTER_BASE_URL", "DMXAPI_BASE_URL"], nextWindowsGlobalEnv)
+        || resolveAgentConfigValue(nextAgentConfig, [["model", "baseUrl"], ["model", "baseURL"], ["model", "apiBaseUrl"], ["model", "api_base_url"]])
+        || "https://openrouter.ai/api/v1",
+      workflowLlmApiKey: resolveEnvValue(["WORKFLOW_LLM_API_KEY", "OPENROUTER_API_KEY", "DMXAPI_API_KEY"], nextWindowsGlobalEnv)
+        || resolveAgentConfigValue(nextAgentConfig, [["model", "apiKey"], ["model", "api_key"]]),
+      workflowModel: resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], nextWindowsGlobalEnv)
+        || resolveAgentConfigValue(nextAgentConfig, [["model", "name"], ["model", "model"]])
+        || "openai/gpt-4o-mini",
+    };
+  };
 
   const repository = new OntoGitKnowledgeBaseRepository({
     gatewayBaseUrl,
@@ -57,8 +231,8 @@ export function createAppServices() {
     localWorkspaceService: repository,
     workflowService: new LinearWorkflowService({
       runtimeRoot: workflowRuntimeRoot,
-      gatewayBaseUrl: process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080",
-      gatewayApiKey: process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "",
+      gatewayBaseUrl,
+      gatewayApiKey: gatewayApiKeyRaw,
       gatewayAuthUsername: authUsername,
       gatewayAuthPassword: authPassword,
       gatewayLoginInvoker: () => repository.ensureGatewayLogin(true),
@@ -75,10 +249,11 @@ export function createAppServices() {
         }
         return map;
       },
-      workflowTimeoutMs: Number(process.env.WORKFLOW_TIMEOUT_MS || 120000),
-      workflowLlmBaseUrl: process.env.WORKFLOW_LLM_BASE_URL || process.env.OPENROUTER_BASE_URL || process.env.DMXAPI_BASE_URL || "https://openrouter.ai/api/v1",
-      workflowLlmApiKey: process.env.WORKFLOW_LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.DMXAPI_API_KEY || "",
-      workflowModel: process.env.WORKFLOW_MODEL || process.env.OPENROUTER_MODEL || process.env.DMXAPI_MODEL || "openai/gpt-4o-mini",
+      workflowTimeoutMs,
+      workflowLlmBaseUrl,
+      workflowLlmApiKey,
+      workflowModel,
+      workflowEnvResolver,
     }),
     appRoot,
   };

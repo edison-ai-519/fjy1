@@ -68,7 +68,8 @@ const STAGE_KEYS = [
   'auth_precheck',
   'observe',
   'relations',
-  'ablation',
+  'ablation_candidate',
+  'ablation_judge',
   'ontology',
   'probability_precheck',
   'ingest',
@@ -167,6 +168,7 @@ class WorkflowRuntimeManager {
   private sessions = new Map<string, WorkflowRunSession>();
   private subscribers = new Map<string, Set<Subscriber>>();
   private latestConversationId: string | null = null;
+  private currentReader: ReadableStreamDefaultReader | null = null;
 
   constructor() {
     this.restore();
@@ -290,6 +292,13 @@ class WorkflowRuntimeManager {
     this.sessions.set(conversationId, session);
     this.latestConversationId = conversationId;
     this.emit(conversationId);
+
+    // 启动前先尝试取消旧读取器
+    if (this.currentReader) {
+      void this.currentReader.cancel().catch(() => {});
+      this.currentReader = null;
+    }
+
     void this.consumeStream({
       conversationId,
       draft,
@@ -347,6 +356,37 @@ class WorkflowRuntimeManager {
     });
   }
 
+  async terminateRun(conversationId: string) {
+    const session = this.sessions.get(conversationId);
+    if (!session) return;
+
+    // 先斩后奏：立即更新本地状态，让用户感觉到“已终止”
+    this.update(conversationId, (current) => ({
+      ...current,
+      statusMessage: '正在请求终止后台任务...',
+      isRunning: false,
+      logs: appendUniqueLog(current.logs, {
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        level: 'error',
+        message: '用户点击了终止按钮',
+        createdAt: new Date().toLocaleTimeString(),
+      }),
+      updatedAt: new Date().toISOString(),
+    }));
+
+    try {
+      if (this.currentReader) {
+        void this.currentReader.cancel().catch(() => {});
+        this.currentReader = null;
+      }
+      await apiFetch(`/api/workflow/terminate?conversationId=${encodeURIComponent(conversationId)}`, {
+        method: 'POST',
+      });
+    } catch (error) {
+      console.error('Termination API failed:', error);
+    }
+  }
+
   private async consumeStream(input: {
     conversationId: string;
     draft: FileWorkflowRunResponse;
@@ -365,6 +405,7 @@ class WorkflowRuntimeManager {
 
       while (true) {
         const { done, value } = await reader.read();
+        this.currentReader = reader; // 记录当前读取器
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
@@ -508,4 +549,8 @@ export function retryWorkflowRunFromStage(input: { conversationId: string; start
 
 export function removeWorkflowSession(conversationId: string) {
   return workflowRuntimeManager.removeSession(conversationId);
+}
+
+export function terminateWorkflowRun(conversationId: string) {
+  return workflowRuntimeManager.terminateRun(conversationId);
 }

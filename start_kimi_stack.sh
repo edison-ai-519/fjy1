@@ -117,17 +117,29 @@ kill_pids() {
   done
 }
 
-stop_port() {
+function stop_port() {
   local port="$1"
   local name="$2"
   local pids
+  
+  # 在 Windows 上尝试使用 taskkill 直接按端口查杀（如果 netstat 可用）
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+    local win_pids=$(netstat -ano | grep -E ":${port}\s+.*LISTENING" | awk '{print $5}' | sort -u)
+    if [[ -n "${win_pids}" ]]; then
+      echo "发现端口 ${port} (${name}) 的 Windows 进程: ${win_pids}"
+      for wp in ${win_pids}; do
+        taskkill.exe /PID "$wp" /F /T >/dev/null 2>&1 || true
+      done
+    fi
+  fi
+
   pids="$(find_listening_pids "${port}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   if [[ -z "${pids}" ]]; then
     return
   fi
 
   echo "关闭占用端口 ${port} (${name}) 的旧进程: ${pids}"
-  kill_pids ${pids}
+  kill_pids "" ${pids}
   sleep 1
 
   pids="$(find_listening_pids "${port}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -190,7 +202,7 @@ wait_for_port() {
   return 1
 }
 
-start_detached() {
+function start_detached() {
   local workdir="$1"
   local log_file="$2"
   local pid_file="$3"
@@ -199,9 +211,15 @@ start_detached() {
 
   (
     cd "${workdir}"
-    # 使用 env 注入多个变量
-    nohup bash -c "${env_vars} ${command}" >"${log_file}" 2>&1 </dev/null &
-    echo $! > "${pid_file}"
+    # 使用 exec 确保 PID 文件记录的是真正的服务进程，而不是 Bash 壳
+    nohup bash -c "${env_vars} exec ${command}" >"${log_file}" 2>&1 </dev/null &
+    local pid=$!
+    echo $pid > "${pid_file}"
+    # 稍微等待确保进程没立即退出
+    sleep 0.5
+    if ! kill -0 $pid 2>/dev/null; then
+       echo "警告: 进程 $pid 启动后似乎立即退出了，请检查日志 ${log_file}"
+    fi
   )
 }
 

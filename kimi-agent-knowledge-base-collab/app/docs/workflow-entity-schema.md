@@ -45,7 +45,7 @@
 - `ontology`：本体层元信息，必须包含实体归属、生成时间、系统汇总和实体快照。
 - `entity`：当前实体的标准定义，`ontology.entity` 与顶层 `entity` 必须一致。
 - `relations`：当前实体的关系数组，元素必须使用标准关系字段。
-- `ablation`：当前实体的消融评估结果，允许为 `null`。
+- `ablation`：当前实体的消融评估结果，允许为 `null`，支持精简的候选说明与小故命中结果。
 - `precheck`：写入前的概率或健康检查结果，允许为 `null`。
 - `ontology_summary`：与 `ontology.system_summary` 一致的汇总对象。
 - `probability`：可选字符串，表示附加的概率结果，例如 `95%`。
@@ -77,13 +77,29 @@
 
 ## 消融字段
 
-`ablation` 只允许以下字段：
+`ablation` 允许以下字段：
 
 - `entity_id`
 - `entity_name`
 - `impact_level`
 - `impact_reason`
 - `system_risk`
+- `remove_target`
+- `retain_target`
+- `keep_role`
+- `remove_impact`
+- `observation`
+- `evidence`
+- `keep_probability`
+- `remove_probability`
+- `probability_gap`
+- `judge_reason`
+- `small_reason`
+
+约束补充：
+
+- `small_reason` 只允许在命中时写入 `true`
+- 不允许显式写入 `small_reason: false`
 
 ## 预检字段
 

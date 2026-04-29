@@ -8,6 +8,8 @@ import {
   Database,
   Eye,
   FileJson,
+  FileSearch,
+  Gavel,
   GitBranchPlus,
   Loader2,
   Play,
@@ -15,7 +17,6 @@ import {
   RefreshCcw,
   Sparkles,
   TriangleAlert,
-  Waves,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -39,10 +40,13 @@ import {
   retryWorkflowRunFromStage,
   startWorkflowRun,
   subscribeWorkflowSession,
+  terminateWorkflowRun,
 } from '@/features/workflow/runtime';
 import { fetchWorkflowConfig, updateWorkflowConfig } from '@/features/workspace/api';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { extractAblationPanels } from './fileWorkflowAblation';
+import { buildWorkflowStagePreview, WorkflowInsightCard } from './fileWorkflowPanels';
 
 interface WorkflowStageResult {
   stage: string;
@@ -100,13 +104,6 @@ interface WorkflowRelation {
   evidence: string;
 }
 
-interface WorkflowAblation {
-  entity_name: string;
-  impact_level: string;
-  impact_reason: string;
-  system_risk: string;
-}
-
 interface WorkflowLogItem {
   id: string;
   level: 'info' | 'success' | 'error';
@@ -127,10 +124,11 @@ const STAGE_META: StageMeta[] = [
   { key: 'auth_precheck', short: '01', title: '验证', detail: '登录校验与上下文准备', icon: <Radar className="h-4 w-4" /> },
   { key: 'observe', short: '02', title: '观察', detail: '抽取实体与证据片段', icon: <Eye className="h-4 w-4" /> },
   { key: 'relations', short: '03', title: '关系', detail: '组织结构边与依赖', icon: <GitBranchPlus className="h-4 w-4" /> },
-  { key: 'ablation', short: '04', title: '消融', detail: '逐实体影响评估', icon: <Waves className="h-4 w-4" /> },
-  { key: 'ontology', short: '05', title: '本体', detail: '组装实体 JSON 与汇总', icon: <FileJson className="h-4 w-4" /> },
-  { key: 'probability_precheck', short: '06', title: '概率', detail: '预判分数与解释', icon: <BrainCircuit className="h-4 w-4" /> },
-  { key: 'ingest', short: '07', title: '入库', detail: '提交 OntoGit 与写回', icon: <Database className="h-4 w-4" /> },
+  { key: 'ablation_candidate', short: '04', title: '消融预选', detail: '识别潜在影响实体', icon: <FileSearch className="h-4 w-4" /> },
+  { key: 'ablation_judge', short: '05', title: '小故命中', detail: '逐实体概率影响评估', icon: <Gavel className="h-4 w-4" /> },
+  { key: 'ontology', short: '06', title: '本体', detail: '组装实体 JSON 与汇总', icon: <FileJson className="h-4 w-4" /> },
+  { key: 'probability_precheck', short: '07', title: '概率', detail: '预判分数与解释', icon: <BrainCircuit className="h-4 w-4" /> },
+  { key: 'ingest', short: '08', title: '入库', detail: '提交 OntoGit 与写回', icon: <Database className="h-4 w-4" /> },
 ];
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -183,20 +181,6 @@ function extractRelations(stageResults: WorkflowStageResult[]): WorkflowRelation
       evidence: asText(record.evidence),
     };
   }).filter((item) => item.source_name && item.target_name && item.relation_type);
-}
-
-function extractAblations(stageResults: WorkflowStageResult[]): WorkflowAblation[] {
-  const output = getStageOutput(stageResults, 'ablation');
-  const ablations = Array.isArray(output.ablation) ? output.ablation : [];
-  return ablations.map((item) => {
-    const record = asRecord(item);
-    return {
-      entity_name: asText(record.entity_name),
-      impact_level: asText(record.impact_level),
-      impact_reason: asText(record.impact_reason),
-      system_risk: asText(record.system_risk),
-    };
-  }).filter((item) => item.entity_name);
 }
 
 function extractStageCount(
@@ -402,6 +386,12 @@ export function FileWorkflowPage() {
     }
   };
 
+  const handleTerminate = () => {
+    if (conversationId) {
+      void terminateWorkflowRun(conversationId);
+    }
+  };
+
   const handleSaveWorkflowModel = async () => {
     const nextModel = workflowModel.trim();
     if (!nextModel) {
@@ -425,19 +415,30 @@ export function FileWorkflowPage() {
   const stageResults = currentResult?.stage_results ?? [];
   const entityCount = currentResult ? extractStageCount(stageResults, 'observe', 'entity_count') : null;
   const relationCount = currentResult ? extractStageCount(stageResults, 'relations', 'relation_count') : null;
-  const ablationCount = currentResult ? extractStageCount(stageResults, 'ablation', 'ablation_count') : null;
+  const ablationCount = currentResult 
+    ? (extractStageCount(stageResults, 'ablation_candidate', 'candidate_count') || extractStageCount(stageResults, 'ablation_judge', 'ablation_count'))
+    : null;
   const precheckStage = currentResult?.stage_results.find((item) => item.stage === 'probability_precheck');
   const precheckItems = Array.isArray(precheckStage?.output?.prechecks) ? precheckStage.output.prechecks : [];
   const firstPrecheck = precheckItems[0] as Record<string, unknown> | undefined;
   const entities = useMemo(() => extractEntities(stageResults), [stageResults]);
   const relations = useMemo(() => extractRelations(stageResults), [stageResults]);
-  const ablations = useMemo(() => extractAblations(stageResults), [stageResults]);
+  const ablationPanels = useMemo(() => {
+    const candidateOutput = getStageOutput(stageResults, 'ablation_candidate');
+    const judgeOutput = getStageOutput(stageResults, 'ablation_judge');
+    const legacyOutput = getStageOutput(stageResults, 'ablation');
+
+    const merged = {
+      ablation_candidates: candidateOutput.candidates || candidateOutput.ablation_candidates || legacyOutput.ablation_candidates || [],
+      ablation_judges: judgeOutput.ablation_judges || judgeOutput.judges || legacyOutput.ablation_judges || [],
+      ablation: judgeOutput.ablation || legacyOutput.ablation || [],
+    };
+    return extractAblationPanels(merged);
+  }, [stageResults]);
   const observeLlmRaw = useMemo(() => getStageLlmRaw(stageResults, 'observe'), [stageResults]);
   const observeLlmRawText = useMemo(() => getStageLlmRawText(stageResults, 'observe'), [stageResults]);
   const relationsLlmRaw = useMemo(() => getStageLlmRaw(stageResults, 'relations'), [stageResults]);
   const relationsLlmRawText = useMemo(() => getStageLlmRawText(stageResults, 'relations'), [stageResults]);
-  const ablationLlmRaw = useMemo(() => getStageLlmRaw(stageResults, 'ablation'), [stageResults]);
-  const ablationLlmRawText = useMemo(() => getStageLlmRawText(stageResults, 'ablation'), [stageResults]);
   const completedStages = stageResults.filter((stage) => stage.status === 'success').length;
   const failedStages = stageResults.filter((stage) => stage.status === 'failed').length;
   const activeStage = stageResults.find((stage) => stage.status === 'running') ?? null;
@@ -455,7 +456,7 @@ export function FileWorkflowPage() {
                   实时工作流驾驶舱
                 </div>
                 <div>
-                  <CardTitle className="text-2xl font-black tracking-tight">文件直传七阶段工作流</CardTitle>
+                  <CardTitle className="text-2xl font-black tracking-tight">文件直传八阶段工作流</CardTitle>
                   <CardDescription className="mt-2 max-w-2xl text-sm leading-6">
                     现在不再等待最终结果统一渲染，而是按阶段实时显示抽取进度、状态变化和中间结果，便于观察实体、关系、消融和入库全过程。
                   </CardDescription>
@@ -472,7 +473,7 @@ export function FileWorkflowPage() {
                   <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">当前阶段</div>
                   <div className="mt-2 flex items-center gap-2 text-base font-black">
                     {activeStage ? <Loader2 className="h-4 w-4 animate-spin text-sky-500" /> : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
-                    <span>{activeStage ? activeStage.stage : currentResult ? '已完成' : '待开始'}</span>
+                    <span>{activeStage ? (STAGE_META.find(m => m.key === activeStage.stage)?.title || activeStage.stage) : currentResult ? '已完成' : '待开始'}</span>
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground">{statusMessage}</div>
                 </div>
@@ -602,15 +603,27 @@ export function FileWorkflowPage() {
                 <RefreshCcw className="mr-2 h-4 w-4" />
                 重置
               </Button>
-              <Button
-                type="button"
-                className="rounded-xl px-5 shadow-lg shadow-primary/20"
-                onClick={handleRunWorkflow}
-                disabled={!selectedFile || !projectId.trim() || isRunning}
-              >
-                {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-                {isRunning ? '流式执行中...' : '启动实时工作流'}
-              </Button>
+              {isRunning ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="rounded-xl px-5 shadow-lg shadow-red-500/20"
+                  onClick={handleTerminate}
+                >
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  终止执行
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  className="rounded-xl px-5 shadow-lg shadow-primary/20"
+                  onClick={handleRunWorkflow}
+                  disabled={!selectedFile || !projectId.trim()}
+                >
+                  <Play className="mr-2 h-4 w-4" />
+                  启动实时工作流
+                </Button>
+              )}
             </div>
           </CardFooter>
         </Card>
@@ -634,6 +647,7 @@ export function FileWorkflowPage() {
                       output: null,
                       error: null,
                     };
+                    const previewOutput = buildWorkflowStagePreview(meta.key, stage.output, ablationPanels);
                     return (
                       <div
                         key={meta.key}
@@ -679,10 +693,10 @@ export function FileWorkflowPage() {
                           </div>
                         ) : null}
 
-                        {stage.output ? (
+                        {previewOutput ? (
                           <div className="mt-3 rounded-2xl border border-border/40 bg-background/60 p-3 text-xs text-muted-foreground">
                             <div className="line-clamp-4 whitespace-pre-wrap break-all">
-                              {renderJson(stage.output)}
+                              {renderJson(previewOutput)}
                             </div>
                           </div>
                         ) : null}
@@ -712,10 +726,11 @@ export function FileWorkflowPage() {
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue="entities" className="space-y-4">
-                  <TabsList className="grid h-auto w-full grid-cols-6 rounded-2xl border border-border/40 bg-muted/30 p-1">
+                  <TabsList className="grid h-auto w-full grid-cols-7 rounded-2xl border border-border/40 bg-muted/30 p-1">
                     <TabsTrigger value="entities" className="rounded-xl text-xs">实体</TabsTrigger>
                     <TabsTrigger value="relations" className="rounded-xl text-xs">关系</TabsTrigger>
-                    <TabsTrigger value="ablation" className="rounded-xl text-xs">消融</TabsTrigger>
+                    <TabsTrigger value="ablation_candidates" className="rounded-xl text-xs">消融预选</TabsTrigger>
+                    <TabsTrigger value="ablation_judges" className="rounded-xl text-xs">小故命中</TabsTrigger>
                     <TabsTrigger value="ingest" className="rounded-xl text-xs">入库</TabsTrigger>
                     <TabsTrigger value="debug" className="rounded-xl text-xs">LLM Debug</TabsTrigger>
                     <TabsTrigger value="raw" className="rounded-xl text-xs">原始 JSON</TabsTrigger>
@@ -782,25 +797,86 @@ export function FileWorkflowPage() {
                     )}
                   </TabsContent>
 
-                  <TabsContent value="ablation" className="mt-0">
-                    {ablations.length === 0 ? (
+                  <TabsContent value="ablation_candidates" className="mt-0">
+                    {ablationPanels.candidates.length === 0 ? (
                       <div className="rounded-2xl border border-dashed border-border/60 bg-muted/10 p-8 text-sm text-muted-foreground">
-                        消融阶段尚未完成，风险和影响评估会在这里出现。
+                        消融预选阶段尚未完成，候选列表会在这里出现。
                       </div>
                     ) : (
-                      <div className="grid gap-3 md:grid-cols-2">
-                        {ablations.map((item, index) => (
-                          <div key={`${item.entity_name}-${index}`} className="rounded-3xl border border-border/50 bg-background/80 p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="text-base font-black">{item.entity_name}</div>
-                              <Badge variant="outline" className="rounded-full">{item.impact_level || 'unknown'}</Badge>
+                      <div className="space-y-4">
+                        <div className="rounded-3xl border border-border/50 bg-background/70 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-lg font-black tracking-tight">消融预选清单</div>
+                              <div className="mt-1 text-xs text-muted-foreground">提取文档中所有潜在实体的保留/去除影响分析。</div>
                             </div>
-                            <div className="mt-3 text-xs leading-6 text-muted-foreground">{item.impact_reason}</div>
-                            <div className="mt-3 rounded-2xl border border-border/40 bg-muted/20 px-3 py-2 text-xs">
-                              系统风险：{item.system_risk || 'unknown'}
+                            <Badge variant="secondary" className="rounded-full px-3 py-1 font-bold">
+                              {ablationPanels.candidates.length} 个候选
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {ablationPanels.candidates.map((item) => (
+                            <WorkflowInsightCard
+                              key={item.id}
+                              card={item}
+                              badge={(
+                                <Badge variant="outline" className="rounded-full">
+                                  {item.id.slice(-4)}
+                                </Badge>
+                              )}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="ablation_judges" className="mt-0">
+                    {ablationPanels.judges.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-border/60 bg-muted/10 p-8 text-sm text-muted-foreground">
+                        小故命中阶段尚未完成，命中卡片会在这里出现。
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="rounded-3xl border border-border/50 bg-background/70 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="text-lg font-black tracking-tight">小故深度命中分析</div>
+                              <div className="mt-1 text-xs text-muted-foreground">基于 LLM 计算的概率差值，识别对系统功能有关键影响的“小故”。</div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Badge variant="outline" className="rounded-full px-3 py-1 font-bold text-destructive border-destructive/30 bg-destructive/5">
+                                {ablationPanels.judges.filter((judge) => judge.badge === '命中小故').length} 命中
+                              </Badge>
+                              <Badge variant="secondary" className="rounded-full px-3 py-1 font-bold">
+                                {ablationPanels.judges.length} 总计
+                              </Badge>
                             </div>
                           </div>
-                        ))}
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {ablationPanels.judges.map((item) => {
+                            const isHit = item.badge === '命中小故';
+                            return (
+                              <WorkflowInsightCard
+                                key={item.id}
+                                card={item}
+                                tone={isHit ? 'destructive' : 'default'}
+                                highlightedFieldLabels={isHit ? ['概率差', '判定依据'] : []}
+                                valueAccentFieldLabels={['概率差']}
+                                badge={(
+                                  <Badge
+                                    variant={isHit ? 'destructive' : 'secondary'}
+                                    className="rounded-full"
+                                  >
+                                    {item.badge}
+                                  </Badge>
+                                )}
+                              />
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </TabsContent>
@@ -844,7 +920,8 @@ export function FileWorkflowPage() {
                       {[
                         { key: 'observe', title: '节点1-观察 原始返回', value: observeLlmRaw, rawText: observeLlmRawText },
                         { key: 'relations', title: '节点2-操作 原始返回', value: relationsLlmRaw, rawText: relationsLlmRawText },
-                        { key: 'ablation', title: '节点3-消融 原始返回', value: ablationLlmRaw, rawText: ablationLlmRawText },
+                        { key: 'ablation_candidate', title: '节点3-消融预选 原始返回', value: getStageLlmRaw(stageResults, 'ablation_candidate'), rawText: getStageLlmRawText(stageResults, 'ablation_candidate') },
+                        { key: 'ablation_judge', title: '节点4-小故命中 原始返回', value: getStageLlmRaw(stageResults, 'ablation_judge'), rawText: getStageLlmRawText(stageResults, 'ablation_judge') },
                       ].map((item) => (
                         <div key={item.key} className="overflow-hidden rounded-3xl border border-border/50">
                           <div className="border-b border-border/40 bg-muted/20 px-4 py-3 text-sm font-bold">

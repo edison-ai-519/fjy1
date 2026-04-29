@@ -184,21 +184,35 @@ export function validateWorkflowEntityFileData(data) {
     if (!ablation) {
       return { ok: false, error: "data.ablation 必须是对象或 null" };
     }
-    const ablationKeys = ["entity_id", "entity_name", "impact_level", "impact_reason", "system_risk"];
-    if (!hasOnlyKeys(ablation, ablationKeys)) {
-      return { ok: false, error: "data.ablation 只能包含 entity_id、entity_name、impact_level、impact_reason、system_risk" };
-    }
-    const ablationRequired = [
+    const ablationKeys = [
       "entity_id",
       "entity_name",
       "impact_level",
       "impact_reason",
       "system_risk",
+      "remove_target",
+      "retain_target",
+      "keep_role",
+      "remove_impact",
+      "observation",
+      "evidence",
+      "keep_probability",
+      "remove_probability",
+      "probability_gap",
+      "judge_reason",
+      "small_reason",
     ];
+    if (!hasOnlyKeys(ablation, ablationKeys)) {
+      return { ok: false, error: "data.ablation 包含未支持字段" };
+    }
+    const ablationRequired = ["entity_id", "entity_name"];
     for (const field of ablationRequired) {
       if (!asText(ablation[field])) {
         return { ok: false, error: `data.ablation.${field} 必须是非空字符串` };
       }
+    }
+    if (ablation.small_reason !== undefined && ablation.small_reason !== true) {
+      return { ok: false, error: "data.ablation.small_reason 只能在命中时写入 true" };
     }
   }
 

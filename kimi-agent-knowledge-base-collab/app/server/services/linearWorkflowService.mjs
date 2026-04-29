@@ -11,12 +11,25 @@ const WORKFLOW_STAGE_KEYS = [
   "auth_precheck",
   "observe",
   "relations",
-  "ablation",
+  "ablation_candidate",
+  "ablation_judge",
   "ontology",
   "probability_precheck",
   "ingest",
 ];
 const WORKFLOW_SNAPSHOT_FILE = "latest-run.json";
+const PROBABILITY_DECISION_RESPONSE_SCHEMA = {
+  name: "probability_decision",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      probability: { type: "string" },
+      reason: { type: "string" },
+    },
+    required: ["probability", "reason"],
+  },
+};
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -141,10 +154,15 @@ function normalizeRelation(raw, entityByName) {
   };
 }
 
-function normalizeAblation(raw, entityById) {
-  const item = raw && typeof raw === "object" ? raw : {};
+function resolveAblationEntity(item, entityById, entityByName) {
   const entityId = asText(item.entity_id);
-  const entity = entityById.get(entityId);
+  const entityName = asText(item.entity_name);
+  return entityById.get(entityId) || entityByName.get(entityName) || null;
+}
+
+function normalizeAblation(raw, entityById, entityByName = new Map()) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const entity = resolveAblationEntity(item, entityById, entityByName);
   if (!entity) {
     return null;
   }
@@ -156,6 +174,165 @@ function normalizeAblation(raw, entityById) {
     impact_reason: asText(item.impact_reason) || `${entity.name} 缺失会影响系统完整性。`,
     system_risk: asText(item.system_risk) || "unknown",
   };
+}
+
+function normalizeAblationCandidate(raw, entityById, entityByName = new Map()) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const entity = resolveAblationEntity(item, entityById, entityByName);
+  if (!entity) {
+    return null;
+  }
+
+  const fallbackEvidence = Array.isArray(entity.citations) && entity.citations.length > 0
+    ? asText(entity.citations[0])
+    : entity.summary;
+
+  return {
+    entity_id: entity.id,
+    entity_name: entity.name,
+    remove_target: asText(item.remove_target) || entity.name,
+    retain_target: asText(item.retain_target) || entity.name,
+    keep_role: asText(item.keep_role) || entity.summary || `${entity.name} 负责关键能力承接`,
+    remove_impact: asText(item.remove_impact) || `${entity.name} 被去除后会影响关键能力稳定性`,
+    observation: asText(item.observation),
+    evidence: asText(item.evidence) || fallbackEvidence,
+  };
+}
+
+function normalizeAblationJudge(raw, entityById, entityByName = new Map()) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const entity = resolveAblationEntity(item, entityById, entityByName);
+  if (!entity) {
+    return null;
+  }
+
+  const normalized = {
+    entity_id: entity.id,
+    entity_name: entity.name,
+    keep_probability: asText(item.keep_probability),
+    remove_probability: asText(item.remove_probability),
+    probability_gap: asText(item.probability_gap),
+    judge_reason: asText(item.judge_reason) || `${entity.name} 的保留版与去除版差异需要继续观察`,
+  };
+
+  if (item.small_reason === true) {
+    normalized.small_reason = true;
+  }
+
+  return normalized;
+}
+
+function parseProbabilityValue(value) {
+  const text = asText(value);
+  const matched = text.match(/-?\d+(?:\.\d+)?/);
+  if (!matched) {
+    return null;
+  }
+  const parsed = Number(matched[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatProbabilityValue(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  const rounded = Math.round(value);
+  return `${rounded}%`;
+}
+
+function normalizeProbabilityDecision(raw, entity, label) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const probability = asText(item.probability);
+  const probabilityValue = parseProbabilityValue(probability);
+  if (probabilityValue === null) {
+    throw new Error(`${label} 未返回可解析的 probability`);
+  }
+
+  return {
+    entity_id: entity.id,
+    entity_name: entity.name,
+    probability,
+    reason: asText(item.reason),
+    probability_value: probabilityValue,
+  };
+}
+
+function buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit) {
+  const summary = isHit
+    ? `差值 ${probabilityGap} 大于等于 10%，判定命中小故`
+    : `差值 ${probabilityGap} 小于 10%，继续观察`;
+  const keepReason = asText(keepDecision?.reason)
+    ? `保留版：${asText(keepDecision.reason)}`
+    : "";
+  const removeReason = asText(removeDecision?.reason)
+    ? `去除版：${asText(removeDecision.reason)}`
+    : "";
+  return [summary, keepReason, removeReason].filter(Boolean).join("；");
+}
+
+function buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision) {
+  const gapValue = keepDecision.probability_value - removeDecision.probability_value;
+  const probabilityGap = formatProbabilityValue(gapValue);
+  const isHit = gapValue >= 10;
+  const normalized = {
+    entity_id: entity.id,
+    entity_name: entity.name,
+    keep_probability: keepDecision.probability,
+    remove_probability: removeDecision.probability,
+    probability_gap: probabilityGap,
+    judge_reason: buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit),
+  };
+
+  if (isHit) {
+    normalized.small_reason = true;
+  }
+
+  return normalized;
+}
+
+function buildResponseFormat(responseSchema) {
+  if (!responseSchema || typeof responseSchema !== "object") {
+    return null;
+  }
+  const name = asText(responseSchema.name);
+  const schema = responseSchema.schema;
+  if (!name || !schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return null;
+  }
+  return {
+    type: "json_schema",
+    json_schema: {
+      name,
+      strict: responseSchema.strict !== false,
+      schema,
+    },
+  };
+}
+
+function mergeAblationResult(candidate, judge) {
+  const merged = {
+    entity_id: asText(candidate?.entity_id) || asText(judge?.entity_id),
+    entity_name: asText(candidate?.entity_name) || asText(judge?.entity_name),
+    impact_level: judge?.small_reason ? "high" : "medium",
+    impact_reason: asText(candidate?.remove_impact) || asText(judge?.judge_reason),
+    system_risk: judge?.small_reason ? "high" : "observed",
+    remove_target: asText(candidate?.remove_target),
+    retain_target: asText(candidate?.retain_target),
+    keep_role: asText(candidate?.keep_role),
+    remove_impact: asText(candidate?.remove_impact),
+    observation: asText(candidate?.observation),
+    evidence: asText(candidate?.evidence),
+    keep_probability: asText(judge?.keep_probability),
+    remove_probability: asText(judge?.remove_probability),
+    probability_gap: asText(judge?.probability_gap),
+    judge_reason: asText(judge?.judge_reason),
+  };
+
+  if (judge?.small_reason === true) {
+    merged.small_reason = true;
+  }
+
+  return merged;
 }
 
 function extractRelationCandidates(llmResult) {
@@ -194,6 +371,9 @@ function extractAblationCandidates(llmResult) {
   if (Array.isArray(llmResult)) {
     return llmResult;
   }
+  if (Array.isArray(llmResult?.ablation_candidates)) {
+    return llmResult.ablation_candidates;
+  }
   if (Array.isArray(llmResult?.ablation)) {
     return llmResult.ablation;
   }
@@ -202,6 +382,16 @@ function extractAblationCandidates(llmResult) {
   }
   if (Array.isArray(llmResult?.items)) {
     return llmResult.items;
+  }
+  return [];
+}
+
+function extractAblationJudgeCandidates(llmResult) {
+  if (Array.isArray(llmResult?.ablation_judges)) {
+    return llmResult.ablation_judges;
+  }
+  if (Array.isArray(llmResult?.ablation)) {
+    return llmResult.ablation;
   }
   return [];
 }
@@ -305,6 +495,7 @@ export class LinearWorkflowService {
       || process.env.OPENROUTER_API_KEY
       || process.env.DMXAPI_API_KEY
       || "";
+    this.workflowEnvResolver = typeof options.workflowEnvResolver === "function" ? options.workflowEnvResolver : null;
 
     this.llmJsonInvokerBase = options.llmJsonInvoker || ((input) => this.invokeWorkflowLlmJson(input));
     this.llmJsonInvoker = (input) => this.invokeWorkflowLlmJsonWithRetry(input);
@@ -326,6 +517,28 @@ export class LinearWorkflowService {
     }
     this.workflowModel = nextModel;
     return this.getWorkflowConfig();
+  }
+
+  async refreshWorkflowConfigFromResolver() {
+    if (!this.workflowEnvResolver) {
+      return;
+    }
+
+    const resolved = await this.workflowEnvResolver();
+    const config = resolved && typeof resolved === "object" && !Array.isArray(resolved) ? resolved : {};
+    const nextModel = asText(config.workflowModel);
+    const nextBaseUrl = asText(config.workflowLlmBaseUrl);
+    const nextApiKey = asText(config.workflowLlmApiKey);
+
+    if (nextModel) {
+      this.workflowModel = nextModel;
+    }
+    if (nextBaseUrl) {
+      this.workflowLlmBaseUrl = nextBaseUrl;
+    }
+    if (nextApiKey) {
+      this.workflowLlmApiKey = nextApiKey;
+    }
   }
 
   getConversationRuntimeRoot(conversationId) {
@@ -365,6 +578,8 @@ export class LinearWorkflowService {
       entities: [],
       relations: [],
       ablation: [],
+      ablationCandidates: [],
+      ablationJudges: [],
       ontology: null,
       ontologies: [],
       probabilityPrecheck: null,
@@ -434,7 +649,7 @@ export class LinearWorkflowService {
     });
   }
 
-  async invokeWorkflowLlmJson({ stage, instruction, payload, temperature = 0 }) {
+  async invokeWorkflowLlmJson({ stage, instruction, payload, temperature = 0, responseSchema = null }) {
     const userPrompt = [
       `你在执行线性工作流的 ${stage} 节点。`,
       instruction,
@@ -444,7 +659,30 @@ export class LinearWorkflowService {
     ].join("\n\n");
 
     if (!this.workflowLlmApiKey || !this.workflowLlmBaseUrl) {
+      await this.refreshWorkflowConfigFromResolver();
+    }
+
+    if (!this.workflowLlmApiKey || !this.workflowLlmBaseUrl) {
       throw new Error("workflow LLM is not configured");
+    }
+
+    const requestBody = {
+      model: this.workflowModel,
+      temperature,
+      messages: [
+        {
+          role: "system",
+          content: "你是本体工程助手。你只能返回合法 JSON。",
+        },
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+    };
+    const responseFormat = buildResponseFormat(responseSchema);
+    if (responseFormat) {
+      requestBody.response_format = responseFormat;
     }
 
     const response = await fetch(`${this.workflowLlmBaseUrl.replace(/\/$/, "")}/chat/completions`, {
@@ -453,20 +691,7 @@ export class LinearWorkflowService {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.workflowLlmApiKey}`,
       },
-      body: JSON.stringify({
-        model: this.workflowModel,
-        temperature,
-        messages: [
-          {
-            role: "system",
-            content: "你是本体工程助手。你只能返回合法 JSON。",
-          },
-          {
-            role: "user",
-            content: userPrompt,
-          },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -492,7 +717,7 @@ export class LinearWorkflowService {
     };
   }
 
-  async invokeWorkflowLlmJsonWithRetry({ stage, instruction, payload }) {
+  async invokeWorkflowLlmJsonWithRetry({ stage, instruction, payload, responseSchema = null }) {
     const temperatures = [0, 0.3, 0.7];
     let lastError = null;
 
@@ -503,6 +728,7 @@ export class LinearWorkflowService {
           stage,
           instruction,
           payload,
+          responseSchema,
           temperature,
           attempt: index + 1,
           maxAttempts: temperatures.length,
@@ -839,17 +1065,22 @@ export class LinearWorkflowService {
         const failedIndex = stageKeys.indexOf(asText(item?.stage));
         return failedIndex !== -1 && failedIndex < resumeFromStageIndex;
       }));
-      if (resumeFromStageIndex <= 4) {
+      if (resumeFromStageIndex <= 5) {
         entityFiles.splice(0, entityFiles.length);
       }
-      if (resumeFromStageIndex <= 6) {
+      if (resumeFromStageIndex <= 7) {
         ingestResults.splice(0, ingestResults.length);
       }
-      if (resumeFromStageIndex <= 4) {
+      if (resumeFromStageIndex <= 5) {
         state.ontology = null;
         state.ontologies = [];
       }
-      if (resumeFromStageIndex <= 5) {
+      if (resumeFromStageIndex <= 4) {
+        state.ablation = [];
+        state.ablationCandidates = [];
+        state.ablationJudges = [];
+      }
+      if (resumeFromStageIndex <= 6) {
         state.probabilityPrecheck = null;
       }
       await persistSnapshot();
@@ -915,8 +1146,15 @@ export class LinearWorkflowService {
     };
 
     try {
+      const checkInterrupted = () => {
+        if (input?.signal?.aborted) {
+          throw new Error("Workflow interrupted by user");
+        }
+      };
+
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 0) {
         await runStage(0, async () => {
+          checkInterrupted();
           if (!this.gatewayLoginInvoker) {
             return { authenticated: false, skipped: true };
           }
@@ -939,6 +1177,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 1) {
         await runStage(1, async () => {
+          checkInterrupted();
           const llmResult = await this.llmJsonInvoker({
             stage: "节点1-观察",
             instruction: [
@@ -977,6 +1216,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 2) {
         await runStage(2, async () => {
+          checkInterrupted();
           const node1Entities = state.entities.map((entity) => ({
             id: entity.id,
             name: entity.name,
@@ -1021,30 +1261,42 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 3) {
         await runStage(3, async () => {
+          checkInterrupted();
           const llmResult = await this.llmJsonInvoker({
-            stage: "节点3-消融",
-            instruction: "对每个实体做消融评估，返回 ablation 数组，字段：entity_id、impact_level、impact_reason、system_risk。",
-            payload: { entities: state.entities, relations: state.relations },
+            stage: "节点3-消融候选",
+            instruction: [
+              "你现在只负责生成消融候选 ablation_candidates，不负责计算保留概率、去除概率和概率差。",
+              "ablation_candidates 的每项必须包含：entity_id、entity_name、remove_target、retain_target、keep_role、remove_impact、observation、evidence。",
+              "依据与结论都要简短，以控制响应时间。",
+            ].join("\n"),
+            payload: {
+              entities: state.entities.map((entity) => ({
+                id: entity.id,
+                name: entity.name,
+                summary: entity.summary,
+                citations: entity.citations.slice(0, 2),
+              })),
+              relations: state.relations.map((relation) => ({
+                source_name: relation.source_name,
+                target_name: relation.target_name,
+                relation_type: relation.relation_type,
+                evidence: relation.evidence,
+              })),
+            },
           });
 
           const llmPayload = llmResult?.data ?? llmResult;
           const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
-          const rawAblation = extractAblationCandidates(llmPayload);
-          const ablation = rawAblation
-            .map((item) => normalizeAblation(item, entityById))
+          const entityByName = new Map(state.entities.map((entity) => [entity.name, entity]));
+          const rawCandidates = extractAblationCandidates(llmPayload);
+          const ablationCandidates = rawCandidates
+            .map((item) => normalizeAblationCandidate(item, entityById, entityByName))
             .filter(Boolean);
-          if (ablation.length === 0) {
-            throw attachStageDebug(new Error("节点3失败：未生成有效消融评估"), {
-              llm_raw: llmResult?.llm_raw ?? llmPayload,
-              llm_raw_text: asText(llmResult?.llm_raw_text),
-              llm_response: llmResult?.llm_response,
-              debug_error: "节点3失败：未生成有效消融评估",
-            });
-          }
-          state.ablation = ablation;
+          
+          state.ablationCandidates = ablationCandidates;
           return {
-            ablation_count: ablation.length,
-            ablation,
+            candidate_count: ablationCandidates.length,
+            candidates: ablationCandidates,
             llm_raw: llmResult?.llm_raw ?? llmPayload,
             llm_raw_text: asText(llmResult?.llm_raw_text),
             llm_response: llmResult?.llm_response,
@@ -1054,6 +1306,174 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 4) {
         await runStage(4, async () => {
+          checkInterrupted();
+          const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
+          const entityByName = new Map(state.entities.map((entity) => [entity.name, entity]));
+          const candidateMap = new Map(state.ablationCandidates.map((item) => [item.entity_id, item]));
+          const ablationJudges = [];
+          const judgeDebug = [];
+
+          for (const candidate of state.ablationCandidates) {
+            const entity = entityById.get(candidate.entity_id);
+            if (!entity) continue;
+
+            // 检查中断信号
+            if (input?.signal?.aborted) {
+              throw new Error("Workflow interrupted by user");
+            }
+
+
+            const focusEntity = {
+              entity_id: entity.id,
+              entity_name: entity.name,
+              summary: entity.summary,
+              abilities: entity.abilities,
+              citations: entity.citations.slice(0, 2),
+              keep_role: candidate.keep_role,
+              remove_impact: candidate.remove_impact,
+              observation: candidate.observation,
+              evidence: candidate.evidence,
+            };
+            const relatedRelations = state.relations
+              .filter((relation) => relation.source_entity_id === entity.id || relation.target_entity_id === entity.id)
+              .map((relation) => ({
+                source_name: relation.source_name,
+                target_name: relation.target_name,
+                relation_type: relation.relation_type,
+                evidence: relation.evidence,
+              }));
+            const remainingEntities = state.entities
+              .filter((item) => item.id !== entity.id)
+              .map((item) => ({
+                id: item.id,
+                name: item.name,
+                summary: item.summary,
+                citations: item.citations.slice(0, 2),
+              }));
+            const remainingRelations = state.relations
+              .filter((relation) => relation.source_entity_id !== entity.id && relation.target_entity_id !== entity.id)
+              .map((relation) => ({
+                source_name: relation.source_name,
+                target_name: relation.target_name,
+                relation_type: relation.relation_type,
+                evidence: relation.evidence,
+              }));
+
+            let keepResult = null;
+            let removeResult = null;
+            try {
+              keepResult = await this.llmJsonInvoker({
+                stage: "小故-保留概率",
+                instruction: [
+                  "你是一个专业、准确的本体概率判断专家。",
+                  "你现在只判断：在保留当前实体的情况下，该对象作为真实本体的概率。",
+                  "你必须根据输入中的 focus_entity、entities 和 related_relations 综合判断后，返回最终百分比。",
+                  "你必须严格遵守以下规则：",
+                  "1. 必须返回符合 schema 的 JSON 对象，禁止输出 Markdown、代码块、额外说明或任何非 JSON 内容。",
+                  '2. 输出结构必须严格为 {"probability":"97%","reason":"中文原因"}，且只能包含这两个字段。',
+                  "3. probability 必须是百分比字符串，例如 97%、2%、100%，不得使用小数。",
+                  "4. reason 必须使用简短中文说明保留该实体时的判断依据。",
+                  "5. 即使输入信息不足、含糊、异常，也必须严格按上述 JSON 结构输出。",
+                ].join("\n"),
+                payload: {
+                  focus_entity: focusEntity,
+                  entities: state.entities.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    summary: item.summary,
+                    citations: item.citations.slice(0, 2),
+                  })),
+                  relations: state.relations.map((relation) => ({
+                    source_name: relation.source_name,
+                    target_name: relation.target_name,
+                    relation_type: relation.relation_type,
+                    evidence: relation.evidence,
+                  })),
+                  related_relations: relatedRelations,
+                },
+                responseSchema: PROBABILITY_DECISION_RESPONSE_SCHEMA,
+              });
+
+              removeResult = await this.llmJsonInvoker({
+                stage: "小故-去除概率",
+                instruction: [
+                  "你是一个专业、准确的本体概率判断专家。",
+                  "你现在只判断：在去除当前实体后，该对象作为真实本体的概率。",
+                  "你必须根据输入中的 focus_entity、remaining_entities 和 remaining_relations 综合判断后，返回最终百分比。",
+                  "你必须严格遵守以下规则：",
+                  "1. 必须返回符合 schema 的 JSON 对象，禁止输出 Markdown、代码块、额外说明或任何非 JSON 内容。",
+                  '2. 输出结构必须严格为 {"probability":"97%","reason":"中文原因"}，且只能包含这两个字段。',
+                  "3. probability 必须是百分比字符串，例如 97%、2%、100%，不得使用小数。",
+                  "4. reason 必须使用简短中文说明去除该实体后的影响。",
+                  "5. 即使输入信息不足、含糊、异常，也必须严格按上述 JSON 结构输出。",
+                ].join("\n"),
+                payload: {
+                  focus_entity: focusEntity,
+                  removed_entity: {
+                    entity_id: entity.id,
+                    entity_name: entity.name,
+                  },
+                  remaining_entities: remainingEntities,
+                  remaining_relations: remainingRelations,
+                  related_relations: relatedRelations,
+                },
+                responseSchema: PROBABILITY_DECISION_RESPONSE_SCHEMA,
+              });
+            } catch (error) {
+              throw attachStageDebug(error, {
+                llm_raw: {
+                  candidate: candidate,
+                  keep_result: keepResult?.llm_raw ?? keepResult?.data ?? keepResult,
+                  remove_result: removeResult?.llm_raw ?? removeResult?.data ?? removeResult,
+                },
+              });
+            }
+
+            const keepDecision = normalizeProbabilityDecision(
+              keepResult?.data ?? keepResult,
+              entity,
+              `${entity.name} 保留概率判断`,
+            );
+            const removeDecision = normalizeProbabilityDecision(
+              removeResult?.data ?? removeResult,
+              entity,
+              `${entity.name} 去除概率判断`,
+            );
+            const judge = buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision);
+            const merged = mergeAblationResult(candidate, judge);
+            ablationJudges.push(merged);
+            judgeDebug.push({
+              entity_id: entity.id,
+              computed_judge: judge,
+            });
+          }
+
+          const judgeMap = new Map(ablationJudges.map((item) => [item.entity_id, item]));
+          const ablation = state.entities
+            .map((entity) => {
+              const candidate = candidateMap.get(entity.id)
+                || normalizeAblationCandidate({ entity_id: entity.id }, entityById, entityByName);
+              const judge = judgeMap.get(entity.id) || null;
+              return mergeAblationResult(candidate, judge);
+            })
+            .filter((item) => item.entity_id && item.entity_name && item.impact_reason);
+          state.ablationJudges = ablationJudges;
+          state.ablation = ablation;
+          return {
+            ablation_count: ablationJudges.length, // 使用完整的判定数作为总计
+            ablation,
+            ablation_candidates: ablationJudges, // 将补全后的列表作为候选输出，确保前端显示完整
+            ablation_judges: ablationJudges,
+            llm_raw: {
+              judge_results: judgeDebug,
+            },
+          };
+        });
+      }
+
+      if (resumeFromStageIndex === null || resumeFromStageIndex <= 5) {
+        await runStage(5, async () => {
+          checkInterrupted();
           const ontology = {
             workflow_version: "v1-linear-file-workflow",
             generated_at: nowIso(),
@@ -1126,8 +1546,9 @@ export class LinearWorkflowService {
         });
       }
 
-      if (resumeFromStageIndex === null || resumeFromStageIndex <= 5) {
-        await runStage(5, async () => {
+      if (resumeFromStageIndex === null || resumeFromStageIndex <= 6) {
+        await runStage(6, async () => {
+          checkInterrupted();
           const prechecks = [];
           for (const item of state.ontologies) {
             const precheck = await this.probabilityInvoker(item.ontology);
@@ -1157,8 +1578,9 @@ export class LinearWorkflowService {
         });
       }
 
-      if (resumeFromStageIndex === null || resumeFromStageIndex <= 6) {
-        await runStage(6, async () => {
+      if (resumeFromStageIndex === null || resumeFromStageIndex <= 7) {
+        await runStage(7, async () => {
+          checkInterrupted();
           const baseVersionMap = await this.baseVersionLoader(state.projectId);
           ingestResults.splice(0, ingestResults.length);
           for (const item of entityFiles) {

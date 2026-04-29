@@ -22,9 +22,33 @@ logger = logging.getLogger("probability.api")
 load_dotenv()
 
 
-def build_client() -> OpenAI:
-    api_key = os.getenv("DMXAPI_API_KEY")
-    base_url = os.getenv("DMXAPI_BASE_URL", "https://www.dmxapi.cn/v1")
+def read_agent_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    path = Path(config_path) if config_path else Path.home() / ".agent" / "config.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def resolve_agent_config_value(config: dict[str, Any], *path_parts: str) -> str:
+    current: Any = config
+    for part in path_parts:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(part)
+    return current.strip() if isinstance(current, str) else ""
+
+
+def build_client(config_path: str | Path | None = None) -> OpenAI:
+    agent_config = read_agent_config(config_path)
+    env_api_key = os.getenv("DMXAPI_API_KEY")
+    agent_api_key = resolve_agent_config_value(agent_config, "model", "apiKey")
+    api_key = env_api_key or agent_api_key
+    base_url = (
+        os.getenv("DMXAPI_BASE_URL")
+        or resolve_agent_config_value(agent_config, "model", "baseUrl")
+        or ("https://openrouter.ai/api/v1" if agent_api_key and not env_api_key else "https://www.dmxapi.cn/v1")
+    )
 
     if not api_key:
         raise RuntimeError("DMXAPI_API_KEY is not configured. Please set it in .env.")
@@ -32,8 +56,12 @@ def build_client() -> OpenAI:
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
-def get_default_model() -> str:
-    return os.getenv("DMXAPI_MODEL", "gpt-5.4")
+def get_default_model(config_path: str | Path | None = None) -> str:
+    agent_config = read_agent_config(config_path)
+    env_model = os.getenv("DMXAPI_MODEL")
+    agent_model = resolve_agent_config_value(agent_config, "model", "name")
+    agent_api_key = resolve_agent_config_value(agent_config, "model", "apiKey")
+    return env_model or agent_model or ("openai/gpt-4o-mini" if agent_api_key else "gpt-5.4")
 
 
 def get_probability_prompt() -> str | None:

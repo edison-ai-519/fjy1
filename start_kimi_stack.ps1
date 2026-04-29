@@ -901,6 +901,10 @@ function Start-KimiStack {
   Write-Host 'Stopping old processes...'
   Stop-PidFileProcess -PidFile $Config.BackendPidFile
   Stop-PidFileProcess -PidFile $Config.FrontendPidFile
+  Write-Host "Force clearing ports $Config.BackendPort and $Config.FrontendPort..."
+  Get-NetTCPConnection -LocalPort $Config.BackendPort -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+  Get-NetTCPConnection -LocalPort $Config.FrontendPort -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+  Start-Sleep -Seconds 1
   Stop-OntoGitService -Name 'xiaogugit' -PidFile $Config.XiaoGuGitPidFile -Port $Config.XiaoGuGitPort
   Stop-OntoGitService -Name 'probability' -PidFile $Config.ProbabilityPidFile -Port $Config.ProbabilityPort
   Stop-OntoGitService -Name 'gateway' -PidFile $Config.GatewayPidFile -Port $Config.GatewayPort
