@@ -275,7 +275,7 @@ class WorkflowRuntimeManager {
     const session: WorkflowRunSession = {
       conversationId,
       projectId: input.projectId,
-      statusMessage: '正在建立流式连接，准备执行七阶段工作流...',
+      statusMessage: '正在建立流式连接，准备执行八阶段工作流...',
       isRunning: true,
       runResult: draft,
       logs: [
