@@ -1,4 +1,5 @@
 import { apiFetch, parseSseEvent } from '@/shared/api/http';
+import { WORKFLOW_STAGE_KEYS } from '../../shared/workflowStages.js';
 
 export interface WorkflowStageResult {
   stage: string;
@@ -64,17 +65,6 @@ type Subscriber = (session: WorkflowRunSession) => void;
 
 const STORAGE_KEY = 'kimi.fileWorkflow.sessions.v1';
 const MAX_LOG_ITEMS = 120;
-const STAGE_KEYS = [
-  'auth_precheck',
-  'observe',
-  'relations',
-  'ablation_candidate',
-  'ablation_judge',
-  'ontology',
-  'probability_precheck',
-  'ingest',
-];
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -108,14 +98,14 @@ function createPendingRunResult(file: File, projectId: string): FileWorkflowRunR
     workflow: {
       mode: 'linear',
       status: 'running',
-      steps: STAGE_KEYS,
+      steps: [...WORKFLOW_STAGE_KEYS],
     },
     input_file: {
       originalName: file.name,
       size: file.size,
       path: projectId,
     },
-    stage_results: STAGE_KEYS.map((stage, index) => ({
+    stage_results: WORKFLOW_STAGE_KEYS.map((stage, index) => ({
       stage,
       order: index + 1,
       status: 'pending',
@@ -132,7 +122,7 @@ function createPendingRunResult(file: File, projectId: string): FileWorkflowRunR
 }
 
 function createRetryDraft(prev: FileWorkflowRunResponse, startStage: string): FileWorkflowRunResponse {
-  const targetIndex = STAGE_KEYS.indexOf(startStage);
+  const targetIndex = WORKFLOW_STAGE_KEYS.indexOf(startStage);
   const targetOrder = targetIndex === -1 ? Number.MAX_SAFE_INTEGER : targetIndex + 1;
   return {
     ...prev,
@@ -141,10 +131,10 @@ function createRetryDraft(prev: FileWorkflowRunResponse, startStage: string): Fi
       status: 'running',
     },
     errors: prev.errors.filter((item) => {
-      const index = STAGE_KEYS.indexOf(item.stage);
+      const index = WORKFLOW_STAGE_KEYS.indexOf(item.stage);
       return index !== -1 && index + 1 < targetOrder;
     }),
-    ingest_results: targetOrder <= STAGE_KEYS.length ? [] : prev.ingest_results,
+    ingest_results: targetOrder <= WORKFLOW_STAGE_KEYS.length ? [] : prev.ingest_results,
     stage_results: prev.stage_results.map((stage) => (
       stage.order >= targetOrder
         ? {

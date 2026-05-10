@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "test": "tsx --test ./tests/**/*.test.* ./src/**/*.test.*",
     "test:server": "node --test ./server/tests/*.test.mjs",
+    "migrate:entity-ids": "node ./server/scripts/migrateDuplicateEntityIds.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

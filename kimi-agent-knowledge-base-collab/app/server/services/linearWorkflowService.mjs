@@ -1,35 +1,16 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { validateWorkflowEntityFileData } from "../workflowEntityFormat.mjs";
+import { WORKFLOW_STAGE_KEYS } from "../../src/shared/workflowStages.js";
+import { SystemAdapter } from "./systemAdapter.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_TEXT_LIMIT = 20_000;
 const DEFAULT_FILE_MESSAGE = "Workflow ingest";
 const DEFAULT_AGENT_NAME = "linear-workflow";
 const DEFAULT_COMMITTER_NAME = "linear-workflow";
-const WORKFLOW_STAGE_KEYS = [
-  "auth_precheck",
-  "observe",
-  "relations",
-  "ablation_candidate",
-  "ablation_judge",
-  "ontology",
-  "probability_precheck",
-  "ingest",
-];
+const ABLATION_SMALL_REASON_THRESHOLD = 10;
 const WORKFLOW_SNAPSHOT_FILE = "latest-run.json";
-const PROBABILITY_DECISION_RESPONSE_SCHEMA = {
-  name: "probability_decision",
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      probability: { type: "string" },
-      reason: { type: "string" },
-    },
-    required: ["probability", "reason"],
-  },
-};
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -38,6 +19,34 @@ function asText(value) {
 function asNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function asStringSet(value) {
+  if (value instanceof Set) {
+    return new Set([...value].map((item) => asText(item)).filter(Boolean));
+  }
+
+  if (Array.isArray(value)) {
+    return new Set(value.map((item) => asText(item)).filter(Boolean));
+  }
+
+  return new Set();
+}
+
+function normalizeEntityIdState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const sequenceSeed = Number(value.sequenceSeed);
+  return {
+    usedEntityIds: asStringSet(value.usedEntityIds),
+    sequenceSeed: Number.isFinite(sequenceSeed) ? Math.max(0, Math.floor(sequenceSeed)) : null,
+  };
+}
+
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function safeJsonParse(value) {
@@ -103,7 +112,31 @@ function buildEntityFileStem(value) {
   return normalized || "未命名实体";
 }
 
-function normalizeEntity(raw, index) {
+function buildSequentialEntityId(name, sequence) {
+  return `ent_${buildSlug(name, "entity")}_${sequence}`;
+}
+
+function createEntityIdAllocator({ usedEntityIds, sequenceSeed }) {
+  const taken = usedEntityIds instanceof Set
+    ? new Set([...usedEntityIds].map((item) => asText(item)).filter(Boolean))
+    : new Set();
+  let sequence = Math.max(0, Math.floor(Number(sequenceSeed) || 0));
+
+  return (name) => {
+    let candidate = "";
+    do {
+      sequence += 1;
+      candidate = buildSequentialEntityId(name, sequence);
+    } while (taken.has(candidate));
+    taken.add(candidate);
+    return {
+      entity_id: candidate,
+      sequence,
+    };
+  };
+}
+
+function normalizeEntity(raw, index, entityIdAllocator) {
   const item = raw && typeof raw === "object" ? raw : {};
   const name = asText(item.name) || `实体-${index + 1}`;
   const summary = asText(item.summary) || `${name} 的概要`;
@@ -116,9 +149,12 @@ function normalizeEntity(raw, index) {
   const citations = Array.isArray(item.citations)
     ? item.citations.map((citation) => asText(citation)).filter(Boolean)
     : [];
+  const allocated = typeof entityIdAllocator === "function"
+    ? entityIdAllocator(name)
+    : null;
 
   return {
-    id: asText(item.id) || `ent_${buildSlug(name, "entity")}_${index + 1}`,
+    id: asText(allocated?.entity_id) || buildSequentialEntityId(name, index + 1),
     name,
     summary,
     type: asText(item.type) || asText(properties.kind) || "workflow-entity",
@@ -273,7 +309,7 @@ function buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit) {
 function buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision) {
   const gapValue = keepDecision.probability_value - removeDecision.probability_value;
   const probabilityGap = formatProbabilityValue(gapValue);
-  const isHit = gapValue >= 10;
+  const isHit = gapValue >= ABLATION_SMALL_REASON_THRESHOLD;
   const normalized = {
     entity_id: entity.id,
     entity_name: entity.name,
@@ -461,6 +497,84 @@ function cloneJsonValue(value, fallback) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function ensureStagePrerequisite(condition, stageName, message) {
+  if (!condition) {
+    throw new Error(`${stageName}前置条件不满足：${message}`);
+  }
+}
+
+function validateStageOutputShape(stageKey, output) {
+  const record = asRecord(output);
+  switch (stageKey) {
+    case "auth_precheck":
+      if (typeof record.authenticated !== "boolean" && record.skipped !== true) {
+        throw new Error("auth_precheck 输出缺少 authenticated/skipped");
+      }
+      return;
+    case "observe":
+      if (!Array.isArray(record.entities)) {
+        throw new Error("observe 输出缺少 entities");
+      }
+      if (typeof record.entity_count !== "number") {
+        throw new Error("observe 输出缺少 entity_count");
+      }
+      return;
+    case "relations":
+      if (!Array.isArray(record.relations)) {
+        throw new Error("relations 输出缺少 relations");
+      }
+      if (typeof record.relation_count !== "number") {
+        throw new Error("relations 输出缺少 relation_count");
+      }
+      return;
+    case "ablation_candidate":
+      if (!Array.isArray(record.candidates) && !Array.isArray(record.ablation_candidates)) {
+        throw new Error("ablation_candidate 输出缺少 candidates");
+      }
+      if (typeof record.candidate_count !== "number") {
+        throw new Error("ablation_candidate 输出缺少 candidate_count");
+      }
+      return;
+    case "ablation_judge":
+      if (!Array.isArray(record.ablation_judges)) {
+        throw new Error("ablation_judge 输出缺少 ablation_judges");
+      }
+      if (!Array.isArray(record.ablation)) {
+        throw new Error("ablation_judge 输出缺少 ablation");
+      }
+      if (typeof record.ablation_count !== "number") {
+        throw new Error("ablation_judge 输出缺少 ablation_count");
+      }
+      return;
+    case "ontology":
+      if (!record.ontology || !Array.isArray(record.ontologies)) {
+        throw new Error("ontology 输出缺少 ontology 或 ontologies");
+      }
+      if (typeof record.ontology_count !== "number") {
+        throw new Error("ontology 输出缺少 ontology_count");
+      }
+      return;
+    case "probability_precheck":
+      if (!Array.isArray(record.prechecks)) {
+        throw new Error("probability_precheck 输出缺少 prechecks");
+      }
+      if (typeof record.precheck_count !== "number") {
+        throw new Error("probability_precheck 输出缺少 precheck_count");
+      }
+      return;
+    case "ingest":
+      if (!Array.isArray(record.ingest_results)) {
+        throw new Error("ingest 输出缺少 ingest_results");
+      }
+      if (typeof record.ingest_count !== "number") {
+        throw new Error("ingest 输出缺少 ingest_count");
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 export class LinearWorkflowService {
   constructor(options) {
     this.runtimeRoot = options.runtimeRoot;
@@ -496,9 +610,19 @@ export class LinearWorkflowService {
       || process.env.DMXAPI_API_KEY
       || "";
     this.workflowEnvResolver = typeof options.workflowEnvResolver === "function" ? options.workflowEnvResolver : null;
+    this.entityIdSeedLoader = typeof options.entityIdSeedLoader === "function"
+      ? options.entityIdSeedLoader
+      : async () => 0;
+    this.entityIdStateLoader = typeof options.entityIdStateLoader === "function"
+      ? options.entityIdStateLoader
+      : null;
+    this.projectWorkflowLocks = new Map();
 
     this.llmJsonInvokerBase = options.llmJsonInvoker || ((input) => this.invokeWorkflowLlmJson(input));
     this.llmJsonInvoker = (input) => this.invokeWorkflowLlmJsonWithRetry(input);
+    this.systemAdapter = options.systemAdapter || new SystemAdapter({
+      llmJsonInvoker: (input) => this.llmJsonInvoker(input),
+    });
     this.probabilityInvoker = options.probabilityInvoker || ((payload) => this.invokeProbability(payload));
     this.baseVersionLoader = options.baseVersionLoader || ((projectId) => this.loadBaseVersionMap(projectId));
     this.ingestInvoker = options.ingestInvoker || ((payload) => this.invokeWrite(payload));
@@ -517,6 +641,32 @@ export class LinearWorkflowService {
     }
     this.workflowModel = nextModel;
     return this.getWorkflowConfig();
+  }
+
+  async acquireProjectWorkflowLock(projectId) {
+    const lockKey = asText(projectId) || "demo";
+    const previousTail = this.projectWorkflowLocks.get(lockKey) || Promise.resolve();
+    let releaseCurrent = null;
+    const currentLock = new Promise((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const nextTail = previousTail.then(() => currentLock);
+    this.projectWorkflowLocks.set(lockKey, nextTail);
+    await previousTail;
+
+    let released = false;
+    return async () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      if (typeof releaseCurrent === "function") {
+        releaseCurrent();
+      }
+      if (this.projectWorkflowLocks.get(lockKey) === nextTail) {
+        this.projectWorkflowLocks.delete(lockKey);
+      }
+    };
   }
 
   async refreshWorkflowConfigFromResolver() {
@@ -547,10 +697,20 @@ export class LinearWorkflowService {
   }
 
   async ensureConversationRuntime(conversationId) {
-    const root = this.getConversationRuntimeRoot(conversationId || "session");
-    await mkdir(root, { recursive: true });
-    await mkdir(path.join(root, "uploads"), { recursive: true });
-    return root;
+    const conversationKey = conversationId || "session";
+    const root = this.getConversationRuntimeRoot(conversationKey);
+    try {
+      await mkdir(root, { recursive: true });
+      await mkdir(path.join(root, "uploads"), { recursive: true });
+      return root;
+    } catch {
+      const fallbackBase = path.join(process.cwd(), ".workflow-runs");
+      const fallbackRoot = path.join(fallbackBase, `conversation-${buildSlug(conversationKey)}`);
+      await mkdir(fallbackRoot, { recursive: true });
+      await mkdir(path.join(fallbackRoot, "uploads"), { recursive: true });
+      this.runtimeRoot = process.cwd();
+      return fallbackRoot;
+    }
   }
 
   getWorkflowSnapshotPath(conversationId) {
@@ -1029,6 +1189,7 @@ export class LinearWorkflowService {
         projectId,
       }
       : this.buildInitialWorkflowState(projectId);
+    let releaseProjectWorkflowLock = async () => {};
 
     const persistSnapshot = async () => {
       await this.writeWorkflowSnapshot(conversationId, {
@@ -1106,6 +1267,7 @@ export class LinearWorkflowService {
       handlers.onStatus?.(`阶段 ${stage.order}/${stageKeys.length}：${stage.stage} 执行中`);
       try {
         const output = await executor();
+        validateStageOutputShape(stage.stage, output);
         stage.output = output;
         stage.status = "success";
         stage.finished_at = nowIso();
@@ -1146,6 +1308,7 @@ export class LinearWorkflowService {
     };
 
     try {
+      releaseProjectWorkflowLock = await this.acquireProjectWorkflowLock(projectId);
       const checkInterrupted = () => {
         if (input?.signal?.aborted) {
           throw new Error("Workflow interrupted by user");
@@ -1174,9 +1337,20 @@ export class LinearWorkflowService {
       }
       state.documentText = documentText;
       await persistSnapshot();
+      const entityIdState = this.entityIdStateLoader
+        ? normalizeEntityIdState(await this.entityIdStateLoader(state.projectId))
+        : null;
+      const entityIdSeed = entityIdState && entityIdState.sequenceSeed !== null
+        ? entityIdState.sequenceSeed
+        : Math.max(0, Math.floor(asNumber(await this.entityIdSeedLoader(state.projectId), 0)));
+      const entityIdAllocator = createEntityIdAllocator({
+        usedEntityIds: entityIdState?.usedEntityIds,
+        sequenceSeed: entityIdSeed,
+      });
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 1) {
         await runStage(1, async () => {
+          ensureStagePrerequisite(Boolean(documentText), "节点1-观察", "文档内容为空或不可读");
           checkInterrupted();
           const llmResult = await this.llmJsonInvoker({
             stage: "节点1-观察",
@@ -1194,7 +1368,7 @@ export class LinearWorkflowService {
 
           const llmPayload = llmResult?.data ?? llmResult;
           const rawEntities = extractEntityCandidates(llmPayload);
-          const entities = rawEntities.map(normalizeEntity).filter((item) => asText(item.name));
+          const entities = rawEntities.map((entity, index) => normalizeEntity(entity, index, entityIdAllocator)).filter((item) => asText(item.name));
           if (entities.length === 0) {
             throw attachStageDebug(new Error("节点1失败：未提取到实体"), {
               llm_raw: llmResult?.llm_raw ?? llmPayload,
@@ -1216,6 +1390,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 2) {
         await runStage(2, async () => {
+          ensureStagePrerequisite(state.entities.length > 0, "节点2-关系", "尚未抽取到实体");
           checkInterrupted();
           const node1Entities = state.entities.map((entity) => ({
             id: entity.id,
@@ -1261,51 +1436,37 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 3) {
         await runStage(3, async () => {
+          ensureStagePrerequisite(state.entities.length > 0, "节点3-消融候选", "尚未抽取到实体");
           checkInterrupted();
-          const llmResult = await this.llmJsonInvoker({
-            stage: "节点3-消融候选",
-            instruction: [
-              "你现在只负责生成消融候选 ablation_candidates，不负责计算保留概率、去除概率和概率差。",
-              "ablation_candidates 的每项必须包含：entity_id、entity_name、remove_target、retain_target、keep_role、remove_impact、observation、evidence。",
-              "依据与结论都要简短，以控制响应时间。",
-            ].join("\n"),
-            payload: {
-              entities: state.entities.map((entity) => ({
-                id: entity.id,
-                name: entity.name,
-                summary: entity.summary,
-                citations: entity.citations.slice(0, 2),
-              })),
-              relations: state.relations.map((relation) => ({
-                source_name: relation.source_name,
-                target_name: relation.target_name,
-                relation_type: relation.relation_type,
-                evidence: relation.evidence,
-              })),
-            },
+          const ablationResult = await this.systemAdapter.generateAblationCandidates({
+            entities: state.entities.map((entity) => ({
+              id: entity.id,
+              name: entity.name,
+              summary: entity.summary,
+              citations: entity.citations.slice(0, 2),
+            })),
+            relations: state.relations.map((relation) => ({
+              source_name: relation.source_name,
+              target_name: relation.target_name,
+              relation_type: relation.relation_type,
+              evidence: relation.evidence,
+            })),
           });
 
-          const llmPayload = llmResult?.data ?? llmResult;
-          const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
-          const entityByName = new Map(state.entities.map((entity) => [entity.name, entity]));
-          const rawCandidates = extractAblationCandidates(llmPayload);
-          const ablationCandidates = rawCandidates
-            .map((item) => normalizeAblationCandidate(item, entityById, entityByName))
-            .filter(Boolean);
-          
-          state.ablationCandidates = ablationCandidates;
+          state.ablationCandidates = ablationResult.candidates;
           return {
-            candidate_count: ablationCandidates.length,
-            candidates: ablationCandidates,
-            llm_raw: llmResult?.llm_raw ?? llmPayload,
-            llm_raw_text: asText(llmResult?.llm_raw_text),
-            llm_response: llmResult?.llm_response,
+            candidate_count: ablationResult.candidate_count,
+            candidates: ablationResult.candidates,
+            llm_raw: ablationResult.llm_raw,
+            llm_raw_text: ablationResult.llm_raw_text,
+            llm_response: ablationResult.llm_response,
           };
         });
       }
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 4) {
         await runStage(4, async () => {
+          ensureStagePrerequisite(state.entities.length > 0, "节点4-小故命中", "尚未抽取到实体");
           checkInterrupted();
           const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
           const entityByName = new Map(state.entities.map((entity) => [entity.name, entity]));
@@ -1359,93 +1520,29 @@ export class LinearWorkflowService {
                 evidence: relation.evidence,
               }));
 
-            let keepResult = null;
-            let removeResult = null;
             try {
-              keepResult = await this.llmJsonInvoker({
-                stage: "小故-保留概率",
-                instruction: [
-                  "你是一个专业、准确的本体概率判断专家。",
-                  "你现在只判断：在保留当前实体的情况下，该对象作为真实本体的概率。",
-                  "你必须根据输入中的 focus_entity、entities 和 related_relations 综合判断后，返回最终百分比。",
-                  "你必须严格遵守以下规则：",
-                  "1. 必须返回符合 schema 的 JSON 对象，禁止输出 Markdown、代码块、额外说明或任何非 JSON 内容。",
-                  '2. 输出结构必须严格为 {"probability":"97%","reason":"中文原因"}，且只能包含这两个字段。',
-                  "3. probability 必须是百分比字符串，例如 97%、2%、100%，不得使用小数。",
-                  "4. reason 必须使用简短中文说明保留该实体时的判断依据。",
-                  "5. 即使输入信息不足、含糊、异常，也必须严格按上述 JSON 结构输出。",
-                ].join("\n"),
-                payload: {
-                  focus_entity: focusEntity,
-                  entities: state.entities.map((item) => ({
-                    id: item.id,
-                    name: item.name,
-                    summary: item.summary,
-                    citations: item.citations.slice(0, 2),
-                  })),
-                  relations: state.relations.map((relation) => ({
-                    source_name: relation.source_name,
-                    target_name: relation.target_name,
-                    relation_type: relation.relation_type,
-                    evidence: relation.evidence,
-                  })),
-                  related_relations: relatedRelations,
-                },
-                responseSchema: PROBABILITY_DECISION_RESPONSE_SCHEMA,
+              const judgeResult = await this.systemAdapter.judgeAblationCandidate({
+                entity,
+                candidate,
+                entities: state.entities,
+                relations: state.relations,
               });
-
-              removeResult = await this.llmJsonInvoker({
-                stage: "小故-去除概率",
-                instruction: [
-                  "你是一个专业、准确的本体概率判断专家。",
-                  "你现在只判断：在去除当前实体后，该对象作为真实本体的概率。",
-                  "你必须根据输入中的 focus_entity、remaining_entities 和 remaining_relations 综合判断后，返回最终百分比。",
-                  "你必须严格遵守以下规则：",
-                  "1. 必须返回符合 schema 的 JSON 对象，禁止输出 Markdown、代码块、额外说明或任何非 JSON 内容。",
-                  '2. 输出结构必须严格为 {"probability":"97%","reason":"中文原因"}，且只能包含这两个字段。',
-                  "3. probability 必须是百分比字符串，例如 97%、2%、100%，不得使用小数。",
-                  "4. reason 必须使用简短中文说明去除该实体后的影响。",
-                  "5. 即使输入信息不足、含糊、异常，也必须严格按上述 JSON 结构输出。",
-                ].join("\n"),
-                payload: {
-                  focus_entity: focusEntity,
-                  removed_entity: {
-                    entity_id: entity.id,
-                    entity_name: entity.name,
-                  },
-                  remaining_entities: remainingEntities,
-                  remaining_relations: remainingRelations,
-                  related_relations: relatedRelations,
-                },
-                responseSchema: PROBABILITY_DECISION_RESPONSE_SCHEMA,
+              const judge = buildAblationJudgeFromProbabilities(entity, judgeResult.keepDecision, judgeResult.removeDecision);
+              const merged = mergeAblationResult(candidate, judge);
+              ablationJudges.push(merged);
+              judgeDebug.push({
+                entity_id: entity.id,
+                computed_judge: judge,
               });
             } catch (error) {
               throw attachStageDebug(error, {
                 llm_raw: {
                   candidate: candidate,
-                  keep_result: keepResult?.llm_raw ?? keepResult?.data ?? keepResult,
-                  remove_result: removeResult?.llm_raw ?? removeResult?.data ?? removeResult,
+                  keep_result: error?.stageOutput?.llm_raw?.keep_result,
+                  remove_result: error?.stageOutput?.llm_raw?.remove_result,
                 },
               });
             }
-
-            const keepDecision = normalizeProbabilityDecision(
-              keepResult?.data ?? keepResult,
-              entity,
-              `${entity.name} 保留概率判断`,
-            );
-            const removeDecision = normalizeProbabilityDecision(
-              removeResult?.data ?? removeResult,
-              entity,
-              `${entity.name} 去除概率判断`,
-            );
-            const judge = buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision);
-            const merged = mergeAblationResult(candidate, judge);
-            ablationJudges.push(merged);
-            judgeDebug.push({
-              entity_id: entity.id,
-              computed_judge: judge,
-            });
           }
 
           const judgeMap = new Map(ablationJudges.map((item) => [item.entity_id, item]));
@@ -1462,7 +1559,7 @@ export class LinearWorkflowService {
           return {
             ablation_count: ablationJudges.length, // 使用完整的判定数作为总计
             ablation,
-            ablation_candidates: ablationJudges, // 将补全后的列表作为候选输出，确保前端显示完整
+            ablation_candidates: state.ablationCandidates,
             ablation_judges: ablationJudges,
             llm_raw: {
               judge_results: judgeDebug,
@@ -1473,6 +1570,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 5) {
         await runStage(5, async () => {
+          ensureStagePrerequisite(state.entities.length > 0, "节点5-本体", "尚未抽取到实体");
           checkInterrupted();
           const ontology = {
             workflow_version: "v1-linear-file-workflow",
@@ -1548,6 +1646,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 6) {
         await runStage(6, async () => {
+          ensureStagePrerequisite(state.ontologies.length > 0, "节点6-概率预判", "尚未生成本体文件");
           checkInterrupted();
           const prechecks = [];
           for (const item of state.ontologies) {
@@ -1580,6 +1679,7 @@ export class LinearWorkflowService {
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 7) {
         await runStage(7, async () => {
+          ensureStagePrerequisite(entityFiles.length > 0, "节点7-入库", "尚未生成实体文件");
           checkInterrupted();
           const baseVersionMap = await this.baseVersionLoader(state.projectId);
           ingestResults.splice(0, ingestResults.length);
@@ -1638,6 +1738,7 @@ export class LinearWorkflowService {
         });
       }
     } catch {
+      await releaseProjectWorkflowLock().catch(() => null);
       const failedResult = {
         ok: false,
         workflow: {
@@ -1669,6 +1770,7 @@ export class LinearWorkflowService {
       return failedResult;
     }
 
+    await releaseProjectWorkflowLock().catch(() => null);
     const successResult = {
       ok: true,
       workflow: {

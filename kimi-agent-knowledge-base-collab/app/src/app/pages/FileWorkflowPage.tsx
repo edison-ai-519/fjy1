@@ -45,6 +45,7 @@ import {
 import { fetchWorkflowConfig, updateWorkflowConfig } from '@/features/workspace/api';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { WORKFLOW_STAGE_DEFINITIONS } from '../../shared/workflowStages.js';
 import { extractAblationPanels } from './fileWorkflowAblation';
 import { buildWorkflowStagePreview, WorkflowInsightCard } from './fileWorkflowPanels';
 
@@ -112,24 +113,25 @@ interface WorkflowLogItem {
   createdAt: string;
 }
 
-type StageMeta = {
-  key: string;
-  short: string;
-  title: string;
-  detail: string;
+type StageMeta = (typeof WORKFLOW_STAGE_DEFINITIONS)[number] & {
   icon: ReactNode;
 };
 
-const STAGE_META: StageMeta[] = [
-  { key: 'auth_precheck', short: '01', title: '验证', detail: '登录校验与上下文准备', icon: <Radar className="h-4 w-4" /> },
-  { key: 'observe', short: '02', title: '观察', detail: '抽取实体与证据片段', icon: <Eye className="h-4 w-4" /> },
-  { key: 'relations', short: '03', title: '关系', detail: '组织结构边与依赖', icon: <GitBranchPlus className="h-4 w-4" /> },
-  { key: 'ablation_candidate', short: '04', title: '消融预选', detail: '识别潜在影响实体', icon: <FileSearch className="h-4 w-4" /> },
-  { key: 'ablation_judge', short: '05', title: '小故命中', detail: '逐实体概率影响评估', icon: <Gavel className="h-4 w-4" /> },
-  { key: 'ontology', short: '06', title: '本体', detail: '组装实体 JSON 与汇总', icon: <FileJson className="h-4 w-4" /> },
-  { key: 'probability_precheck', short: '07', title: '概率', detail: '预判分数与解释', icon: <BrainCircuit className="h-4 w-4" /> },
-  { key: 'ingest', short: '08', title: '入库', detail: '提交 OntoGit 与写回', icon: <Database className="h-4 w-4" /> },
-];
+const STAGE_ICONS: Record<string, ReactNode> = {
+  auth_precheck: <Radar className="h-4 w-4" />,
+  observe: <Eye className="h-4 w-4" />,
+  relations: <GitBranchPlus className="h-4 w-4" />,
+  ablation_candidate: <FileSearch className="h-4 w-4" />,
+  ablation_judge: <Gavel className="h-4 w-4" />,
+  ontology: <FileJson className="h-4 w-4" />,
+  probability_precheck: <BrainCircuit className="h-4 w-4" />,
+  ingest: <Database className="h-4 w-4" />,
+};
+
+const STAGE_META: StageMeta[] = WORKFLOW_STAGE_DEFINITIONS.map((stage) => ({
+  ...stage,
+  icon: STAGE_ICONS[stage.key] ?? <Activity className="h-4 w-4" />,
+}));
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};

@@ -70,7 +70,6 @@ function CommitStatus({ state, className }: { state: CommitState; className?: st
 export function GraphIngestPanel({ selectedProjectId, onSourceCommitted }: GraphIngestPanelProps) {
   const {
     selectedEntity,
-    refreshKnowledgeGraph,
   } = useOntologyContext();
 
   const [projectId, setProjectId] = useState('demo');
@@ -203,7 +202,6 @@ export function GraphIngestPanel({ selectedProjectId, onSourceCommitted }: Graph
       if (result.sourceWrite?.filename) {
         await onSourceCommitted(commitProjectId, result.sourceWrite.filename);
       }
-      await refreshKnowledgeGraph();
       const successMessage = result.status === 'partial' && result.error
         ? `源文件已入库，但图谱刷新未完成：${result.error}`
         : `入库完成：${resolvedRef || submitSlug || 'auto'}`;

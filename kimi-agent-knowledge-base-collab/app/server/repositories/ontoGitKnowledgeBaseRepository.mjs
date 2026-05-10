@@ -21,6 +21,22 @@ function safeJsonParse(text) {
   }
 }
 
+function resolveGatewayRequestUrl(gatewayBaseUrl, pathname) {
+  const requestPath = asText(pathname);
+  if (!requestPath) {
+    return new URL(gatewayBaseUrl);
+  }
+
+  const baseUrl = new URL(gatewayBaseUrl);
+  if (baseUrl.pathname && baseUrl.pathname !== "/" && requestPath.startsWith("/xg/")) {
+    const normalizedBasePath = baseUrl.pathname.replace(/\/$/, "");
+    const normalizedRequestPath = requestPath.replace(/^\/+/, "");
+    return new URL(`${normalizedBasePath}/${normalizedRequestPath}${baseUrl.search}`, `${baseUrl.origin}/`);
+  }
+
+  return new URL(requestPath, gatewayBaseUrl);
+}
+
 function safeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -31,6 +47,27 @@ function unique(values) {
 
 function normalizeText(value) {
   return asText(value).toLowerCase();
+}
+
+function getTimelineRevisionToken(timeline) {
+  const commits = Array.isArray(timeline?.commits)
+    ? timeline.commits
+    : Array.isArray(timeline?.history)
+      ? timeline.history
+      : [];
+  const latest = commits.at(-1) || {};
+  return [
+    asText(timeline?.filename),
+    asText(timeline?.latest_commit_id || latest.commit_id || latest.id),
+    asText(timeline?.latest_version_id || latest.version_id || latest.versionId),
+    String(commits.length),
+  ].join(":");
+}
+
+function buildProjectFingerprint(timelines) {
+  return Array.isArray(timelines)
+    ? timelines.map(getTimelineRevisionToken).filter(Boolean).sort().join("|")
+    : "";
 }
 
 function buildGlobalEntityId(projectId, entityId) {
@@ -70,6 +107,32 @@ function isCandidateEntityFile(filename) {
     return false;
   }
   return true;
+}
+
+function delay(ms) {
+  const duration = Math.max(0, Math.floor(Number(ms) || 0));
+  return new Promise((resolve) => {
+    setTimeout(resolve, duration);
+  });
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const list = Array.isArray(items) ? items : [];
+  const safeConcurrency = Math.max(1, Math.floor(Number(concurrency) || 1));
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < list.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(list[index], index);
+    }
+  }
+
+  const workerCount = Math.min(safeConcurrency, list.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }
 
 function parseWorkflowEntityRecord(raw, projectId, filename) {
@@ -239,7 +302,7 @@ export class OntoGitKnowledgeBaseRepository {
       throw new Error("未配置 OntoGit gateway 地址。");
     }
 
-    const url = new URL(pathname, this.gatewayBaseUrl);
+    const url = resolveGatewayRequestUrl(this.gatewayBaseUrl, pathname);
     const headers = await this.buildGatewayHeaders();
     let body;
     if (payload !== undefined) {
@@ -261,7 +324,11 @@ export class OntoGitKnowledgeBaseRepository {
     }
     if (!response.ok) {
       const detail = responsePayload?.detail || responsePayload?.error || responseText || `${response.status} ${response.statusText}`;
-      throw new Error(`OntoGit gateway 调用失败 (${pathname}): ${detail}`);
+      const error = new Error(`OntoGit gateway 调用失败 (${pathname}): ${detail}`);
+      error.status = response.status;
+      error.pathname = pathname;
+      error.detail = detail;
+      throw error;
     }
     return responsePayload;
   }
@@ -333,7 +400,15 @@ export class OntoGitKnowledgeBaseRepository {
   }
 
   async getJsonFileTimelines(projectId) {
-    const payload = await this.fetchGatewayJson(`/xg/timelines/${encodeURIComponent(asText(projectId))}`);
+    let payload;
+    try {
+      payload = await this.fetchGatewayJson(`/xg/timelines/${encodeURIComponent(asText(projectId))}`);
+    } catch (error) {
+      if (Number(error?.status) === 404) {
+        return [];
+      }
+      throw error;
+    }
     const list = Array.isArray(payload?.timelines)
       ? payload.timelines
       : Array.isArray(payload)
@@ -412,6 +487,7 @@ export class OntoGitKnowledgeBaseRepository {
     inferenceMessage = "Workflow inference update",
     inferenceAgentName = agentName,
     inferenceCommitterName = committerName,
+    skipInference = false,
   }) {
     const validation = validateWorkflowEntityFileData(data);
     if (!validation.ok) {
@@ -424,7 +500,8 @@ export class OntoGitKnowledgeBaseRepository {
       throw new Error("OntoGit 写入被拒绝：必须提供 basevision 版本号。");
     }
 
-    return this.invokeGatewayJson("/xg/write-and-infer", {
+    const pathname = skipInference ? "/xg/write" : "/xg/write-and-infer";
+    return this.invokeGatewayJson(pathname, {
       project_id: asText(projectId),
       filename: asText(filename),
       data,
@@ -432,57 +509,105 @@ export class OntoGitKnowledgeBaseRepository {
       agent_name: asText(agentName),
       committer_name: asText(committerName),
       basevision: Number(basevision),
-      inference_message: asText(inferenceMessage),
-      inference_agent_name: asText(inferenceAgentName),
-      inference_committer_name: asText(inferenceCommitterName),
+      ...(skipInference ? {} : {
+        inference_message: asText(inferenceMessage),
+        inference_agent_name: asText(inferenceAgentName),
+        inference_committer_name: asText(inferenceCommitterName),
+      }),
     });
   }
 
-  async scanWorkflowEntityRecords(projectId) {
-    const normalizedProjectId = asText(projectId) || "demo";
-    const records = [];
+  async readWorkflowEntityFileWithRetry(projectId, filename, options = {}) {
+    const retryCount = Math.max(0, Math.floor(Number(options.retryCount) || 0));
+    const retryDelayMs = Math.max(0, Math.floor(Number(options.retryDelayMs) || 0));
 
-    const timelines = await this.getJsonFileTimelines(normalizedProjectId);
-
-    for (const timeline of timelines) {
-      const filename = asText(timeline?.filename);
-      if (!isCandidateEntityFile(filename)) {
-        continue;
-      }
-
-      let rawData;
+    for (let attempt = 0; attempt <= retryCount; attempt += 1) {
       try {
-        rawData = await this.readProjectFile(normalizedProjectId, filename);
-      } catch {
-        continue;
-      }
-
-      const parsed = parseWorkflowEntityRecord(rawData, normalizedProjectId, filename);
-      if (parsed) {
-        records.push(parsed);
+        const rawData = await this.readProjectFile(projectId, filename);
+        return parseWorkflowEntityRecord(rawData, projectId, filename);
+      } catch (error) {
+        if (attempt >= retryCount) {
+          console.warn(`[OntoGit] 无法读取文件 ${filename}:`, error.message);
+          return null;
+        }
+        if (retryDelayMs > 0) {
+          await delay(retryDelayMs * (attempt + 1));
+        }
       }
     }
 
-    return records;
+    return null;
+  }
+
+  async scanWorkflowEntityRecords(projectId, timelines = null, options = {}) {
+    const normalizedProjectId = asText(projectId) || "demo";
+    const timelineList = Array.isArray(timelines) ? timelines : await this.getJsonFileTimelines(normalizedProjectId);
+    const candidateFiles = timelineList
+      .map((t) => asText(t?.filename))
+      .filter((f) => isCandidateEntityFile(f))
+      .sort((left, right) => left.localeCompare(right));
+
+    if (candidateFiles.length === 0) {
+      return [];
+    }
+
+    const results = await mapWithConcurrency(
+      candidateFiles,
+      options.concurrency || 8,
+      async (filename) => this.readWorkflowEntityFileWithRetry(normalizedProjectId, filename, {
+        retryCount: options.retryCount ?? 2,
+        retryDelayMs: options.retryDelayMs ?? 100,
+      }),
+    );
+
+    return results.filter(Boolean);
   }
 
   buildKnowledgeGraphFromRecords(records) {
     const entityIndex = {};
     const pendingRelations = [];
     const nameToEntityIds = new Map();
+    const entityIdConflicts = new Map();
 
     for (const record of records) {
-      entityIndex[record.entity.id] = record.entity;
+      const entityId = record.entity.id;
+      const existingEntity = entityIndex[entityId];
+      if (!existingEntity) {
+        entityIndex[entityId] = record.entity;
+      } else {
+        const conflict = entityIdConflicts.get(entityId) || {
+          entity_id: entityId,
+          filenames: [
+            asText(existingEntity.properties?.filename) || "",
+          ].filter(Boolean),
+          entity_names: [
+            asText(existingEntity.name) || "",
+          ].filter(Boolean),
+        };
+        conflict.filenames.push(asText(record.entity.properties?.filename) || "");
+        conflict.entity_names.push(asText(record.entity.name) || "");
+        entityIdConflicts.set(entityId, conflict);
+      }
       const key = normalizeText(record.entity.name);
       const list = nameToEntityIds.get(key) || [];
-      list.push(record.entity.id);
+      list.push(entityId);
       nameToEntityIds.set(key, list);
       pendingRelations.push(...record.relations);
     }
 
+    const conflicts = [...entityIdConflicts.values()];
+
     const resolveEntityId = (projectId, originalEntityId, fallbackName) => {
       const scoped = buildGlobalEntityId(projectId, originalEntityId);
-      if (entityIndex[scoped]) {
+      const exactEntity = entityIndex[scoped];
+      if (exactEntity) {
+        const normalizedFallbackName = normalizeText(fallbackName);
+        if (normalizedFallbackName && normalizeText(exactEntity.name) !== normalizedFallbackName) {
+          const byName = nameToEntityIds.get(normalizedFallbackName) || [];
+          if (byName.length === 1) {
+            return byName[0];
+          }
+        }
         return scoped;
       }
 
@@ -536,6 +661,8 @@ export class OntoGitKnowledgeBaseRepository {
       statistics: {
         total_entities: entities.length,
         total_relations: crossReferences.length,
+        duplicate_entity_groups: conflicts.length,
+        duplicate_entity_records: conflicts.reduce((sum, item) => sum + Math.max(0, item.filenames.length - 1), 0),
         domains,
         levels,
         sources,
@@ -543,20 +670,24 @@ export class OntoGitKnowledgeBaseRepository {
         layer_counts: layerCounts,
       },
       entity_index: entityIndex,
+      entity_id_conflicts: conflicts,
       cross_references: crossReferences,
     };
   }
 
   async loadDataset(projectId) {
     const normalizedProjectId = asText(projectId) || "demo";
+    const timelines = await this.getJsonFileTimelines(normalizedProjectId);
+    const fingerprint = buildProjectFingerprint(timelines);
     const cached = this.cacheByProject.get(normalizedProjectId);
-    if (cached) {
+    if (cached && cached.fingerprint === fingerprint) {
       return cached;
     }
 
-    const records = await this.scanWorkflowEntityRecords(normalizedProjectId);
+    const records = await this.scanWorkflowEntityRecords(normalizedProjectId, timelines);
     const knowledgeGraph = this.buildKnowledgeGraphFromRecords(records);
     const dataset = {
+      fingerprint,
       records,
       knowledgeGraph,
     };

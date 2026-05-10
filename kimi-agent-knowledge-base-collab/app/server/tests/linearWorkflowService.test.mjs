@@ -13,12 +13,14 @@ function createService(overrides = {}) {
     llmJsonInvoker: overrides.llmJsonInvoker,
     probabilityInvoker: overrides.probabilityInvoker,
     baseVersionLoader: overrides.baseVersionLoader,
+    entityIdSeedLoader: overrides.entityIdSeedLoader,
+    entityIdStateLoader: overrides.entityIdStateLoader,
     ingestInvoker: overrides.ingestInvoker,
     workflowTimeoutMs: 5_000,
   });
 }
 
-test("LinearWorkflowService executes 7-stage workflow and generates unique filenames", async () => {
+test("LinearWorkflowService executes 8-stage workflow and generates unique filenames", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-success-"));
   const ingestPayloads = [];
 
@@ -107,13 +109,244 @@ test("LinearWorkflowService executes 7-stage workflow and generates unique filen
 
   assert.equal(result.ok, true);
   assert.equal(result.workflow.status, "success");
-  assert.equal(result.stage_results.length, 7);
+  assert.equal(result.stage_results.length, 8);
   assert.equal(result.errors.length, 0);
   assert.equal(result.ingest_results.length, 2);
   assert.equal(result.entity_files[0].filename, "火车.json");
   assert.equal(result.entity_files[1].filename, "火车-2.json");
   assert.equal(result.stage_results[0].stage, "auth_precheck");
   assert.equal(result.stage_results[1].stage, "observe");
+});
+
+test("LinearWorkflowService 会从当前最大实体序号继续分配 id", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-seed-"));
+  const ingestPayloads = [];
+
+  const service = createService({
+    runtimeRoot,
+    entityIdSeedLoader: async () => 22,
+    llmJsonInvoker: async ({ stage, payload }) => {
+      if (stage.includes("节点1")) {
+        return {
+          entities: [
+            {
+              name: "火车",
+              summary: "管理设备信息",
+              properties: { kind: "module" },
+              abilities: ["注册", "查询"],
+              citations: ["火车负责设备台账维护"],
+            },
+            {
+              name: "车辆台账",
+              summary: "记录车辆状态",
+              properties: { kind: "module" },
+              abilities: ["维护"],
+              citations: ["车辆台账用于记录车辆状态"],
+            },
+          ],
+        };
+      }
+      if (stage.includes("节点2")) {
+        return {
+          relations: [
+            {
+              source: "火车",
+              target: "车辆台账",
+              relation_type: "关联",
+              evidence: "火车依赖车辆台账记录",
+            },
+          ],
+        };
+      }
+      if (stage.includes("节点3-消融候选")) {
+        return {
+          ablation_candidates: Array.isArray(payload?.entities)
+            ? payload.entities.map((entity) => ({
+              entity_id: entity.id,
+              entity_name: entity.name,
+              remove_target: entity.name,
+              retain_target: entity.name,
+              keep_role: `保留 ${entity.name} 后维持能力`,
+              remove_impact: `去除 ${entity.name} 后会降低能力`,
+              observation: `${entity.name} 是关键实体`,
+              evidence: entity.citations?.[0] || entity.summary,
+            }))
+            : [],
+        };
+      }
+      if (stage.includes("小故-保留概率")) {
+        return {
+          entity_id: payload?.focus_entity?.entity_id,
+          entity_name: payload?.focus_entity?.entity_name,
+          probability: payload?.focus_entity?.entity_id === "ent_entity_23" ? "81%" : "72%",
+          reason: "保留后影响可控",
+        };
+      }
+      if (stage.includes("小故-去除概率")) {
+        return {
+          entity_id: payload?.focus_entity?.entity_id,
+          entity_name: payload?.focus_entity?.entity_name,
+          probability: payload?.focus_entity?.entity_id === "ent_entity_23" ? "55%" : "63%",
+          reason: "去除后影响有限",
+        };
+      }
+      return {};
+    },
+    probabilityInvoker: async () => ({ probability: "90%", reason: "结构完整" }),
+    baseVersionLoader: async () => new Map(),
+    ingestInvoker: async (payload) => {
+      ingestPayloads.push(payload);
+      return {
+        status: "success",
+        write_result: {
+          commit_id: `commit-${ingestPayloads.length}`,
+          version_id: ingestPayloads.length,
+        },
+      };
+    },
+  });
+
+  const result = await service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "doc.md",
+    mimeType: "text/markdown",
+    content: Buffer.from("# 火车\n火车依赖车辆台账记录\n", "utf8"),
+    conversationId: "case-seed",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.stage_results.find((item) => item.stage === "observe")?.output?.entities?.map((entity) => entity.id),
+    ["ent_entity_23", "ent_entity_24"],
+  );
+  assert.deepEqual(
+    result.entity_files.map((item) => item.entity_id),
+    ["ent_entity_23", "ent_entity_24"],
+  );
+  assert.deepEqual(
+    ingestPayloads.map((item) => item.data.entity.id),
+    ["ent_entity_23", "ent_entity_24"],
+  );
+});
+
+test("LinearWorkflowService 会避开项目内已存在的 entity id", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-entity-state-"));
+  const ingestPayloads = [];
+
+  const service = createService({
+    runtimeRoot,
+    entityIdStateLoader: async () => ({
+      sequenceSeed: 2,
+      usedEntityIds: new Set([
+        "ent_entity_1",
+        "ent_entity_2",
+        "ent_entity_3",
+      ]),
+    }),
+    llmJsonInvoker: async ({ stage }) => {
+      if (stage.includes("节点1")) {
+        return {
+          entities: [
+            {
+              name: "甲实体",
+              summary: "A",
+              properties: { kind: "module" },
+              abilities: ["识别"],
+              citations: ["甲实体负责核心识别链路"],
+            },
+            {
+              name: "乙实体",
+              summary: "B",
+              properties: { kind: "module" },
+              abilities: ["补充"],
+              citations: ["乙实体用于补充说明"],
+            },
+          ],
+        };
+      }
+      if (stage.includes("节点2")) {
+        return { relations: [] };
+      }
+      if (stage.includes("节点3-消融候选")) {
+        return {
+          ablation_candidates: [
+            {
+              entity_id: "ent_entity_4",
+              entity_name: "甲实体",
+              remove_target: "甲实体",
+              retain_target: "甲实体",
+              keep_role: "保留后维持核心识别链路",
+              remove_impact: "去除后识别准确率明显下降",
+              observation: "保留版信息完整，去除版关键字段缺失",
+              evidence: "甲实体负责核心识别链路",
+            },
+            {
+              entity_id: "ent_entity_5",
+              entity_name: "乙实体",
+              remove_target: "乙实体",
+              retain_target: "乙实体",
+              keep_role: "提供补充说明",
+              remove_impact: "去除后影响较小",
+              observation: "主体结果基本一致",
+              evidence: "乙实体用于补充说明",
+            },
+          ],
+        };
+      }
+      if (stage.includes("小故-")) {
+        return { probability: "70%", reason: "默认小故判断" };
+      }
+      return {
+        ablation: [
+          {
+            entity_id: "ent_entity_4",
+            impact_level: "medium",
+            impact_reason: "示例",
+            system_risk: "low",
+          },
+          {
+            entity_id: "ent_entity_5",
+            impact_level: "medium",
+            impact_reason: "示例",
+            system_risk: "low",
+          },
+        ],
+      };
+    },
+    probabilityInvoker: async () => ({ probability: "70%", reason: "ok" }),
+    baseVersionLoader: async () => new Map(),
+    ingestInvoker: async (payload) => {
+      ingestPayloads.push(payload);
+      return {
+        status: "success",
+        write_result: {
+          commit_id: `commit-${ingestPayloads.length}`,
+          version_id: ingestPayloads.length,
+        },
+      };
+    },
+  });
+
+  const result = await service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "doc.md",
+    mimeType: "text/markdown",
+    content: Buffer.from("# 实体\n甲实体负责核心识别链路\n乙实体用于补充说明\n", "utf8"),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.stage_results.find((item) => item.stage === "observe")?.output?.entities?.map((entity) => entity.id),
+    ["ent_entity_4", "ent_entity_5"],
+  );
+  assert.deepEqual(
+    result.entity_files.map((item) => item.entity_id),
+    ["ent_entity_4", "ent_entity_5"],
+  );
+  assert.deepEqual(
+    ingestPayloads.map((item) => item.data.entity.id),
+    ["ent_entity_4", "ent_entity_5"],
+  );
 });
 
 test("LinearWorkflowService retries invalid JSON with higher temperatures", async () => {
@@ -386,8 +619,8 @@ test("LinearWorkflowService accepts stage-3 ablation arrays directly", async () 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.stage_results.find((item) => item.stage === "ablation")?.output?.ablation_count, 1);
-  assert.equal(result.stage_results.find((item) => item.stage === "ablation")?.output?.ablation?.[0]?.entity_name, "本体工厂");
+  assert.equal(result.stage_results.find((item) => item.stage === "ablation_judge")?.output?.ablation_count, 1);
+  assert.equal(result.stage_results.find((item) => item.stage === "ablation_judge")?.output?.ablation?.[0]?.entity_name, "本体工厂");
 });
 
 test("LinearWorkflowService 生成消融候选后分开计算保留/去除概率，并在代码侧完成小故判定", async () => {
@@ -519,9 +752,9 @@ test("LinearWorkflowService 生成消融候选后分开计算保留/去除概率
     content: Buffer.from("# 实体A\n实体A负责核心识别链路\n实体B用于补充说明\n", "utf8"),
   });
 
-  const ablationStage = result.stage_results.find((item) => item.stage === "ablation");
+  const ablationStage = result.stage_results.find((item) => item.stage === "ablation_judge");
   assert.equal(result.ok, true);
-  assert.equal(result.stage_results.length, 7);
+  assert.equal(result.stage_results.length, 8);
   assert.equal(ablationStage?.output?.ablation_count, 2);
   assert.equal(ablationStage?.output?.ablation_candidates?.length, 2);
   assert.equal(ablationStage?.output?.ablation_judges?.length, 2);
@@ -532,9 +765,9 @@ test("LinearWorkflowService 生成消融候选后分开计算保留/去除概率
   assert.equal(ablationStage?.output?.ablation_judges?.[1]?.keep_probability, "68%");
   assert.equal(ablationStage?.output?.ablation_judges?.[1]?.remove_probability, "58%");
   assert.equal(ablationStage?.output?.ablation_judges?.[1]?.probability_gap, "10%");
-  assert.equal("small_reason" in (ablationStage?.output?.ablation_judges?.[1] || {}), false);
+  assert.equal(ablationStage?.output?.ablation_judges?.[1]?.small_reason, true);
   assert.equal(result.entity_files[0]?.data?.ablation?.small_reason, true);
-  assert.equal("small_reason" in (result.entity_files[1]?.data?.ablation || {}), false);
+  assert.equal(result.entity_files[1]?.data?.ablation?.small_reason, true);
     assert.deepEqual(
       llmCalls
       .filter((item) => item.stage.includes("节点3") || item.stage.includes("小故-"))
@@ -888,7 +1121,7 @@ test("LinearWorkflowService marks stage-6 as failed when ingest fails", async ()
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.stage_results[6].status, "failed");
+  assert.equal(result.stage_results[7].status, "failed");
   assert.equal(result.errors.some((item) => item.stage === "ingest"), true);
   assert.equal(result.ingest_results.length >= 1, true);
 });
@@ -956,7 +1189,7 @@ test("LinearWorkflowService can retry from failed stage with saved snapshot", as
   const retried = await service.retryFileWorkflowFromStage({
     projectId: "demo",
     conversationId: "retry-from-ablation",
-    startStage: "ablation",
+    startStage: "ablation_candidate",
   });
 
   assert.equal(retried.ok, true);
@@ -964,7 +1197,7 @@ test("LinearWorkflowService can retry from failed stage with saved snapshot", as
   assert.equal(retried.stage_results[1].status, "success");
   assert.equal(retried.stage_results[2].status, "success");
   assert.equal(retried.stage_results[3].status, "success");
-  assert.equal(retried.stage_results[6].status, "success");
+  assert.equal(retried.stage_results[7].status, "success");
 });
 
 test("LinearWorkflowService invokeWriteAndInfer 会先登录再写入", async () => {
@@ -1021,6 +1254,25 @@ test("LinearWorkflowService invokeWriteAndInfer 缺少 basevision 时会拒绝",
     () => service.invokeWriteAndInfer({ project_id: "demo" }),
     /missing basevision/,
   );
+});
+
+test("LinearWorkflowService 会串行化同项目工作流锁", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "linear-workflow-lock-"));
+  const service = createService({ runtimeRoot });
+
+  const releaseFirst = await service.acquireProjectWorkflowLock("demo");
+  let secondAcquired = false;
+  const secondPromise = service.acquireProjectWorkflowLock("demo").then(async (releaseSecond) => {
+    secondAcquired = true;
+    await releaseSecond();
+  });
+
+  await Promise.resolve();
+  assert.equal(secondAcquired, false);
+
+  await releaseFirst();
+  await secondPromise;
+  assert.equal(secondAcquired, true);
 });
 
 test("LinearWorkflowService loadBaseVersionMap 会使用已认证的网关请求", async () => {

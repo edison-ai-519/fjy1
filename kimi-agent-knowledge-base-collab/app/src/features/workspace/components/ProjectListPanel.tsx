@@ -186,7 +186,7 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
                     : 'text-muted-foreground hover:bg-zinc-100 dark:hover:bg-primary/5 hover:text-foreground focus-visible:bg-muted/10'
                 }`}
               >
-                <span className="min-w-0 truncate">{project.name || project.id}</span>
+                <span className="min-w-0 truncate">{project.id}</span>
                 <div className="flex shrink-0 items-center gap-1">
                   {selectedProjectId === project.id && <CheckCircle2 className="h-4 w-4" />}
                   <DropdownMenu>
@@ -196,7 +196,7 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
                         size="icon"
                         className="h-7 w-7 rounded-full text-muted-foreground/60 hover:text-primary hover:bg-primary/10 transition-colors"
                         title="项目设置"
-                        aria-label={`项目设置：${project.name || project.id}`}
+                        aria-label={`项目设置：${project.id}`}
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                       >

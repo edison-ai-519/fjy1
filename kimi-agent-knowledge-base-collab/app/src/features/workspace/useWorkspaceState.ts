@@ -25,7 +25,7 @@ import {
   pickSelectedProjectId,
   syncEditorStateFromContent,
 } from '@/features/workspace/state';
-import { getStoredSelectedProjectId, setStoredSelectedProjectId } from '@/features/workspace/selectedProject';
+import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 
 export function useWorkspaceState() {
   const [projects, setProjects] = useState<XgProject[]>([]);
@@ -71,6 +71,10 @@ export function useWorkspaceState() {
       setStoredSelectedProjectId(selectedProjectId);
     }
   }, [selectedProjectId]);
+
+  useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
+    setSelectedProjectId(projectId);
+  }), []);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
@@ -170,6 +174,21 @@ export function useWorkspaceState() {
     } finally {
       setWriting(false);
     }
+  };
+
+  const handleSelectProject = (projectId: string) => {
+    const nextProjectId = projectId.trim();
+    if (!nextProjectId || nextProjectId === selectedProjectId) {
+      return;
+    }
+
+    selectedFileRef.current = '';
+    setFileSearch('');
+    setErrorMessage('');
+    setCompareTarget('');
+    setDiffData(null);
+    setIsDiffOpen(false);
+    setSelectedProjectId(nextProjectId);
   };
 
   const handleProbAnalysis = async () => {
@@ -317,6 +336,7 @@ export function useWorkspaceState() {
     projects,
     selectedProjectId,
     setSelectedProjectId,
+    handleSelectProject,
     timelines,
     selectedFile,
     setSelectedFile,

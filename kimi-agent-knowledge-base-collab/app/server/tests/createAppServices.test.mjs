@@ -4,6 +4,15 @@ import test from "node:test";
 import { createAppServices } from "../createAppServices.mjs";
 
 const WORKFLOW_ENV_NAMES = [
+  "ONTOGIT_GATEWAY_URL",
+  "XG_GATEWAY_URL",
+  "GATEWAY_URL",
+  "XG_GATEWAY_API_KEY",
+  "GATEWAY_SERVICE_API_KEY",
+  "ONTOGIT_AUTH_USERNAME",
+  "XG_AUTH_USERNAME",
+  "ONTOGIT_AUTH_PASSWORD",
+  "XG_AUTH_PASSWORD",
   "WORKFLOW_LLM_API_KEY",
   "WORKFLOW_LLM_BASE_URL",
   "WORKFLOW_MODEL",
@@ -64,5 +73,16 @@ test("createAppServices 使用 .agent/config.json 补齐 workflow LLM key", () =
     assert.equal(services.workflowService.workflowLlmApiKey, "agent-config-key");
     assert.equal(services.workflowService.workflowLlmBaseUrl, "https://openrouter.ai/api/v1");
     assert.equal(services.workflowService.workflowModel, "openai/gpt-4o-mini");
+  });
+});
+
+test("createAppServices 默认指向远端 OntoGit gateway", () => {
+  withClearedEnv(WORKFLOW_ENV_NAMES, () => {
+    const services = createAppServices({
+      windowsEnvReader: () => ({}),
+      agentConfigReader: () => ({}),
+    });
+
+    assert.equal(services.workflowService.gatewayBaseUrl, "http://81.70.12.214:8000");
   });
 });

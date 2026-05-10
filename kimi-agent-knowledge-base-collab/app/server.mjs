@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { createAppServices } from "./server/createAppServices.mjs";
+import { DEFAULT_GATEWAY_URL, createAppServices } from "./server/createAppServices.mjs";
 import {
   buildGatewayProxyHeaders,
   shouldRetryWithServiceAuthFallback,
@@ -11,7 +11,7 @@ import {
 import { validateWorkflowEntityFileData } from "./server/workflowEntityFormat.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
-const XG_GATEWAY_URL = process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || "http://127.0.0.1:8080";
+const XG_GATEWAY_URL = process.env.ONTOGIT_GATEWAY_URL || process.env.XG_GATEWAY_URL || process.env.GATEWAY_URL || DEFAULT_GATEWAY_URL;
 const XG_GATEWAY_API_KEY_RAW = process.env.XG_GATEWAY_API_KEY || process.env.GATEWAY_SERVICE_API_KEY || "";
 const XG_GATEWAY_API_KEY = XG_GATEWAY_API_KEY_RAW && XG_GATEWAY_API_KEY_RAW !== "change-me" ? XG_GATEWAY_API_KEY_RAW : "";
 const XG_GATEWAY_AUTH_USERNAME = process.env.ONTOGIT_AUTH_USERNAME || process.env.XG_AUTH_USERNAME || "mogong";

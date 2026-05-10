@@ -16,8 +16,10 @@ const appRoot = path.resolve(__dirname, "..");
 const projectRoot = path.resolve(appRoot, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
 const workflowRuntimeRoot = path.join(projectRoot, ".workflow-runtime");
+export const DEFAULT_GATEWAY_URL = "http://81.70.12.214:8000";
 const WINDOWS_GLOBAL_ENV_NAMES = [
   "ONTOGIT_PROJECT_ID",
+  "ONTOGIT_GATEWAY_URL",
   "XG_GATEWAY_URL",
   "GATEWAY_URL",
   "XG_GATEWAY_API_KEY",
@@ -100,6 +102,17 @@ function resolveEnvValue(keys, windowsGlobalEnv) {
   return "";
 }
 
+function extractEntitySequenceNumber(entityId) {
+  const normalized = asText(entityId);
+  if (!normalized) {
+    return 0;
+  }
+
+  const scoped = normalized.includes(":") ? normalized.split(":").pop() : normalized;
+  const match = asText(scoped).match(/_(\d+)$/);
+  return match ? Number(match[1]) : 0;
+}
+
 let envCache = null;
 let lastCacheTime = 0;
 const CACHE_TTL = 60_000; // 缓存 1 分钟
@@ -168,7 +181,7 @@ export function createAppServices(options = {}) {
   const agentConfig = readAgentConfigSnapshot();
   const windowsGlobalEnv = readWindowsGlobalEnvSnapshot();
   const ontoGitProjectId = resolveEnvValue(["ONTOGIT_PROJECT_ID"], windowsGlobalEnv) || "demo";
-  const gatewayBaseUrl = resolveEnvValue(["XG_GATEWAY_URL", "GATEWAY_URL"], windowsGlobalEnv) || "http://127.0.0.1:8080";
+  const gatewayBaseUrl = resolveEnvValue(["ONTOGIT_GATEWAY_URL", "XG_GATEWAY_URL", "GATEWAY_URL"], windowsGlobalEnv) || DEFAULT_GATEWAY_URL;
   const gatewayApiKeyRaw = resolveEnvValue(["XG_GATEWAY_API_KEY", "GATEWAY_SERVICE_API_KEY"], windowsGlobalEnv);
   const gatewayApiKey = gatewayApiKeyRaw && gatewayApiKeyRaw !== "change-me" ? gatewayApiKeyRaw : "";
   const authUsername = resolveEnvValue(["ONTOGIT_AUTH_USERNAME", "XG_AUTH_USERNAME"], windowsGlobalEnv) || "mogong";
@@ -203,6 +216,48 @@ export function createAppServices(options = {}) {
     authUsername,
     authPassword,
   });
+  const entityIdSeedLoader = async (projectId) => {
+    try {
+      const knowledgeGraph = await repository.getKnowledgeGraph(projectId);
+      const entityIndex = knowledgeGraph && typeof knowledgeGraph.entity_index === "object" && !Array.isArray(knowledgeGraph.entity_index)
+        ? knowledgeGraph.entity_index
+        : {};
+      let maxSequence = 0;
+      for (const entityId of Object.keys(entityIndex)) {
+        maxSequence = Math.max(maxSequence, extractEntitySequenceNumber(entityId));
+      }
+      return maxSequence;
+    } catch {
+      return 0;
+    }
+  };
+  const entityIdStateLoader = async (projectId) => {
+    try {
+      const knowledgeGraph = await repository.getKnowledgeGraph(projectId);
+      const entityIndex = knowledgeGraph && typeof knowledgeGraph.entity_index === "object" && !Array.isArray(knowledgeGraph.entity_index)
+        ? knowledgeGraph.entity_index
+        : {};
+      const usedEntityIds = new Set();
+      let maxSequence = 0;
+      for (const entity of Object.values(entityIndex)) {
+        const originalEntityId = asText(entity?.properties?.original_entity_id) || asText(entity?.id).split(":").pop();
+        if (!originalEntityId) {
+          continue;
+        }
+        usedEntityIds.add(originalEntityId);
+        maxSequence = Math.max(maxSequence, extractEntitySequenceNumber(originalEntityId));
+      }
+      return {
+        sequenceSeed: maxSequence,
+        usedEntityIds,
+      };
+    } catch {
+      return {
+        sequenceSeed: 0,
+        usedEntityIds: new Set(),
+      };
+    }
+  };
 
   return {
     knowledgeBaseService: new KnowledgeBaseService(repository, {
@@ -249,6 +304,8 @@ export function createAppServices(options = {}) {
         }
         return map;
       },
+      entityIdSeedLoader,
+      entityIdStateLoader,
       workflowTimeoutMs,
       workflowLlmBaseUrl,
       workflowLlmApiKey,

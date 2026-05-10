@@ -43,7 +43,7 @@ export function WorkspaceDashboard() {
             setNewProjectName={workspace.setNewProjectName}
             isNewProjectOpen={workspace.isNewProjectOpen}
             setIsNewProjectOpen={workspace.setIsNewProjectOpen}
-            onSelectProject={workspace.setSelectedProjectId}
+            onSelectProject={workspace.handleSelectProject}
             onRefresh={workspace.loadProjects}
             onInitProject={workspace.handleInitProject}
             onDeleteProject={workspace.handleDeleteProject}

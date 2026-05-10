@@ -1,14 +1,17 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import {
   BookOpen,
   Blocks,
+  ChevronDown,
   GitBranch,
   Menu,
   MessageSquareText,
   Network,
+  Loader2,
   Sparkles,
   Sun,
   Moon,
+  RefreshCcw,
   Zap,
   Layers,
   Atom,
@@ -23,6 +26,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Sidebar as AssistantSidebar } from '@/components/assistant/Sidebar';
 import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
@@ -32,6 +36,8 @@ import { LAYER_FILTERS } from '@/features/ontology/layerFilters';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import { EnterGateIntro } from '@/components/EnterGateIntro';
 import { SearchPanel } from '@/components/SearchPanel';
+import { fetchXgProjects, type XgProject } from '@/features/workspace/api';
+import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 import type { Entity } from '@/types/ontology';
 
 const AssistantPage = lazy(() => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage })));
@@ -49,6 +55,31 @@ function PageLoader({ label }: { label: string }) {
       </div>
     </div>
   );
+}
+
+function formatRefreshTime(value: string | null): string {
+  if (!value) {
+    return '最后刷新：暂无';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '最后刷新：暂无';
+  }
+
+  return `最后刷新：${new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date)}`;
+}
+
+function formatProjectLabel(fallbackProjectId: string): string {
+  if (fallbackProjectId.trim()) {
+    return fallbackProjectId.trim();
+  }
+  return 'demo';
 }
 
 const GlobalSidebar = ({
@@ -181,6 +212,9 @@ const GlobalSidebar = ({
 function AppShellContent() {
   const [activeTab, setActiveTab] = useState('lab');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [workspaceProjects, setWorkspaceProjects] = useState<XgProject[]>([]);
+  const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false);
+  const [selectedWorkspaceProjectId, setSelectedWorkspaceProjectId] = useState<string>(() => getStoredSelectedProjectId());
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
@@ -201,6 +235,8 @@ function AppShellContent() {
 
   const {
     loading,
+    refreshing,
+    lastRefreshAt,
     error,
     filteredEntities,
     filteredCrossReferences,
@@ -209,13 +245,46 @@ function AppShellContent() {
     setSelectedLayer,
     selectEntity,
     searchInLayer,
+    refreshKnowledgeGraph,
   } = useOntologyContext();
   const assistantState = useOntologyAssistantState(selectedEntity);
+
+  useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
+    setSelectedWorkspaceProjectId(projectId);
+  }), []);
+
+  useEffect(() => {
+    const selectedProject = workspaceProjects.find((project) => project.id === selectedWorkspaceProjectId);
+    if (!selectedProject && workspaceProjects.length > 0) {
+      setSelectedWorkspaceProjectId(workspaceProjects[0].id);
+    }
+  }, [selectedWorkspaceProjectId, workspaceProjects]);
+
+  const loadWorkspaceProjects = async () => {
+    setWorkspaceProjectsLoading(true);
+    try {
+      const data = await fetchXgProjects();
+      setWorkspaceProjects(data);
+    } catch {
+      setWorkspaceProjects([]);
+    } finally {
+      setWorkspaceProjectsLoading(false);
+    }
+  };
 
   const handleSelectEntity = (entity: Entity) => {
     selectEntity(entity);
     setSidebarOpen(false);
     setActiveTab('explorer');
+  };
+
+  const handleWorkspaceProjectChange = (projectId: string) => {
+    const nextProjectId = projectId.trim();
+    if (!nextProjectId || nextProjectId === selectedWorkspaceProjectId) {
+      return;
+    }
+    setSelectedWorkspaceProjectId(nextProjectId);
+    setStoredSelectedProjectId(nextProjectId);
   };
 
   const commonSidebarProps = {
@@ -230,30 +299,18 @@ function AppShellContent() {
     onSearch: searchInLayer,
     onSelectEntity: handleSelectEntity,
   };
-
-  // 只有在完全没有数据（初次启动）且正在加载时，才显示全屏 Loading
-  // 之后的后台刷新（refreshKnowledgeGraph）将不再导致整页闪烁
-  if (loading && !filteredEntities?.length) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4" />
-          <p className="text-muted-foreground">正在加载 本体知识库 多层知识图谱...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center text-destructive">
-          <p className="text-lg font-semibold mb-2">加载失败</p>
-          <p className="text-muted-foreground">{error}</p>
-        </div>
-      </div>
-    );
-  }
+  const showLoadingBadge = loading && !filteredEntities?.length;
+  const statusBadge = showLoadingBadge
+    ? '图谱加载中'
+    : refreshing
+      ? '图谱刷新中'
+      : error
+        ? '数据更新失败'
+        : null;
+  const refreshTimeLabel = formatRefreshTime(lastRefreshAt);
+  const handleGlobalRefresh = () => {
+    void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground overflow-y-auto lg:h-screen lg:overflow-hidden">
@@ -279,6 +336,92 @@ function AppShellContent() {
                 onSelectEntity={handleSelectEntity}
               />
             </div>
+            <DropdownMenu onOpenChange={(open) => {
+              if (open && workspaceProjects.length === 0 && !workspaceProjectsLoading) {
+                void loadWorkspaceProjects();
+              }
+            }}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="hidden h-9 min-w-[180px] justify-between rounded-xl border-border/40 bg-background/70 px-3 text-left text-[10px] font-bold text-foreground/80 sm:inline-flex"
+                  title="切换工作区项目"
+                >
+                  <span className="min-w-0 truncate">
+                    {formatProjectLabel(selectedWorkspaceProjectId)}
+                  </span>
+                  <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-80 rounded-2xl border-border/40 p-2">
+                <DropdownMenuLabel className="px-2 pb-2 text-[11px] font-black uppercase tracking-widest text-muted-foreground/60">
+                  工作区项目
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <div className="max-h-80 space-y-1 overflow-y-auto pt-2">
+                  {workspaceProjectsLoading && workspaceProjects.length === 0 ? (
+                    <div className="px-3 py-4 text-sm text-muted-foreground">正在加载项目列表...</div>
+                  ) : workspaceProjects.length === 0 ? (
+                    <div className="px-3 py-4 text-sm text-muted-foreground">暂无可切换项目</div>
+                  ) : workspaceProjects.map((project) => {
+                    const active = project.id === selectedWorkspaceProjectId;
+                    return (
+                      <DropdownMenuItem
+                        key={project.id}
+                        className={cn(
+                          'cursor-pointer rounded-xl border px-3 py-2.5 text-left transition-all',
+                          active
+                            ? 'border-primary/25 bg-primary/10 text-primary'
+                            : 'border-border/40 bg-background/70 hover:bg-muted/60',
+                        )}
+                        onSelect={() => handleWorkspaceProjectChange(project.id)}
+                      >
+                        <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                          <div className="min-w-0 truncate text-sm font-bold">{project.id}</div>
+                          {active && (
+                            <Badge variant="outline" className="rounded-full border-primary/20 bg-primary/10 px-2 py-0 text-[10px] font-black text-primary">
+                              当前
+                            </Badge>
+                          )}
+                        </div>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {statusBadge && (
+              <Badge
+                variant={error ? 'destructive' : 'outline'}
+                className={cn(
+                  "hidden h-9 rounded-xl px-3 text-[10px] font-black uppercase tracking-widest sm:inline-flex",
+                  !error && "border-primary/20 bg-primary/5 text-primary",
+                )}
+              >
+                {showLoadingBadge || refreshing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                {statusBadge}
+              </Badge>
+            )}
+            <Badge
+              variant="outline"
+              className={cn(
+                "hidden h-9 rounded-xl border-border/40 bg-background/70 px-3 text-[10px] font-bold text-muted-foreground sm:inline-flex",
+                refreshing && "border-primary/20 text-primary",
+              )}
+            >
+              {refreshing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+              {refreshTimeLabel}
+            </Badge>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleGlobalRefresh}
+              disabled={loading || refreshing}
+              className="h-9 w-9 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-all ml-1 relative overflow-hidden"
+              title="刷新图谱与概念速览"
+            >
+              {refreshing ? <Loader2 className="h-[1.05rem] w-[1.05rem] animate-spin" /> : <RefreshCcw className="h-[1.05rem] w-[1.05rem]" />}
+            </Button>
             <Button
               variant="ghost"
               size="icon"

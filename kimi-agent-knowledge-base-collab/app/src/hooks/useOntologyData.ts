@@ -11,11 +11,16 @@ export function useOntologyData() {
   const [scientificOntology, setScientificOntology] = useState<OntologyModule | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(getStoredSelectedProjectId);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refreshKnowledgeGraph = async (options: { silent?: boolean; forceRefresh?: boolean } = {}) => {
+    const silent = options.silent ?? true;
     try {
-      if (!options.silent) {
+      if (silent) {
+        setRefreshing(true);
+      } else {
         setLoading(true);
       }
       setError(null);
@@ -29,22 +34,25 @@ export function useOntologyData() {
       setPhilosophicalOntology(ontologies.philosophicalOntology);
       setFormalOntology(ontologies.formalOntology);
       setScientificOntology(ontologies.scientificOntology);
+      setLastRefreshAt(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      if (!options.silent) {
+      if (silent) {
+        setRefreshing(false);
+      } else {
         setLoading(false);
       }
     }
   };
 
   useEffect(() => {
-    void refreshKnowledgeGraph();
+    void refreshKnowledgeGraph({ silent: false });
   }, [selectedProjectId]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
+      void refreshKnowledgeGraph({ silent: true });
     }, 10000);
 
     return () => window.clearInterval(interval);
@@ -96,6 +104,8 @@ export function useOntologyData() {
     formalOntology,
     scientificOntology,
     loading,
+    refreshing,
+    lastRefreshAt,
     error,
     getEntityById,
     searchEntities,
