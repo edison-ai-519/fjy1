@@ -28,7 +28,7 @@ import {
   MODEL_PRESETS,
 } from '@/hooks/useOntologyAssistantState';
 import {
-  fetchKnowledgeGraphSlice,
+  prefetchKnowledgeGraphSlice,
   type KnowledgeGraphSliceResponse,
 } from '@/features/ontology/api';
 import {
@@ -192,7 +192,7 @@ export function OntologyAssistant({
       }
 
       try {
-        const slice = await fetchKnowledgeGraphSlice(viewedRefs, selectedProjectId);
+        const slice = await prefetchKnowledgeGraphSlice(viewedRefs, selectedProjectId);
         if (!cancelled) {
           setGraphSlice(slice);
         }

@@ -38,13 +38,20 @@ import { EnterGateIntro } from '@/components/EnterGateIntro';
 import { SearchPanel } from '@/components/SearchPanel';
 import { fetchXgProjects, type XgProject } from '@/features/workspace/api';
 import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
+import { prefetchKnowledgeGraph, prefetchOntologies } from '@/features/ontology/api';
 import type { Entity } from '@/types/ontology';
 
-const AssistantPage = lazy(() => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage })));
-const ExplorerPage = lazy(() => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage })));
-const FileWorkflowPage = lazy(() => import('@/app/pages/FileWorkflowPage').then((module) => ({ default: module.FileWorkflowPage })));
-const LabPage = lazy(() => import('@/app/pages/LabPage').then((module) => ({ default: module.LabPage })));
-const WorkspacePage = lazy(() => import('@/app/pages/WorkspacePage').then((module) => ({ default: module.WorkspacePage })));
+const loadAssistantPage = () => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage }));
+const loadExplorerPage = () => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage }));
+const loadFileWorkflowPage = () => import('@/app/pages/FileWorkflowPage').then((module) => ({ default: module.FileWorkflowPage }));
+const loadLabPage = () => import('@/app/pages/LabPage').then((module) => ({ default: module.LabPage }));
+const loadWorkspacePage = () => import('@/app/pages/WorkspacePage').then((module) => ({ default: module.WorkspacePage }));
+
+const AssistantPage = lazy(loadAssistantPage);
+const ExplorerPage = lazy(loadExplorerPage);
+const FileWorkflowPage = lazy(loadFileWorkflowPage);
+const LabPage = lazy(loadLabPage);
+const WorkspacePage = lazy(loadWorkspacePage);
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -80,6 +87,52 @@ function formatProjectLabel(fallbackProjectId: string): string {
     return fallbackProjectId.trim();
   }
   return 'demo';
+}
+
+type OntologyTabKey = 'assistant' | 'lab' | 'explorer';
+
+function scheduleIdlePrefetch(task: () => void): () => void {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+
+  const requestIdleCallbackFn = window.requestIdleCallback?.bind(window);
+  const cancelIdleCallbackFn = window.cancelIdleCallback?.bind(window);
+  if (requestIdleCallbackFn) {
+    const handle = requestIdleCallbackFn(() => {
+      task();
+    });
+    return () => {
+      cancelIdleCallbackFn?.(handle);
+    };
+  }
+
+  const timeoutHandle = window.setTimeout(task, 0);
+  return () => window.clearTimeout(timeoutHandle);
+}
+
+function prefetchOntologyData() {
+  const projectId = getStoredSelectedProjectId();
+  void prefetchKnowledgeGraph({ projectId });
+  void prefetchOntologies();
+}
+
+function prefetchOntologyTab(tab: OntologyTabKey) {
+  switch (tab) {
+    case 'assistant':
+      void loadAssistantPage();
+      break;
+    case 'lab':
+      void loadLabPage();
+      prefetchOntologyData();
+      break;
+    case 'explorer':
+      void loadExplorerPage();
+      prefetchOntologyData();
+      break;
+    default:
+      break;
+  }
 }
 
 const GlobalSidebar = ({
@@ -292,6 +345,16 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
     setStoredSelectedProjectId(nextProjectId);
   };
 
+  useEffect(() => {
+    const cancelIdlePrefetch = scheduleIdlePrefetch(() => {
+      prefetchOntologyTab('assistant');
+      prefetchOntologyTab('lab');
+      prefetchOntologyTab('explorer');
+    });
+
+    return cancelIdlePrefetch;
+  }, []);
+
   const commonSidebarProps = {
     domainCount: new Set((filteredEntities || []).map(e => e.domain)).size,
     layerCount: new Set((filteredEntities || []).map(e => e.layer)).size,
@@ -486,15 +549,30 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
           <div className="flex w-full shrink-0 flex-col overflow-y-auto overflow-x-hidden border-r bg-muted/10 lg:h-full lg:w-[208px] xl:w-[240px]">
             <div className="p-3 sm:p-4 flex flex-col min-h-full gap-4">
               <TabsList className="flex h-auto w-full flex-col gap-1 rounded-3xl border bg-card/10 p-2 shadow-sm shrink-0 min-h-0">
-                <TabsTrigger value="lab" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                <TabsTrigger
+                  value="lab"
+                  className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all"
+                  onMouseEnter={() => prefetchOntologyTab('lab')}
+                  onFocus={() => prefetchOntologyTab('lab')}
+                >
                   <BookOpen className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">本体库</span>
                 </TabsTrigger>
-                <TabsTrigger value="assistant" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                <TabsTrigger
+                  value="assistant"
+                  className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all"
+                  onMouseEnter={() => prefetchOntologyTab('assistant')}
+                  onFocus={() => prefetchOntologyTab('assistant')}
+                >
                   <MessageSquareText className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">问答助手</span>
                 </TabsTrigger>
-                <TabsTrigger value="explorer" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                <TabsTrigger
+                  value="explorer"
+                  className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all"
+                  onMouseEnter={() => prefetchOntologyTab('explorer')}
+                  onFocus={() => prefetchOntologyTab('explorer')}
+                >
                   <Zap className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">本体图谱</span>
                 </TabsTrigger>

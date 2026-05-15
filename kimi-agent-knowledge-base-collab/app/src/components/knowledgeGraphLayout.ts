@@ -34,12 +34,24 @@ export interface KnowledgeGraphDimensions {
   height: number;
 }
 
+export interface KnowledgeGraphRenderBudget {
+  mode: 'full' | 'reduced';
+  maxInitialNodes: number;
+  allowPairwiseRepulsion: boolean;
+}
+
 const INITIAL_ORBIT_RADIUS = 80;
 const NODE_RADIUS_BY_LEVEL = {
   min: 17,
   base: 20,
   max: 23,
 };
+
+const FULL_LAYOUT_NODE_LIMIT = 48;
+const COMPACT_VIEWPORT_WIDTH = 960;
+const COMPACT_VIEWPORT_HEIGHT = 680;
+const REDUCED_INITIAL_NODES = 24;
+const REDUCED_INITIAL_NODES_LARGE_VIEWPORT = 32;
 
 const PALETTE = ['#2563eb', '#7c3aed', '#059669', '#ea580c', '#db2777', '#0f766e', '#4f46e5', '#ca8a04'];
 
@@ -49,6 +61,29 @@ export function buildKnowledgeGraphDomainColors(entities: Entity[]) {
     accumulator[domain] = PALETTE[index % PALETTE.length];
     return accumulator;
   }, {});
+}
+
+export function getKnowledgeGraphRenderBudget(
+  entityCount: number,
+  dimensions: KnowledgeGraphDimensions,
+): KnowledgeGraphRenderBudget {
+  const isCompactViewport =
+    dimensions.width < COMPACT_VIEWPORT_WIDTH || dimensions.height < COMPACT_VIEWPORT_HEIGHT;
+  const shouldReduce = entityCount > FULL_LAYOUT_NODE_LIMIT || (isCompactViewport && entityCount > 40);
+
+  if (!shouldReduce) {
+    return {
+      mode: 'full',
+      maxInitialNodes: entityCount,
+      allowPairwiseRepulsion: true,
+    };
+  }
+
+  return {
+    mode: 'reduced',
+    maxInitialNodes: isCompactViewport ? REDUCED_INITIAL_NODES : REDUCED_INITIAL_NODES_LARGE_VIEWPORT,
+    allowPairwiseRepulsion: false,
+  };
 }
 
 export function createKnowledgeGraphNodes(
@@ -87,30 +122,46 @@ export function createKnowledgeGraphNodes(
 }
 
 export function mergeKnowledgeGraphLinks(crossReferences: CrossReference[]): KnowledgeGraphLink[] {
-  const mergedLinksMap = new Map<string, KnowledgeGraphLink>();
+  const mergedLinksMap = new Map<
+    string,
+    {
+      link: KnowledgeGraphLink;
+      relationSet: Set<string>;
+    }
+  >();
 
-  crossReferences.forEach((ref) => {
+  for (const ref of crossReferences) {
     const ids = [ref.source, ref.target].sort();
     const key = ids.join('--');
     const existing = mergedLinksMap.get(key);
 
     if (existing) {
-      if (!existing.relation.split(' | ').includes(ref.relation)) {
-        existing.relation += ` | ${ref.relation}`;
+      if (!existing.relationSet.has(ref.relation)) {
+        existing.relationSet.add(ref.relation);
+        existing.link.relation = Array.from(existing.relationSet).join(' | ');
       }
-      return;
+      continue;
     }
 
     mergedLinksMap.set(key, {
-      source: ref.source,
-      target: ref.target,
-      relation: ref.relation,
+      link: {
+        source: ref.source,
+        target: ref.target,
+        relation: ref.relation,
+      },
+      relationSet: new Set([ref.relation]),
     });
-  });
+  }
 
-  return Array.from(mergedLinksMap.values());
+  return Array.from(mergedLinksMap.values(), (entry) => entry.link);
 }
 
 export function createKnowledgeGraphNodeIndex(nodes: KnowledgeGraphNode[]) {
-  return new Map(nodes.map((node) => [node.id, node]));
+  const index = new Map<string, KnowledgeGraphNode>();
+
+  for (const node of nodes) {
+    index.set(node.id, node);
+  }
+
+  return index;
 }

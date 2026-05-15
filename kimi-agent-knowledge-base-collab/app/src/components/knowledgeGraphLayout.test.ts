@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { Entity, CrossReference } from '../types/ontology';
 import {
   createKnowledgeGraphNodeIndex,
+  getKnowledgeGraphRenderBudget,
   mergeKnowledgeGraphLinks,
 } from './knowledgeGraphLayout';
 
@@ -46,4 +47,40 @@ test('createKnowledgeGraphNodeIndex 会返回稳定的节点映射', () => {
   assert.strictEqual(index.get('a'), nodes[0]);
   assert.strictEqual(index.get('b'), nodes[1]);
   assert.equal(index.get('missing'), undefined);
+});
+
+test('getKnowledgeGraphRenderBudget 会在小图谱上保持 full', () => {
+  const budget = getKnowledgeGraphRenderBudget(32, { width: 1400, height: 900 });
+
+  assert.deepEqual(budget, {
+    mode: 'full',
+    maxInitialNodes: 32,
+    allowPairwiseRepulsion: true,
+  });
+});
+
+test('getKnowledgeGraphRenderBudget 会在大图谱上降级为 reduced', () => {
+  const budget = getKnowledgeGraphRenderBudget(96, { width: 1400, height: 900 });
+
+  assert.deepEqual(budget, {
+    mode: 'reduced',
+    maxInitialNodes: 32,
+    allowPairwiseRepulsion: false,
+  });
+});
+
+test('getKnowledgeGraphRenderBudget 会在紧凑视口下更早降级', () => {
+  const largeViewportBudget = getKnowledgeGraphRenderBudget(41, { width: 1400, height: 900 });
+  const compactViewportBudget = getKnowledgeGraphRenderBudget(41, { width: 820, height: 620 });
+
+  assert.deepEqual(largeViewportBudget, {
+    mode: 'full',
+    maxInitialNodes: 41,
+    allowPairwiseRepulsion: true,
+  });
+  assert.deepEqual(compactViewportBudget, {
+    mode: 'reduced',
+    maxInitialNodes: 24,
+    allowPairwiseRepulsion: false,
+  });
 });

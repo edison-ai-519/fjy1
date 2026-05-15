@@ -3,6 +3,77 @@ import { apiFetch, parseJson } from '@/shared/api/http';
 import { notifyRepositorySync } from '@/shared/events/repositorySync';
 import { validateWorkflowEntityFileData } from '@/features/workspace/workflowEntityFormat';
 
+interface SessionCacheEntry<T> {
+  promise: Promise<T> | null;
+  value: T | null;
+}
+
+const knowledgeGraphRequestCache = new Map<string, SessionCacheEntry<KnowledgeGraphData>>();
+const knowledgeGraphSliceRequestCache = new Map<string, SessionCacheEntry<KnowledgeGraphSliceResponse>>();
+const ontologiesRequestCache = new Map<string, SessionCacheEntry<{
+  philosophicalOntology: OntologyModule;
+  formalOntology: OntologyModule;
+  scientificOntology: OntologyModule;
+}>>();
+
+function getSharedSessionPromise<T>(
+  cache: Map<string, SessionCacheEntry<T>>,
+  key: string,
+  factory: () => Promise<T>,
+  options: { refresh?: boolean } = {},
+): Promise<T> {
+  const refresh = Boolean(options.refresh);
+  const existing = cache.get(key);
+  if (existing && !refresh) {
+    if (existing.promise) {
+      return existing.promise;
+    }
+    if (existing.value !== null) {
+      return Promise.resolve(existing.value);
+    }
+  }
+
+  const entry = existing ?? { promise: null, value: null };
+  const promise = factory();
+  entry.promise = promise;
+  cache.set(key, entry);
+
+  void promise.then((value) => {
+    const current = cache.get(key);
+    if (current?.promise === promise) {
+      current.promise = null;
+      current.value = value;
+    }
+  }).catch(() => {
+    const current = cache.get(key);
+    if (current?.promise === promise) {
+      current.promise = null;
+      if (current.value === null) {
+        cache.delete(key);
+      }
+    }
+  });
+
+  return promise;
+}
+
+function normalizeProjectId(projectId?: string): string {
+  return projectId?.trim() || '';
+}
+
+function buildKnowledgeGraphRequestKey(options: { refresh?: boolean; projectId?: string } = {}): string {
+  return JSON.stringify({
+    projectId: normalizeProjectId(options.projectId),
+  });
+}
+
+function buildKnowledgeGraphSliceRequestKey(refs: string[], projectId?: string): string {
+  return JSON.stringify({
+    refs,
+    projectId: normalizeProjectId(projectId),
+  });
+}
+
 export interface AnalysisResult {
   entity_name: string;
   primary_level: string;
@@ -155,16 +226,23 @@ export interface EditorCommitResult {
 }
 
 export async function fetchKnowledgeGraph(options: { refresh?: boolean; projectId?: string } = {}): Promise<KnowledgeGraphData> {
-  const params = new URLSearchParams();
-  if (options.refresh) {
-    params.set('refresh', '1');
-  }
-  if (options.projectId?.trim()) {
-    params.set('project_id', options.projectId.trim());
-  }
-  const suffix = params.toString() ? `?${params.toString()}` : '';
-  const response = await apiFetch(`/api/knowledge-graph${suffix}`);
-  return parseJson<KnowledgeGraphData>(response);
+  return getSharedSessionPromise(knowledgeGraphRequestCache, buildKnowledgeGraphRequestKey(options), async () => {
+    const params = new URLSearchParams();
+    if (options.refresh) {
+      params.set('refresh', '1');
+    }
+    const projectId = normalizeProjectId(options.projectId);
+    if (projectId) {
+      params.set('project_id', projectId);
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const response = await apiFetch(`/api/knowledge-graph${suffix}`);
+    return parseJson<KnowledgeGraphData>(response);
+  }, options);
+}
+
+export function prefetchKnowledgeGraph(options: { refresh?: boolean; projectId?: string } = {}): Promise<KnowledgeGraphData> {
+  return fetchKnowledgeGraph(options);
 }
 
 export interface KnowledgeGraphSliceResponse {
@@ -180,15 +258,21 @@ export interface KnowledgeGraphSliceResponse {
 }
 
 export async function fetchKnowledgeGraphSlice(refs: string[], projectId?: string): Promise<KnowledgeGraphSliceResponse> {
-  const response = await apiFetch('/api/knowledge-graph/slice', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ refs, project_id: projectId }),
-  });
+  return getSharedSessionPromise(knowledgeGraphSliceRequestCache, buildKnowledgeGraphSliceRequestKey(refs, projectId), async () => {
+    const response = await apiFetch('/api/knowledge-graph/slice', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refs, project_id: projectId }),
+    });
 
-  return parseJson<KnowledgeGraphSliceResponse>(response);
+    return parseJson<KnowledgeGraphSliceResponse>(response);
+  });
+}
+
+export function prefetchKnowledgeGraphSlice(refs: string[], projectId?: string): Promise<KnowledgeGraphSliceResponse> {
+  return fetchKnowledgeGraphSlice(refs, projectId);
 }
 
 export async function fetchOntologies(): Promise<{
@@ -196,8 +280,18 @@ export async function fetchOntologies(): Promise<{
   formalOntology: OntologyModule;
   scientificOntology: OntologyModule;
 }> {
-  const response = await apiFetch('/api/ontologies');
-  return parseJson(response);
+  return getSharedSessionPromise(ontologiesRequestCache, 'ontologies', async () => {
+    const response = await apiFetch('/api/ontologies');
+    return parseJson(response);
+  });
+}
+
+export function prefetchOntologies(): Promise<{
+  philosophicalOntology: OntologyModule;
+  formalOntology: OntologyModule;
+  scientificOntology: OntologyModule;
+}> {
+  return fetchOntologies();
 }
 
 export async function searchEntities(query: string, projectId?: string): Promise<Entity[]> {

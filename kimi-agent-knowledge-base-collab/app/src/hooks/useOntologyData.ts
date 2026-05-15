@@ -32,9 +32,11 @@ export function useOntologyData(options: { enabled?: boolean } = {}) {
       }
       setError(null);
 
+      const knowledgeGraphPromise = fetchKnowledgeGraph({ refresh: options.forceRefresh, projectId: selectedProjectId });
+      const ontologiesPromise = fetchOntologies();
       const [kgData, ontologies] = await Promise.all([
-        fetchKnowledgeGraph({ refresh: options.forceRefresh, projectId: selectedProjectId }),
-        fetchOntologies(),
+        knowledgeGraphPromise,
+        ontologiesPromise,
       ]);
 
       setKnowledgeGraph(kgData);
@@ -86,7 +88,7 @@ export function useOntologyData(options: { enabled?: boolean } = {}) {
     }
 
     const interval = window.setInterval(() => {
-      void refreshKnowledgeGraph({ silent: true });
+      void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
     }, 10000);
 
     return () => window.clearInterval(interval);

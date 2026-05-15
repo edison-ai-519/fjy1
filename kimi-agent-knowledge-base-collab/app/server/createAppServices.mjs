@@ -195,7 +195,7 @@ export function createAppServices(options = {}) {
     || resolveAgentConfigValue(agentConfig, [["model", "apiKey"], ["model", "api_key"]]);
   const workflowModel = resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], windowsGlobalEnv)
     || resolveAgentConfigValue(agentConfig, [["model", "name"], ["model", "model"]])
-    || "openai/gpt-4o-mini";
+    || "deepseek/deepseek-v4-flash";
   const workflowEnvResolver = () => {
     const nextAgentConfig = readAgentConfigSnapshot();
     const nextWindowsGlobalEnv = readWindowsGlobalEnvSnapshot();
@@ -207,7 +207,7 @@ export function createAppServices(options = {}) {
         || resolveAgentConfigValue(nextAgentConfig, [["model", "apiKey"], ["model", "api_key"]]),
       workflowModel: resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], nextWindowsGlobalEnv)
         || resolveAgentConfigValue(nextAgentConfig, [["model", "name"], ["model", "model"]])
-        || "openai/gpt-4o-mini",
+        || "deepseek/deepseek-v4-flash",
     };
   };
 

@@ -598,7 +598,7 @@ export class LinearWorkflowService {
       || process.env.WORKFLOW_MODEL
       || process.env.OPENROUTER_MODEL
       || process.env.DMXAPI_MODEL
-      || "openai/gpt-4o-mini";
+      || "deepseek/deepseek-v4-flash";
     this.workflowLlmBaseUrl = asText(options.workflowLlmBaseUrl)
       || process.env.WORKFLOW_LLM_BASE_URL
       || process.env.OPENROUTER_BASE_URL

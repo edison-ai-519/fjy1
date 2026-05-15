@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { DEFAULT_GATEWAY_URL, createAppServices } from "./server/createAppServices.mjs";
+import { createGatewayAccessTokenManager } from "./server/gatewayAuth.mjs";
 import {
   buildGatewayProxyHeaders,
   shouldRetryWithServiceAuthFallback,
@@ -16,6 +17,11 @@ const XG_GATEWAY_API_KEY_RAW = process.env.XG_GATEWAY_API_KEY || process.env.GAT
 const XG_GATEWAY_API_KEY = XG_GATEWAY_API_KEY_RAW && XG_GATEWAY_API_KEY_RAW !== "change-me" ? XG_GATEWAY_API_KEY_RAW : "";
 const XG_GATEWAY_AUTH_USERNAME = process.env.ONTOGIT_AUTH_USERNAME || process.env.XG_AUTH_USERNAME || "mogong";
 const XG_GATEWAY_AUTH_PASSWORD = process.env.ONTOGIT_AUTH_PASSWORD || process.env.XG_AUTH_PASSWORD || "123456";
+const gatewayAuth = createGatewayAccessTokenManager({
+  gatewayUrl: XG_GATEWAY_URL,
+  username: XG_GATEWAY_AUTH_USERNAME,
+  password: XG_GATEWAY_AUTH_PASSWORD,
+});
 const {
   knowledgeBaseService,
   assistantSessionStateService,
@@ -24,8 +30,6 @@ const {
   appRoot,
 } = createAppServices();
 const workflowControllers = new Map();
-let gatewayAccessToken = "";
-let gatewayLoginPromise = null;
 
 function getCorsHeaders() {
   return {
@@ -53,6 +57,13 @@ function sendText(res, status, text, contentType = "text/plain; charset=utf-8") 
   writeWithCors(res, status, {
     "Content-Type": contentType,
   }, text);
+}
+
+function sendGatewayError(res, error) {
+  const message = error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : "Gateway error";
+  sendJson(res, 502, { error: message });
 }
 
 function openSse(res) {
@@ -109,50 +120,6 @@ async function readRequestBodyBuffer(req) {
   return chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
 }
 
-async function ensureGatewayAccessToken() {
-  if (gatewayAccessToken) {
-    return gatewayAccessToken;
-  }
-  if (gatewayLoginPromise) {
-    return gatewayLoginPromise;
-  }
-  if (!XG_GATEWAY_AUTH_USERNAME || !XG_GATEWAY_AUTH_PASSWORD) {
-    throw new Error("Gateway login failed: missing credentials");
-  }
-
-  gatewayLoginPromise = (async () => {
-    const loginUrl = new URL("/auth/login", XG_GATEWAY_URL);
-    const response = await fetch(loginUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({
-        username: XG_GATEWAY_AUTH_USERNAME,
-        password: XG_GATEWAY_AUTH_PASSWORD,
-      }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
-      throw new Error(`Gateway login failed: ${detail}`);
-    }
-
-    const token = typeof payload?.access_token === "string" ? payload.access_token.trim() : "";
-    if (!token) {
-      throw new Error("Gateway login failed: missing access_token");
-    }
-    gatewayAccessToken = token;
-    return gatewayAccessToken;
-  })();
-
-  try {
-    return await gatewayLoginPromise;
-  } finally {
-    gatewayLoginPromise = null;
-  }
-}
-
 function proxyRequest(targetUrl, method, headers, bodyBuffer) {
   return new Promise((resolve, reject) => {
     const proxyReq = httpRequest(targetUrl, { method, headers }, (proxyRes) => {
@@ -185,7 +152,7 @@ async function buildServiceGatewayHeaders(sourceHeaders, targetHost) {
   });
 
   try {
-    const accessToken = await ensureGatewayAccessToken();
+    const accessToken = await gatewayAuth.ensureGatewayAccessToken();
     delete headers["X-API-Key"];
     delete headers["x-api-key"];
     delete headers.cookie;
@@ -201,7 +168,7 @@ async function buildServiceGatewayHeaders(sourceHeaders, targetHost) {
       || headers.cookie,
     );
     if (!hasAuthHeader) {
-      throw error;
+      throw error instanceof Error ? error : new Error("Gateway authentication is unavailable");
     }
   }
 
@@ -312,7 +279,7 @@ const server = createServer(async (req, res) => {
         );
 
         if (proxyRes.statusCode === 401 && usingServiceAuth) {
-          gatewayAccessToken = "";
+          gatewayAuth.resetGatewayAccessToken();
           gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
           proxyRes = await proxyRequest(
             targetUrl,
@@ -321,7 +288,7 @@ const server = createServer(async (req, res) => {
             bodyBuffer,
           );
         } else if (proxyRes.statusCode === 401) {
-          const accessToken = await ensureGatewayAccessToken();
+          const accessToken = await gatewayAuth.ensureGatewayAccessToken();
           proxyRes = await proxyRequest(
             targetUrl,
             req.method,
@@ -350,7 +317,7 @@ const server = createServer(async (req, res) => {
 
         writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
       } catch (err) {
-        sendJson(res, 502, { error: "Gateway error", detail: err.message });
+        sendGatewayError(res, err);
       }
       return;
     }
@@ -372,7 +339,7 @@ const server = createServer(async (req, res) => {
 
         writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
       } catch (err) {
-        sendJson(res, 502, { error: "Gateway error", detail: err.message });
+        sendGatewayError(res, err);
       }
       return;
     }
@@ -388,11 +355,11 @@ const server = createServer(async (req, res) => {
 
         let proxyRes = await proxyRequest(targetUrl, req.method, gatewayHeaders, bodyBuffer);
         if (proxyRes.statusCode === 401 && usingServiceAuth) {
-          gatewayAccessToken = "";
+          gatewayAuth.resetGatewayAccessToken();
           gatewayHeaders = await buildServiceGatewayHeaders(req.headers, targetUrl.host);
           proxyRes = await proxyRequest(targetUrl, req.method, gatewayHeaders, bodyBuffer);
         } else if (proxyRes.statusCode === 401) {
-          const accessToken = await ensureGatewayAccessToken();
+          const accessToken = await gatewayAuth.ensureGatewayAccessToken();
           proxyRes = await proxyRequest(
             targetUrl,
             req.method,
@@ -410,7 +377,7 @@ const server = createServer(async (req, res) => {
 
         writeWithCors(res, proxyRes.statusCode, proxyRes.headers, proxyRes.body);
       } catch (err) {
-        sendJson(res, 502, { error: "Gateway error", detail: err.message });
+        sendGatewayError(res, err);
       }
       return;
     }

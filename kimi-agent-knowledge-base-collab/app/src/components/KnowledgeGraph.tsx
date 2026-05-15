@@ -12,6 +12,11 @@ import {
   type KnowledgeGraphLink,
   type KnowledgeGraphNode,
 } from './knowledgeGraphLayout';
+import {
+  buildKnowledgeGraphSpatialIndex,
+  forEachKnowledgeGraphNeighborPair,
+  getKnowledgeGraphRepulsionStrategy,
+} from './knowledgeGraphSpatialIndex';
 
 interface KnowledgeGraphProps {
   entities: Entity[];
@@ -32,6 +37,7 @@ export function KnowledgeGraph({
   const layoutCacheRef = useRef<KnowledgeGraphLayoutCache>({});
   const animationFrameRef = useRef<number | null>(null);
   const nodesRef = useRef<KnowledgeGraphNode[]>([]);
+  const nodeIndexRef = useRef<Map<string, KnowledgeGraphNode>>(new Map());
   const [nodes, setNodes] = useState<KnowledgeGraphNode[]>([]);
   const [links, setLinks] = useState<KnowledgeGraphLink[]>([]);
   const [scale, setScale] = useState(1);
@@ -63,39 +69,42 @@ export function KnowledgeGraph({
 
   const { width, height } = dimensions;
   const domainColors = useMemo(() => buildKnowledgeGraphDomainColors(entities), [entities]);
-  const nodeIndex = useMemo(() => createKnowledgeGraphNodeIndex(nodes), [nodes]);
   const layerStrokeColors: Record<KnowledgeLayer, string> = {
     common: '#99AF91',
     domain: '#4F83C3',
     private: '#C19292',
   };
   const isVisibleEntity = (entity: Entity) => entity.visible !== false;
+  const snapshotGraphLayout = (nextNodes: KnowledgeGraphNode[]) => {
+    const nextLayoutCache: KnowledgeGraphLayoutCache = {};
+    for (const node of nextNodes) {
+      nextLayoutCache[node.id] = {
+        x: node.x,
+        y: node.y,
+        vx: node.vx,
+        vy: node.vy,
+        radius: node.radius,
+        color: node.color,
+      };
+    }
+
+    layoutCacheRef.current = nextLayoutCache;
+  };
+  const syncGraphSnapshot = (nextNodes: KnowledgeGraphNode[]) => {
+    nodesRef.current = nextNodes;
+    nodeIndexRef.current = createKnowledgeGraphNodeIndex(nextNodes);
+    snapshotGraphLayout(nextNodes);
+  };
 
   useEffect(() => {
     const nextNodes = createKnowledgeGraphNodes(entities, dimensions, {
       layoutCache: layoutCacheRef.current,
       domainColors,
     });
+    syncGraphSnapshot(nextNodes);
     setNodes(nextNodes);
     setLinks(mergeKnowledgeGraphLinks(crossReferences));
   }, [crossReferences, dimensions, domainColors, entities]);
-
-  useEffect(() => {
-    nodesRef.current = nodes;
-    layoutCacheRef.current = Object.fromEntries(
-      nodes.map((node) => [
-        node.id,
-        {
-          x: node.x,
-          y: node.y,
-          vx: node.vx,
-          vy: node.vy,
-          radius: node.radius,
-          color: node.color,
-        },
-      ]),
-    );
-  }, [nodes]);
 
   useEffect(() => {
     if (!isActive || nodes.length === 0) {
@@ -114,36 +123,50 @@ export function KnowledgeGraph({
       }
 
       const currentNodes = nodesRef.current;
-      if (currentNodes.length === 0) {
+      if (currentNodes.length === 0 || !isActive) {
         animationFrameRef.current = null;
         return;
       }
 
       const nextNodes = [...currentNodes];
-      const nextNodeIndex = createKnowledgeGraphNodeIndex(nextNodes);
+      const nextNodeIndex = nodeIndexRef.current;
       let totalSpeed = 0;
       const repulsionStrength = 9000;
       const targetLinkDistance = 280;
       const springStrength = 0.005;
       const centerPullStrength = 0.006;
       const velocityDamping = 0.5;
+      const repulsionStrategy = getKnowledgeGraphRepulsionStrategy(nextNodes.length);
+      const applyRepulsion = (sourceNode: KnowledgeGraphNode, targetNode: KnowledgeGraphNode) => {
+        const dx = targetNode.x - sourceNode.x;
+        const dy = targetNode.y - sourceNode.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const force = repulsionStrength / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
 
-      for (let i = 0; i < nextNodes.length; i += 1) {
-        for (let j = i + 1; j < nextNodes.length; j += 1) {
-          const sourceNode = nextNodes[i];
-          const targetNode = nextNodes[j];
-          const dx = targetNode.x - sourceNode.x;
-          const dy = targetNode.y - sourceNode.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const force = repulsionStrength / (dist * dist);
-          const fx = (dx / dist) * force;
-          const fy = (dy / dist) * force;
+        sourceNode.vx -= fx;
+        sourceNode.vy -= fy;
+        targetNode.vx += fx;
+        targetNode.vy += fy;
+      };
 
-          sourceNode.vx -= fx;
-          sourceNode.vy -= fy;
-          targetNode.vx += fx;
-          targetNode.vy += fy;
+      if (repulsionStrategy.mode === 'exact') {
+        for (let i = 0; i < nextNodes.length; i += 1) {
+          for (let j = i + 1; j < nextNodes.length; j += 1) {
+            applyRepulsion(nextNodes[i], nextNodes[j]);
+          }
         }
+      } else {
+        const spatialIndex = buildKnowledgeGraphSpatialIndex(nextNodes, repulsionStrategy.cellSize);
+        forEachKnowledgeGraphNeighborPair(
+          nextNodes,
+          spatialIndex,
+          repulsionStrategy.neighborSpan,
+          (sourceNode, targetNode) => {
+            applyRepulsion(sourceNode, targetNode);
+          },
+        );
       }
 
       links.forEach((link) => {
@@ -185,20 +208,10 @@ export function KnowledgeGraph({
         }
       });
 
-      layoutCacheRef.current = Object.fromEntries(
-        nextNodes.map((node) => [
-          node.id,
-          {
-            x: node.x,
-            y: node.y,
-            vx: node.vx,
-            vy: node.vy,
-            radius: node.radius,
-            color: node.color,
-          },
-        ]),
-      );
-
+      nodesRef.current = nextNodes;
+      if (draggedNode === null && totalSpeed < 0.6) {
+        snapshotGraphLayout(nextNodes);
+      }
       setNodes(nextNodes);
 
       if (cancelled) {
@@ -236,16 +249,36 @@ export function KnowledgeGraph({
     const x = (e.clientX - rect.left - translate.x) / scale;
     const y = (e.clientY - rect.top - translate.y) / scale;
 
-    setNodes((prevNodes) =>
-      prevNodes.map((node) =>
-        node.id === draggedNode
-          ? { ...node, x, y, vx: 0, vy: 0 }
-          : node,
-      ),
-    );
+    setNodes((prevNodes) => {
+      const nextNodes = [...prevNodes];
+      let targetNode: KnowledgeGraphNode | undefined;
+      for (const node of nextNodes) {
+        if (node.id === draggedNode) {
+          targetNode = node;
+          break;
+        }
+      }
+      if (targetNode) {
+        targetNode.x = x;
+        targetNode.y = y;
+        targetNode.vx = 0;
+        targetNode.vy = 0;
+        layoutCacheRef.current[targetNode.id] = {
+          x: targetNode.x,
+          y: targetNode.y,
+          vx: targetNode.vx,
+          vy: targetNode.vy,
+          radius: targetNode.radius,
+          color: targetNode.color,
+        };
+      }
+      nodesRef.current = nextNodes;
+      return nextNodes;
+    });
   };
 
   const handleMouseUp = () => {
+    snapshotGraphLayout(nodesRef.current);
     setIsDragging(false);
     setDraggedNode(null);
   };
@@ -300,16 +333,16 @@ export function KnowledgeGraph({
             </defs>
             <rect width="100%" height="100%" fill="url(#grid)" />
 
-            {links.map((link, index) => {
-              const sourceNode = nodeIndex.get(link.source);
-              const targetNode = nodeIndex.get(link.target);
+            {links.map((link) => {
+              const sourceNode = nodeIndexRef.current.get(link.source);
+              const targetNode = nodeIndexRef.current.get(link.target);
               if (!sourceNode || !targetNode) return null;
               if (!isVisibleEntity(sourceNode.entity) || !isVisibleEntity(targetNode.entity)) return null;
               const displayLevel = Math.max(sourceNode.entity.display_level ?? 2, targetNode.entity.display_level ?? 2);
               const muted = displayLevel >= 3;
 
               return (
-                <g key={index}>
+                <g key={`${link.source}--${link.target}`}>
                   <line
                     x1={sourceNode.x}
                     y1={sourceNode.y}

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { XgProject } from '@/features/workspace/api';
 
@@ -169,7 +170,23 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
       <CardContent className="p-3 flex-1 flex flex-col min-h-0">
         <ScrollArea className="flex-1 min-h-0 mb-4">
           <div className="space-y-1.5 pr-2">
-            {projects.map((project) => (
+            {loading && projects.length === 0 ? (
+              <div className="space-y-2 py-1">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div key={index} className="flex items-center justify-between gap-3 rounded-xl border border-border/20 bg-muted/10 px-4 py-3">
+                    <Skeleton className="h-4 flex-1 rounded-lg" />
+                    <Skeleton className="h-4 w-4 rounded-full" />
+                  </div>
+                ))}
+                <p className="px-2 pt-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+                  正在加载项目列表...
+                </p>
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="py-10 px-4 text-center">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">暂无项目</p>
+              </div>
+            ) : projects.map((project) => (
               <div
                 key={project.id}
                 role="button"

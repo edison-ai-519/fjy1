@@ -253,7 +253,7 @@ export function FileWorkflowPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(() => getLatestWorkflowSession()?.conversationId ?? null);
   const [projectId, setProjectId] = useState('demo');
-  const [workflowModel, setWorkflowModel] = useState('openai/gpt-4o-mini');
+  const [workflowModel, setWorkflowModel] = useState('deepseek/deepseek-v4-flash');
   const [workflowConfigLoading, setWorkflowConfigLoading] = useState(false);
   const [workflowConfigSaving, setWorkflowConfigSaving] = useState(false);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
@@ -497,7 +497,7 @@ export function FileWorkflowPage() {
                   <Input
                     value={workflowModel}
                     onChange={(event) => setWorkflowModel(event.target.value)}
-                    placeholder="openai/gpt-4o-mini"
+                    placeholder="deepseek/deepseek-v4-flash"
                     className="h-11 rounded-xl border-border/50 bg-background/80 md:flex-1"
                   />
                   <Button
