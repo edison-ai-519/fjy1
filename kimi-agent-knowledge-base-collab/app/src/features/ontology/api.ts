@@ -101,32 +101,6 @@ export interface EducationContent {
   } | null;
 }
 
-export interface AboutContent {
-  platform: {
-    name: string;
-    vision: string;
-    description: string;
-  };
-  modules: Array<{
-    name: string;
-    purpose: string;
-    status: string;
-  }>;
-  workflow: string[];
-  roadmap: Array<{
-    title: string;
-    detail: string;
-  }>;
-  metrics: {
-    provider: string;
-    entities: number;
-    relations: number;
-    domains: number;
-    levels: number;
-    layers: number;
-  };
-}
-
 export interface EditorWorkspace {
   project_id: string;
   entity_id?: string;
@@ -264,11 +238,6 @@ export async function fetchEducationContent(entityId?: string): Promise<Educatio
   const suffix = params.toString() ? `?${params.toString()}` : '';
   const response = await apiFetch(`/api/education${suffix}`);
   return parseJson<EducationContent>(response);
-}
-
-export async function fetchAboutContent(): Promise<AboutContent> {
-  const response = await apiFetch('/api/about');
-  return parseJson<AboutContent>(response);
 }
 
 export async function fetchEditorWorkspace(entityId?: string): Promise<EditorWorkspace> {

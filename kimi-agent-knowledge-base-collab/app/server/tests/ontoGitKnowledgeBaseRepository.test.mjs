@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { OntoGitKnowledgeBaseRepository } from "../repositories/ontoGitKnowledgeBaseRepository.mjs";
@@ -112,6 +115,15 @@ function createWorkflowEntitySource({
     },
     probability: "95%",
   };
+}
+
+async function withTempCacheDir(callback) {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "ontogit-knowledge-graph-cache-"));
+  try {
+    await callback(cacheDir);
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 }
 
 test("OntoGitKnowledgeBaseRepository writeWorkflowEntity 会先登录再写入", async () => {
@@ -419,4 +431,404 @@ test("OntoGitKnowledgeBaseRepository 会在版本签名变化时自动失效缓�
   assert.equal(readCount, 2);
   assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A-旧版");
   assert.equal(secondGraph.entity_index["demo:entity_a"].name, "实体A-新版");
+});
+
+test("OntoGitKnowledgeBaseRepository 会复用同一项目同一版本签名的缓存", async () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+  let readCount = 0;
+
+  repository.getJsonFileTimelines = async () => [
+    {
+      filename: "graph-source/domain/demo-entity.json",
+      latest_commit_id: "commit-1",
+      latest_version_id: 1,
+      commits: [
+        {
+          commit_id: "commit-1",
+          version_id: 1,
+        },
+      ],
+    },
+  ];
+
+  repository.readProjectFile = async () => {
+    readCount += 1;
+    return createWorkflowEntitySource({
+      entityId: "entity_a",
+      entityName: "实体A",
+    });
+  };
+
+  const firstGraph = await repository.getKnowledgeGraph("demo");
+  const secondGraph = await repository.getKnowledgeGraph("demo");
+
+  assert.equal(readCount, 1);
+  assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A");
+  assert.strictEqual(firstGraph, secondGraph);
+});
+
+test("OntoGitKnowledgeBaseRepository 会将知识图谱快照写入磁盘并在新实例中复用", async () => {
+  await withTempCacheDir(async (cacheDir) => {
+    let readCount = 0;
+    const timelines = [
+      {
+        filename: "graph-source/domain/demo-entity.json",
+        latest_commit_id: "commit-1",
+        latest_version_id: 1,
+        commits: [
+          {
+            commit_id: "commit-1",
+            version_id: 1,
+          },
+        ],
+      },
+    ];
+
+    const createRepository = () => new OntoGitKnowledgeBaseRepository({ cacheDir });
+
+    const firstRepository = createRepository();
+    firstRepository.getJsonFileTimelines = async () => timelines;
+    firstRepository.readProjectFile = async () => {
+      readCount += 1;
+      return createWorkflowEntitySource({
+        entityId: "entity_a",
+        entityName: "实体A",
+      });
+    };
+
+    const firstGraph = await firstRepository.getKnowledgeGraph("demo");
+
+    assert.equal(readCount, 1);
+    assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A");
+
+    const secondRepository = createRepository();
+    secondRepository.getJsonFileTimelines = async () => timelines;
+    secondRepository.readProjectFile = async () => {
+      throw new Error("disk cache should avoid rescanning files");
+    };
+
+    const secondGraph = await secondRepository.getKnowledgeGraph("demo");
+
+    assert.equal(secondGraph.entity_index["demo:entity_a"].name, "实体A");
+    assert.equal(secondGraph.statistics.total_entities, 1);
+  });
+});
+
+test("OntoGitKnowledgeBaseRepository 会在磁盘快照 fingerprint 变化时重新重建", async () => {
+  await withTempCacheDir(async (cacheDir) => {
+    let revision = 1;
+    let readCount = 0;
+    const createRepository = () => new OntoGitKnowledgeBaseRepository({ cacheDir });
+
+    const createTimelines = () => ([
+      {
+        filename: "graph-source/domain/demo-entity.json",
+        latest_commit_id: `commit-${revision}`,
+        latest_version_id: revision,
+        commits: [
+          {
+            commit_id: `commit-${revision}`,
+            version_id: revision,
+          },
+        ],
+      },
+    ]);
+
+    const firstRepository = createRepository();
+    firstRepository.getJsonFileTimelines = async () => createTimelines();
+    firstRepository.readProjectFile = async () => createWorkflowEntitySource({
+      entityId: "entity_a",
+      entityName: revision === 1 ? "实体A-旧版" : "实体A-新版",
+    });
+
+    const firstGraph = await firstRepository.getKnowledgeGraph("demo");
+    assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A-旧版");
+
+    revision = 2;
+    const secondRepository = createRepository();
+    secondRepository.getJsonFileTimelines = async () => createTimelines();
+    secondRepository.readProjectFile = async () => {
+      readCount += 1;
+      return createWorkflowEntitySource({
+        entityId: "entity_a",
+        entityName: "实体A-新版",
+      });
+    };
+
+    const secondGraph = await secondRepository.getKnowledgeGraph("demo");
+
+    assert.equal(readCount, 1);
+    assert.equal(secondGraph.entity_index["demo:entity_a"].name, "实体A-新版");
+  });
+});
+
+test("OntoGitKnowledgeBaseRepository 会缓存同一 project 和同一 refs 的切片结果", async () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+  let readCount = 0;
+
+  repository.getJsonFileTimelines = async () => [
+    {
+      filename: "graph-source/domain/demo-entity.json",
+      latest_commit_id: "commit-1",
+      latest_version_id: 1,
+      commits: [
+        {
+          commit_id: "commit-1",
+          version_id: 1,
+        },
+      ],
+    },
+  ];
+
+  repository.readProjectFile = async (projectId) => {
+    readCount += 1;
+    return createWorkflowEntitySource({
+      projectId,
+      entityId: "entity_a",
+      entityName: "实体A",
+    });
+  };
+
+  const firstSlice = await repository.getKnowledgeGraphSlice(["demo:entity_a"], "demo");
+  const secondSlice = await repository.getKnowledgeGraphSlice(["demo:entity_a"], "demo");
+
+  assert.equal(readCount, 1);
+  assert.strictEqual(firstSlice, secondSlice);
+  assert.deepEqual(firstSlice.viewedRefs, ["demo:entity_a"]);
+  assert.deepEqual(firstSlice.entities.map((entity) => entity.id), ["demo:entity_a"]);
+});
+
+test("OntoGitKnowledgeBaseRepository 会在 project fingerprint 变化时重新生成切片", async () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+  let revision = 1;
+
+  repository.getJsonFileTimelines = async () => [
+    {
+      filename: "graph-source/domain/demo-entity.json",
+      latest_commit_id: `commit-${revision}`,
+      latest_version_id: revision,
+      commits: [
+        {
+          commit_id: `commit-${revision}`,
+          version_id: revision,
+        },
+      ],
+    },
+  ];
+
+  repository.readProjectFile = async () => createWorkflowEntitySource({
+    entityId: "entity_a",
+    entityName: revision === 1 ? "实体A-旧版" : "实体A-新版",
+  });
+
+  const firstSlice = await repository.getKnowledgeGraphSlice(["demo:entity_a"], "demo");
+  revision = 2;
+  const secondSlice = await repository.getKnowledgeGraphSlice(["demo:entity_a"], "demo");
+
+  assert.equal(firstSlice.entities[0].name, "实体A-旧版");
+  assert.equal(secondSlice.entities[0].name, "实体A-新版");
+  assert.notStrictEqual(firstSlice, secondSlice);
+});
+
+test("OntoGitKnowledgeBaseRepository 会在无关 timeline 变化时复用磁盘快照并跳过重扫", async () => {
+  await withTempCacheDir(async (cacheDir) => {
+    let metaRevision = 1;
+    const scannedFiles = [];
+    const createRepository = () => new OntoGitKnowledgeBaseRepository({ cacheDir });
+
+    const createTimelines = () => ([
+      {
+        filename: "graph-source/domain/demo-entity.json",
+        latest_commit_id: "commit-entity-1",
+        latest_version_id: 1,
+        commits: [
+          {
+            commit_id: "commit-entity-1",
+            version_id: 1,
+          },
+        ],
+      },
+      {
+        filename: "project_meta.json",
+        latest_commit_id: `commit-meta-${metaRevision}`,
+        latest_version_id: metaRevision,
+        commits: [
+          {
+            commit_id: `commit-meta-${metaRevision}`,
+            version_id: metaRevision,
+          },
+        ],
+      },
+    ]);
+
+    const firstRepository = createRepository();
+    firstRepository.getJsonFileTimelines = async () => createTimelines();
+    firstRepository.readProjectFile = async (projectId, filename) => {
+      scannedFiles.push(filename);
+      return createWorkflowEntitySource({
+        projectId,
+        entityId: "entity_a",
+        entityName: "实体A",
+      });
+    };
+
+    const firstGraph = await firstRepository.getKnowledgeGraph("demo");
+
+    assert.deepEqual(scannedFiles, ["graph-source/domain/demo-entity.json"]);
+    assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A");
+
+    metaRevision = 2;
+    scannedFiles.length = 0;
+
+    const secondRepository = createRepository();
+    secondRepository.getJsonFileTimelines = async () => createTimelines();
+    secondRepository.readProjectFile = async () => {
+      throw new Error("无关 timeline 变化不应触发实体文件重扫");
+    };
+
+    const secondGraph = await secondRepository.getKnowledgeGraph("demo");
+
+    assert.deepEqual(scannedFiles, []);
+    assert.equal(secondGraph.entity_index["demo:entity_a"].name, "实体A");
+    assert.equal(secondGraph.statistics.total_entities, 1);
+  });
+});
+
+test("OntoGitKnowledgeBaseRepository 会在单个实体文件变化时仅重建变化文件", async () => {
+  await withTempCacheDir(async (cacheDir) => {
+    let bRevision = 1;
+    const scannedFiles = [];
+    const createRepository = () => new OntoGitKnowledgeBaseRepository({ cacheDir });
+
+    const createTimelines = () => ([
+      {
+        filename: "graph-source/domain/a.json",
+        latest_commit_id: "commit-a-1",
+        latest_version_id: 1,
+        commits: [
+          {
+            commit_id: "commit-a-1",
+            version_id: 1,
+          },
+        ],
+      },
+      {
+        filename: "graph-source/domain/b.json",
+        latest_commit_id: `commit-b-${bRevision}`,
+        latest_version_id: bRevision,
+        commits: [
+          {
+            commit_id: `commit-b-${bRevision}`,
+            version_id: bRevision,
+          },
+        ],
+      },
+    ]);
+
+    const firstRepository = createRepository();
+    firstRepository.getJsonFileTimelines = async () => createTimelines();
+    firstRepository.readProjectFile = async (projectId, filename) => {
+      scannedFiles.push(filename);
+      if (filename.endsWith("/a.json")) {
+        return createWorkflowEntitySource({
+          projectId,
+          entityId: "entity_a",
+          entityName: "实体A",
+        });
+      }
+
+      return createWorkflowEntitySource({
+        projectId,
+        entityId: "entity_b",
+        entityName: "实体B-旧版",
+      });
+    };
+
+    const firstGraph = await firstRepository.getKnowledgeGraph("demo");
+
+    assert.deepEqual(scannedFiles, [
+      "graph-source/domain/a.json",
+      "graph-source/domain/b.json",
+    ]);
+    assert.equal(firstGraph.entity_index["demo:entity_a"].name, "实体A");
+    assert.equal(firstGraph.entity_index["demo:entity_b"].name, "实体B-旧版");
+
+    bRevision = 2;
+    scannedFiles.length = 0;
+
+    const secondRepository = createRepository();
+    secondRepository.getJsonFileTimelines = async () => createTimelines();
+    secondRepository.readProjectFile = async (projectId, filename) => {
+      scannedFiles.push(filename);
+      if (filename.endsWith("/a.json")) {
+        throw new Error("未变化的实体文件应直接复用快照");
+      }
+
+      return createWorkflowEntitySource({
+        projectId,
+        entityId: "entity_b",
+        entityName: "实体B-新版",
+      });
+    };
+
+    const secondGraph = await secondRepository.getKnowledgeGraph("demo");
+
+    assert.deepEqual(scannedFiles, ["graph-source/domain/b.json"]);
+    assert.equal(secondGraph.entity_index["demo:entity_a"].name, "实体A");
+    assert.equal(secondGraph.entity_index["demo:entity_b"].name, "实体B-新版");
+    assert.equal(secondGraph.statistics.total_entities, 2);
+  });
+});
+
+test("OntoGitKnowledgeBaseRepository 的 gateway 登录会在超时后失败并清理挂起的 Promise", async () => {
+  const repository = new OntoGitKnowledgeBaseRepository({
+    gatewayBaseUrl: "http://127.0.0.1:8080",
+    authUsername: "mogong",
+    authPassword: "123456",
+  });
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+
+  globalThis.fetch = async (_url, init = {}) => {
+    fetchCalls += 1;
+    const signal = init.signal;
+
+    return await new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+        return;
+      }
+
+      signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    });
+  };
+  globalThis.setTimeout = (handler, timeout, ...args) => originalSetTimeout(handler, 0, ...args);
+  globalThis.clearTimeout = originalClearTimeout;
+
+  try {
+    await assert.rejects(
+      () => repository.ensureGatewayLogin(),
+      /gateway 登录请求超时/,
+    );
+    assert.equal(repository.gatewayLoginPromise, null);
+
+    await assert.rejects(
+      () => repository.ensureGatewayLogin(),
+      /gateway 登录请求超时/,
+    );
+    assert.equal(fetchCalls, 2);
+    assert.equal(repository.gatewayLoginPromise, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });

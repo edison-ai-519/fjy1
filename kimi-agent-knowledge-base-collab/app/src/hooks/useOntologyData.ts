@@ -4,16 +4,23 @@ import { subscribeRepositorySync } from '@/shared/events/repositorySync';
 import type { KnowledgeGraphData, Entity, OntologyModule } from '@/types/ontology';
 import { getStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 
-export function useOntologyData() {
+export function useOntologyData(options: { enabled?: boolean } = {}) {
+  const enabled = options.enabled ?? true;
   const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraphData | null>(null);
   const [philosophicalOntology, setPhilosophicalOntology] = useState<OntologyModule | null>(null);
   const [formalOntology, setFormalOntology] = useState<OntologyModule | null>(null);
   const [scientificOntology, setScientificOntology] = useState<OntologyModule | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(getStoredSelectedProjectId);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [isPageVisible, setIsPageVisible] = useState(() => (
+    typeof document === 'undefined'
+      ? true
+      : document.visibilityState !== 'hidden'
+  ));
 
   const refreshKnowledgeGraph = async (options: { silent?: boolean; forceRefresh?: boolean } = {}) => {
     const silent = options.silent ?? true;
@@ -35,6 +42,7 @@ export function useOntologyData() {
       setFormalOntology(ontologies.formalOntology);
       setScientificOntology(ontologies.scientificOntology);
       setLastRefreshAt(new Date().toISOString());
+      setHasLoadedOnce(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -47,22 +55,52 @@ export function useOntologyData() {
   };
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      setRefreshing(false);
+      setError(null);
+      return undefined;
+    }
+
+    setHasLoadedOnce(false);
     void refreshKnowledgeGraph({ silent: false });
-  }, [selectedProjectId]);
+  }, [enabled, selectedProjectId]);
 
   useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState !== 'hidden');
+    };
+
+    handleVisibilityChange();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled || !hasLoadedOnce || !isPageVisible) {
+      return undefined;
+    }
+
     const interval = window.setInterval(() => {
       void refreshKnowledgeGraph({ silent: true });
     }, 10000);
 
     return () => window.clearInterval(interval);
-  }, [selectedProjectId]);
+  }, [enabled, hasLoadedOnce, isPageVisible, selectedProjectId]);
 
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+
     return subscribeRepositorySync(() => {
       void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
     });
-  }, [selectedProjectId]);
+  }, [enabled, selectedProjectId]);
 
   useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
     setSelectedProjectId(projectId);

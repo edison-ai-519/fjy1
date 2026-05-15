@@ -216,25 +216,6 @@ export interface OntologyAssistantStreamHandlers {
   onComplete?: (response: OntologyAssistantResponse) => void;
 }
 
-export async function askOntologyAssistant(input: {
-  question: string;
-  entityId?: string;
-  conversationId?: string;
-  businessPrompt?: string;
-  modelName?: string;
-  conversationHistory?: OntologyAssistantHistoryTurn[];
-}): Promise<OntologyAssistantResponse> {
-  const response = await apiFetch('/api/chat', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  });
-
-  return parseJson(response);
-}
-
 export async function fetchOntologyAssistantState(): Promise<OntologyAssistantSessionState> {
   const response = await apiFetch('/api/chat/state');
   return parseJson<OntologyAssistantSessionState>(response);

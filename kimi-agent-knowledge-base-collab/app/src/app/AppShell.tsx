@@ -209,8 +209,12 @@ const GlobalSidebar = ({
   </div>
 );
 
-function AppShellContent() {
-  const [activeTab, setActiveTab] = useState('lab');
+interface AppShellContentProps {
+  activeTab: string;
+  setActiveTab: (value: string) => void;
+}
+
+function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceProjects, setWorkspaceProjects] = useState<XgProject[]>([]);
   const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false);
@@ -248,6 +252,7 @@ function AppShellContent() {
     refreshKnowledgeGraph,
   } = useOntologyContext();
   const assistantState = useOntologyAssistantState(selectedEntity);
+  const shouldLoadOntologyData = activeTab === 'lab' || activeTab === 'explorer';
 
   useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
     setSelectedWorkspaceProjectId(projectId);
@@ -309,6 +314,9 @@ function AppShellContent() {
         : null;
   const refreshTimeLabel = formatRefreshTime(lastRefreshAt);
   const handleGlobalRefresh = () => {
+    if (!shouldLoadOntologyData) {
+      return;
+    }
     void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
   };
 
@@ -416,7 +424,7 @@ function AppShellContent() {
               variant="ghost"
               size="icon"
               onClick={handleGlobalRefresh}
-              disabled={loading || refreshing}
+              disabled={!shouldLoadOntologyData || loading || refreshing}
               className="h-9 w-9 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-all ml-1 relative overflow-hidden"
               title="刷新图谱与概念速览"
             >
@@ -544,7 +552,7 @@ function AppShellContent() {
           </TabsContent>
           <TabsContent value="explorer" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
             <Suspense fallback={<PageLoader label="正在加载本体图谱..." />}>
-              <ExplorerPage onSelectEntity={handleSelectEntity} />
+              <ExplorerPage onSelectEntity={handleSelectEntity} isActive={activeTab === 'explorer'} />
             </Suspense>
           </TabsContent>
           <TabsContent value="workspace" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
@@ -566,9 +574,12 @@ function AppShellContent() {
 }
 
 export function AppShell() {
+  const [activeTab, setActiveTab] = useState('assistant');
+  const shouldLoadOntologyData = activeTab === 'lab' || activeTab === 'explorer';
+
   return (
-    <OntologyProvider>
-      <AppShellContent />
+    <OntologyProvider enabled={shouldLoadOntologyData}>
+      <AppShellContent activeTab={activeTab} setActiveTab={setActiveTab} />
     </OntologyProvider>
   );
 }

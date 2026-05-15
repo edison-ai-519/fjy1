@@ -94,32 +94,6 @@ export async function updateWorkflowConfig(workflowModel: string): Promise<Workf
   return parseJson<WorkflowConfig>(response);
 }
 
-export async function retryWorkflowFromStageStream(input: {
-  projectId: string;
-  conversationId: string;
-  startStage: string;
-}): Promise<Response> {
-  return apiFetch(
-    `/api/workflow/file/retry/stream?projectId=${encodeURIComponent(input.projectId)}&conversationId=${encodeURIComponent(input.conversationId)}&startStage=${encodeURIComponent(input.startStage)}`,
-    {
-      method: 'POST',
-      headers: {
-        Accept: 'text/event-stream',
-      },
-    },
-  );
-}
-
-export async function fetchOfficialRecommend(projectId: string, filename: string): Promise<unknown> {
-  const response = await apiFetch(`/api/xg/version-recommend/official?project_id=${projectId}&filename=${filename}`);
-  return parseJson(response);
-}
-
-export async function fetchCommunityRecommend(projectId: string, filename: string): Promise<unknown> {
-  const response = await apiFetch(`/api/xg/version-recommend/community?project_id=${projectId}&filename=${filename}`);
-  return parseJson(response);
-}
-
 export async function rollbackXgVersion(projectId: string, commitId: string): Promise<unknown> {
   const params = new URLSearchParams({ project_id: projectId, commit_id: commitId });
   const response = await apiFetch(`/api/xg/rollback?${params.toString()}`, {
@@ -167,23 +141,6 @@ export async function setOfficialRecommend(projectId: string, filename: string, 
   return parseJson(response);
 }
 
-// --- New OntoGit Dashboard & Monitor Endpoints ---
-
-export interface DashboardSummary {
-  projects: XgProject[];
-  timelines: Record<string, XgTimeline[]>;
-  health: {
-    gateway: string;
-    xiaogugit: string;
-    probability: string;
-  };
-}
-
-export async function fetchDashboardSummary(): Promise<DashboardSummary> {
-  const response = await apiFetch('/api/dashboard/summary');
-  return parseJson<DashboardSummary>(response);
-}
-
 export interface RouteDoc {
   name: string;
   method: string;
@@ -210,12 +167,6 @@ export async function fetchHealth(): Promise<HealthStatus> {
 
 // --- New Auth Endpoints ---
 
-export interface AuthUser {
-  id: string;
-  username: string;
-  role: string;
-}
-
 export async function login(username: string, password: string): Promise<{ access_token: string }> {
   const response = await apiFetch('/auth/login', {
     method: 'POST',
@@ -237,11 +188,6 @@ export async function logout(): Promise<void> {
   }
 }
 
-export async function fetchMe(): Promise<AuthUser> {
-  const response = await apiFetch('/auth/me');
-  return parseJson<AuthUser>(response);
-}
-
 // --- New Admin & Advanced Endpoints ---
 
 export async function deleteXgProject(projectId: string): Promise<unknown> {
@@ -249,13 +195,4 @@ export async function deleteXgProject(projectId: string): Promise<unknown> {
     method: 'DELETE',
   });
   return parseJson(response);
-}
-
-export async function fetchProbabilityScoreOnly(concept: unknown): Promise<{ probability: number }> {
-  const response = await apiFetch('/api/probability/api/llm/probability', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(concept),
-  });
-  return parseJson<{ probability: number }>(response);
 }

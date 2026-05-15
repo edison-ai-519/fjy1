@@ -4,21 +4,52 @@ import { EntitySelectorPanel } from '@/components/EntitySelectorPanel';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Network, Info, Zap, LayoutList } from 'lucide-react';
 import type { Entity } from '@/types/ontology';
 
 interface ExplorerPageProps {
   onSelectEntity: (entity: Entity) => void;
+  isActive?: boolean;
 }
 
-export function ExplorerPage({ onSelectEntity }: ExplorerPageProps) {
+function ExplorerLoadingState() {
+  return (
+    <div className="flex h-full w-full overflow-hidden bg-background">
+      <div className="flex-1 relative flex flex-col min-h-0 min-w-0 p-4 lg:p-6">
+        <div className="flex-1 rounded-3xl border border-border/40 bg-card/40 p-4 shadow-inner">
+          <Skeleton className="h-full w-full rounded-3xl" />
+        </div>
+      </div>
+
+      <div className="w-[450px] flex flex-col min-h-0 border-l border-border bg-card/30 backdrop-blur-sm">
+        <div className="p-3 border-b border-border bg-card flex flex-col gap-3 shrink-0">
+          <Skeleton className="h-5 w-32 rounded-full" />
+          <Skeleton className="h-10 w-full rounded-xl" />
+        </div>
+        <div className="flex-1 p-4 space-y-4">
+          <Skeleton className="h-20 w-full rounded-2xl" />
+          <Skeleton className="h-[calc(100%-5rem)] w-full rounded-3xl" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPageProps) {
   const {
     filteredEntities,
     filteredCrossReferences,
     selectedEntity,
     relatedEntities,
     selectedEntityId,
+    loading,
   } = useOntologyContext();
+  const showLoading = loading && filteredEntities.length === 0;
+
+  if (showLoading) {
+    return <ExplorerLoadingState />;
+  }
 
   return (
     <div className="flex flex-1 h-full w-full overflow-hidden bg-background">
@@ -30,6 +61,7 @@ export function ExplorerPage({ onSelectEntity }: ExplorerPageProps) {
             crossReferences={filteredCrossReferences}
             onSelectEntity={onSelectEntity}
             selectedEntityId={selectedEntityId ?? undefined}
+            isActive={isActive}
           />
         </div>
       </div>

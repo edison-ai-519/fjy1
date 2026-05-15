@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { validateWorkflowEntityFileData } from "../workflowEntityFormat.mjs";
 
 function asText(value) {
@@ -20,6 +24,9 @@ function safeJsonParse(text) {
     return null;
   }
 }
+
+const GATEWAY_LOGIN_TIMEOUT_MS = 8_000;
+const CACHE_SCHEMA_VERSION = 1;
 
 function resolveGatewayRequestUrl(gatewayBaseUrl, pathname) {
   const requestPath = asText(pathname);
@@ -64,14 +71,142 @@ function getTimelineRevisionToken(timeline) {
   ].join(":");
 }
 
+function buildProjectTimelineState(timelines) {
+  const fileVersions = new Map();
+  const revisionTokens = [];
+
+  if (Array.isArray(timelines)) {
+    for (const timeline of timelines) {
+      const token = getTimelineRevisionToken(timeline);
+      if (token) {
+        revisionTokens.push(token);
+      }
+
+      const filename = asText(timeline?.filename);
+      if (!filename) {
+        continue;
+      }
+
+      fileVersions.set(filename, token);
+    }
+  }
+
+  return {
+    fingerprint: revisionTokens.sort().join("|"),
+    fileVersions,
+  };
+}
+
 function buildProjectFingerprint(timelines) {
-  return Array.isArray(timelines)
-    ? timelines.map(getTimelineRevisionToken).filter(Boolean).sort().join("|")
-    : "";
+  return buildProjectTimelineState(timelines).fingerprint;
+}
+
+function buildKnowledgeGraphSliceKey(refs) {
+  return Array.isArray(refs) ? refs.join("\u001f") : "";
+}
+
+function hashText(value) {
+  return createHash("sha1").update(asText(value), "utf8").digest("hex");
 }
 
 function buildGlobalEntityId(projectId, entityId) {
   return `${projectId}:${entityId}`;
+}
+
+function buildKnowledgeGraphProjectCacheDir(cacheDir, projectId) {
+  if (!asText(cacheDir)) {
+    return "";
+  }
+
+  return path.join(cacheDir, `project-${hashText(projectId || "demo")}`);
+}
+
+function buildKnowledgeGraphCachePath(cacheDir, projectId, fingerprint) {
+  const projectCacheDir = buildKnowledgeGraphProjectCacheDir(cacheDir, projectId);
+  if (!projectCacheDir) {
+    return "";
+  }
+
+  return path.join(projectCacheDir, `graph-${hashText(fingerprint || "")}.json`);
+}
+
+function getCandidateEntityFiles(timelines) {
+  return Array.isArray(timelines)
+    ? timelines
+      .map((timeline) => asText(timeline?.filename))
+      .filter((filename) => isCandidateEntityFile(filename))
+      .sort((left, right) => left.localeCompare(right))
+    : [];
+}
+
+function parseFileVersionsPayload(fileVersions) {
+  const map = new Map();
+
+  if (Array.isArray(fileVersions)) {
+    for (const entry of fileVersions) {
+      if (Array.isArray(entry)) {
+        const filename = asText(entry[0]);
+        const token = asText(entry[1]);
+        if (filename && token) {
+          map.set(filename, token);
+        }
+        continue;
+      }
+
+      if (entry && typeof entry === "object") {
+        const filename = asText(entry.filename);
+        const token = asText(entry.token);
+        if (filename && token) {
+          map.set(filename, token);
+        }
+      }
+    }
+    return map;
+  }
+
+  if (fileVersions && typeof fileVersions === "object") {
+    for (const [filename, token] of Object.entries(fileVersions)) {
+      const safeFilename = asText(filename);
+      const safeToken = asText(token);
+      if (safeFilename && safeToken) {
+        map.set(safeFilename, safeToken);
+      }
+    }
+  }
+
+  return map;
+}
+
+function buildRecordByFilename(records) {
+  const map = new Map();
+
+  if (Array.isArray(records)) {
+    for (const record of records) {
+      const filename = asText(record?.filename);
+      if (!filename || map.has(filename)) {
+        continue;
+      }
+      map.set(filename, record);
+    }
+  }
+
+  return map;
+}
+
+function createRuntimeDataset({ fingerprint, records, knowledgeGraph, fileVersions }) {
+  const normalizedRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+  const normalizedFileVersions = fileVersions instanceof Map
+    ? new Map(fileVersions)
+    : parseFileVersionsPayload(fileVersions);
+
+  return {
+    fingerprint: asText(fingerprint),
+    records: normalizedRecords,
+    recordByFilename: buildRecordByFilename(normalizedRecords),
+    fileVersions: normalizedFileVersions,
+    knowledgeGraph,
+    sliceCache: new Map(),
+  };
 }
 
 function parseProjectsPayload(payload) {
@@ -215,13 +350,20 @@ export class OntoGitKnowledgeBaseRepository {
     this.gatewayApiKey = asText(options.gatewayApiKey);
     this.authUsername = asText(options.authUsername);
     this.authPassword = asText(options.authPassword);
+    this.cacheDir = asText(options.cacheDir);
     this.cacheByProject = new Map();
+    this.pendingDatasetLoads = new Map();
+    this.skipDiskCacheOnce = false;
+    this.cacheGeneration = 0;
     this.gatewayAccessToken = "";
     this.gatewayLoginPromise = null;
   }
 
   invalidateCache() {
     this.cacheByProject.clear();
+    this.pendingDatasetLoads.clear();
+    this.skipDiskCacheOnce = true;
+    this.cacheGeneration += 1;
   }
 
   async buildGatewayHeaders(forceRefresh = false) {
@@ -266,28 +408,43 @@ export class OntoGitKnowledgeBaseRepository {
 
     this.gatewayLoginPromise = (async () => {
       const loginUrl = new URL("/auth/login", this.gatewayBaseUrl);
-      const response = await fetch(loginUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-        },
-        body: JSON.stringify({
-          username: this.authUsername,
-          password: this.authPassword,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
-        throw new Error(`OntoGit 自动登录失败: ${detail}`);
-      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), GATEWAY_LOGIN_TIMEOUT_MS);
 
-      const token = asText(payload?.access_token);
-      if (!token) {
-        throw new Error("OntoGit 自动登录失败：返回中没有 access_token。");
+      try {
+        const response = await fetch(loginUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            username: this.authUsername,
+            password: this.authPassword,
+          }),
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = payload?.detail || payload?.error || `${response.status} ${response.statusText}`;
+          throw new Error(`OntoGit 自动登录失败: ${detail}`);
+        }
+
+        const token = asText(payload?.access_token);
+        if (!token) {
+          throw new Error("OntoGit 自动登录失败：返回中没有 access_token。");
+        }
+        this.gatewayAccessToken = token;
+        return token;
+      } catch (error) {
+        if (error?.name === "AbortError" || error?.code === "ABORT_ERR") {
+          throw new Error("OntoGit 自动登录失败：gateway 登录请求超时（8 秒）。");
+        }
+
+        const detail = asText(error?.message) || "未知错误";
+        throw new Error(`OntoGit 自动登录失败: ${detail}`);
+      } finally {
+        clearTimeout(timeoutId);
       }
-      this.gatewayAccessToken = token;
-      return token;
     })();
 
     try {
@@ -542,17 +699,20 @@ export class OntoGitKnowledgeBaseRepository {
   async scanWorkflowEntityRecords(projectId, timelines = null, options = {}) {
     const normalizedProjectId = asText(projectId) || "demo";
     const timelineList = Array.isArray(timelines) ? timelines : await this.getJsonFileTimelines(normalizedProjectId);
-    const candidateFiles = timelineList
-      .map((t) => asText(t?.filename))
-      .filter((f) => isCandidateEntityFile(f))
-      .sort((left, right) => left.localeCompare(right));
+    const allowedFiles = Array.isArray(options.filenames) && options.filenames.length > 0
+      ? new Set(options.filenames.map(asText).filter(Boolean))
+      : null;
+    const candidateFiles = getCandidateEntityFiles(timelineList);
+    const filesToScan = allowedFiles
+      ? candidateFiles.filter((filename) => allowedFiles.has(filename))
+      : candidateFiles;
 
-    if (candidateFiles.length === 0) {
+    if (filesToScan.length === 0) {
       return [];
     }
 
     const results = await mapWithConcurrency(
-      candidateFiles,
+      filesToScan,
       options.concurrency || 8,
       async (filename) => this.readWorkflowEntityFileWithRetry(normalizedProjectId, filename, {
         retryCount: options.retryCount ?? 2,
@@ -561,6 +721,245 @@ export class OntoGitKnowledgeBaseRepository {
     );
 
     return results.filter(Boolean);
+  }
+
+  async readCachePayload(cachePath) {
+    if (!asText(cachePath)) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(await readFile(cachePath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  async readCachedDataset(projectId, fingerprint) {
+    const cachePath = buildKnowledgeGraphCachePath(this.cacheDir, projectId, fingerprint);
+    if (!cachePath) {
+      return null;
+    }
+
+    try {
+      const payload = await this.readCachePayload(cachePath);
+      const normalizedProjectId = asText(projectId) || "demo";
+      if (
+        !payload
+        || Number(payload?.schemaVersion || 0) < 1
+        || payload?.projectId !== normalizedProjectId
+        || payload?.fingerprint !== fingerprint
+        || !payload?.knowledgeGraph
+      ) {
+        return null;
+      }
+
+      return createRuntimeDataset({
+        fingerprint,
+        records: payload.records,
+        knowledgeGraph: payload.knowledgeGraph,
+        fileVersions: payload.fileVersions,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async readLatestCachedDatasetWithRecords(projectId, excludeFingerprints = new Set()) {
+    const projectCacheDir = buildKnowledgeGraphProjectCacheDir(this.cacheDir, projectId);
+    if (!projectCacheDir) {
+      return null;
+    }
+
+    const normalizedProjectId = asText(projectId) || "demo";
+    const entries = await readdir(projectCacheDir, { withFileTypes: true }).catch(() => []);
+    const cacheFiles = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+
+      const filePath = path.join(projectCacheDir, entry.name);
+      const stats = await stat(filePath).catch(() => null);
+      if (!stats) {
+        continue;
+      }
+
+      cacheFiles.push({
+        filePath,
+        mtimeMs: stats.mtimeMs,
+      });
+    }
+
+    cacheFiles.sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+    for (const { filePath } of cacheFiles) {
+      const payload = await this.readCachePayload(filePath);
+      if (!payload || payload?.projectId !== normalizedProjectId) {
+        continue;
+      }
+      if (excludeFingerprints.has(payload?.fingerprint)) {
+        continue;
+      }
+      if (Number(payload?.schemaVersion || 0) < CACHE_SCHEMA_VERSION) {
+        continue;
+      }
+      if (!payload?.knowledgeGraph || !Array.isArray(payload?.records)) {
+        continue;
+      }
+
+      const fileVersions = parseFileVersionsPayload(payload.fileVersions);
+      if (fileVersions.size === 0) {
+        continue;
+      }
+
+      return createRuntimeDataset({
+        fingerprint: payload.fingerprint,
+        records: payload.records,
+        knowledgeGraph: payload.knowledgeGraph,
+        fileVersions,
+      });
+    }
+
+    return null;
+  }
+
+  async writeCachedDataset(projectId, dataset) {
+    const cachePath = buildKnowledgeGraphCachePath(this.cacheDir, projectId, dataset?.fingerprint);
+    if (!cachePath) {
+      return false;
+    }
+
+    const payload = {
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      projectId: asText(projectId) || "demo",
+      fingerprint: dataset.fingerprint,
+      cachedAt: new Date().toISOString(),
+      records: Array.isArray(dataset?.records) ? dataset.records : [],
+      fileVersions: dataset?.fileVersions instanceof Map
+        ? [...dataset.fileVersions.entries()]
+        : [...parseFileVersionsPayload(dataset?.fileVersions).entries()],
+      knowledgeGraph: dataset.knowledgeGraph,
+    };
+
+    const cacheDir = path.dirname(cachePath);
+    const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+
+    try {
+      await mkdir(cacheDir, { recursive: true });
+      await writeFile(tempPath, JSON.stringify(payload), "utf8");
+      await unlink(cachePath).catch(() => null);
+      await rename(tempPath, cachePath);
+      await this.pruneCacheDirectory(cacheDir, 3);
+      return true;
+    } catch (error) {
+      await unlink(tempPath).catch(() => null);
+      console.warn(`[OntoGit] 无法写入知识图谱磁盘缓存:`, error?.message || error);
+      return false;
+    }
+  }
+
+  async rebuildDatasetIncrementally(projectId, timelines, fingerprint, currentFileVersions, baseDataset) {
+    if (!baseDataset || !(baseDataset.fileVersions instanceof Map) || baseDataset.fileVersions.size === 0) {
+      return null;
+    }
+
+    const candidateFiles = getCandidateEntityFiles(timelines);
+    const baseRecordByFilename = baseDataset.recordByFilename instanceof Map && baseDataset.recordByFilename.size > 0
+      ? baseDataset.recordByFilename
+      : buildRecordByFilename(baseDataset.records);
+    if (baseRecordByFilename.size === 0) {
+      return null;
+    }
+
+    if (candidateFiles.length === 0) {
+      return createRuntimeDataset({
+        fingerprint,
+        records: [],
+        knowledgeGraph: this.buildKnowledgeGraphFromRecords([]),
+        fileVersions: currentFileVersions,
+      });
+    }
+
+    const changedFiles = [];
+    for (const filename of candidateFiles) {
+      const currentToken = asText(currentFileVersions.get(filename));
+      const previousToken = asText(baseDataset.fileVersions.get(filename));
+      if (!currentToken || !previousToken || currentToken !== previousToken || !baseRecordByFilename.has(filename)) {
+        changedFiles.push(filename);
+      }
+    }
+
+    const changedRecordByFilename = new Map();
+    if (changedFiles.length > 0) {
+      const changedRecords = await this.scanWorkflowEntityRecords(projectId, timelines, {
+        filenames: changedFiles,
+      });
+      for (const record of changedRecords) {
+        const filename = asText(record?.filename);
+        if (filename) {
+          changedRecordByFilename.set(filename, record);
+        }
+      }
+    }
+
+    const mergedRecords = [];
+    for (const filename of candidateFiles) {
+      const currentToken = asText(currentFileVersions.get(filename));
+      const previousToken = asText(baseDataset.fileVersions.get(filename));
+      const reusableRecord = baseRecordByFilename.get(filename);
+      if (reusableRecord && currentToken && previousToken && currentToken === previousToken) {
+        mergedRecords.push(reusableRecord);
+        continue;
+      }
+
+      const changedRecord = changedRecordByFilename.get(filename);
+      if (changedRecord) {
+        mergedRecords.push(changedRecord);
+      }
+    }
+
+    const knowledgeGraph = this.buildKnowledgeGraphFromRecords(mergedRecords);
+    return createRuntimeDataset({
+      fingerprint,
+      records: mergedRecords,
+      knowledgeGraph,
+      fileVersions: currentFileVersions,
+    });
+  }
+
+  async pruneCacheDirectory(cacheDir, keepCount = 3) {
+    if (!asText(cacheDir)) {
+      return;
+    }
+
+    try {
+      const entries = await readdir(cacheDir, { withFileTypes: true });
+      const cacheFiles = [];
+
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) {
+          continue;
+        }
+
+        const filePath = path.join(cacheDir, entry.name);
+        const stats = await stat(filePath).catch(() => null);
+        if (!stats) {
+          continue;
+        }
+        cacheFiles.push({
+          filePath,
+          mtimeMs: stats.mtimeMs,
+        });
+      }
+
+      cacheFiles.sort((left, right) => right.mtimeMs - left.mtimeMs);
+      const excess = cacheFiles.slice(Math.max(0, keepCount));
+      await Promise.allSettled(excess.map((item) => unlink(item.filePath)));
+    } catch {
+      // 忽略缓存裁剪失败，不影响主流程
+    }
   }
 
   buildKnowledgeGraphFromRecords(records) {
@@ -677,22 +1076,99 @@ export class OntoGitKnowledgeBaseRepository {
 
   async loadDataset(projectId) {
     const normalizedProjectId = asText(projectId) || "demo";
+    const loadGeneration = this.cacheGeneration;
     const timelines = await this.getJsonFileTimelines(normalizedProjectId);
-    const fingerprint = buildProjectFingerprint(timelines);
+    const timelineState = buildProjectTimelineState(timelines);
+    const fingerprint = timelineState.fingerprint;
+    const fileVersions = timelineState.fileVersions;
     const cached = this.cacheByProject.get(normalizedProjectId);
     if (cached && cached.fingerprint === fingerprint) {
       return cached;
     }
 
-    const records = await this.scanWorkflowEntityRecords(normalizedProjectId, timelines);
-    const knowledgeGraph = this.buildKnowledgeGraphFromRecords(records);
-    const dataset = {
-      fingerprint,
-      records,
-      knowledgeGraph,
-    };
-    this.cacheByProject.set(normalizedProjectId, dataset);
-    return dataset;
+    const loadKey = `${normalizedProjectId}\u001f${fingerprint}`;
+    const pending = this.pendingDatasetLoads.get(loadKey);
+    if (pending) {
+      return pending;
+    }
+
+    const bypassDiskCache = this.skipDiskCacheOnce;
+    const datasetPromise = (async () => {
+      if (!bypassDiskCache) {
+        const exactCachedDataset = await this.readCachedDataset(normalizedProjectId, fingerprint);
+        if (exactCachedDataset) {
+          if (loadGeneration === this.cacheGeneration) {
+            this.cacheByProject.set(normalizedProjectId, exactCachedDataset);
+          }
+          return exactCachedDataset;
+        }
+
+        const memoryBaseDataset = cached && cached.fingerprint !== fingerprint ? cached : null;
+        if (memoryBaseDataset) {
+          const incrementalDataset = await this.rebuildDatasetIncrementally(
+            normalizedProjectId,
+            timelines,
+            fingerprint,
+            fileVersions,
+            memoryBaseDataset,
+          );
+          if (incrementalDataset) {
+            if (loadGeneration === this.cacheGeneration) {
+              this.cacheByProject.set(normalizedProjectId, incrementalDataset);
+              await this.writeCachedDataset(normalizedProjectId, incrementalDataset);
+            }
+            return incrementalDataset;
+          }
+        }
+
+        const excludeFingerprints = new Set([fingerprint]);
+        if (memoryBaseDataset?.fingerprint) {
+          excludeFingerprints.add(memoryBaseDataset.fingerprint);
+        }
+
+        const diskBaseDataset = await this.readLatestCachedDatasetWithRecords(normalizedProjectId, excludeFingerprints);
+        if (diskBaseDataset) {
+          const incrementalDataset = await this.rebuildDatasetIncrementally(
+            normalizedProjectId,
+            timelines,
+            fingerprint,
+            fileVersions,
+            diskBaseDataset,
+          );
+          if (incrementalDataset) {
+            if (loadGeneration === this.cacheGeneration) {
+              this.cacheByProject.set(normalizedProjectId, incrementalDataset);
+              await this.writeCachedDataset(normalizedProjectId, incrementalDataset);
+            }
+            return incrementalDataset;
+          }
+        }
+      }
+
+      const records = await this.scanWorkflowEntityRecords(normalizedProjectId, timelines);
+      const knowledgeGraph = this.buildKnowledgeGraphFromRecords(records);
+      const dataset = createRuntimeDataset({
+        fingerprint,
+        records,
+        knowledgeGraph,
+        fileVersions,
+      });
+      if (loadGeneration === this.cacheGeneration) {
+        this.cacheByProject.set(normalizedProjectId, dataset);
+        await this.writeCachedDataset(normalizedProjectId, dataset);
+      }
+      return dataset;
+    })();
+
+    this.pendingDatasetLoads.set(loadKey, datasetPromise);
+    try {
+      return await datasetPromise;
+    } finally {
+      if (bypassDiskCache) {
+        this.skipDiskCacheOnce = false;
+      }
+      this.pendingDatasetLoads.delete(loadKey);
+    }
   }
 
   async getKnowledgeGraph(projectId = "demo") {
@@ -714,7 +1190,13 @@ export class OntoGitKnowledgeBaseRepository {
       };
     }
 
-    const graph = await this.getKnowledgeGraph(projectId);
+    const dataset = await this.loadDataset(projectId);
+    const cachedSlice = dataset.sliceCache.get(buildKnowledgeGraphSliceKey(normalizedRefs));
+    if (cachedSlice) {
+      return cachedSlice;
+    }
+
+    const graph = dataset.knowledgeGraph;
     const visible = new Set(normalizedRefs);
     const entities = [];
     const missingRefs = [];
@@ -732,12 +1214,14 @@ export class OntoGitKnowledgeBaseRepository {
       visible.has(edge.source) && visible.has(edge.target)
     ));
 
-    return {
+    const slice = {
       viewedRefs: normalizedRefs,
       missingRefs,
       entities,
       crossReferences,
     };
+    dataset.sliceCache.set(buildKnowledgeGraphSliceKey(normalizedRefs), slice);
+    return slice;
   }
 
   async getOntologies() {
