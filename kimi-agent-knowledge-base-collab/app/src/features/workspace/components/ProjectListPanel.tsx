@@ -1,10 +1,10 @@
-import { useState, type Dispatch, type SetStateAction } from 'react';
-import { CheckCircle2, GitBranch, PencilLine, Plus, RefreshCw, Settings2, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, GitBranch, PencilLine, RefreshCw, Settings2, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -16,14 +16,10 @@ interface ProjectListPanelProps {
   selectedProjectId: string;
   loading: boolean;
   newProjectId: string;
-  setNewProjectId: Dispatch<SetStateAction<string>>;
   newProjectName: string;
-  setNewProjectName: Dispatch<SetStateAction<string>>;
   isNewProjectOpen: boolean;
-  setIsNewProjectOpen: Dispatch<SetStateAction<boolean>>;
   onSelectProject: (projectId: string) => void;
   onRefresh: () => void | Promise<void>;
-  onInitProject: () => void | Promise<void>;
   onDeleteProject: (projectId: string) => void | Promise<void>;
   onRenameProject: (projectId: string, name: string) => boolean | Promise<boolean>;
   className?: string;
@@ -35,14 +31,10 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
     selectedProjectId,
     loading,
     newProjectId,
-    setNewProjectId,
     newProjectName,
-    setNewProjectName,
     isNewProjectOpen,
-    setIsNewProjectOpen,
     onSelectProject,
     onRefresh,
-    onInitProject,
     onDeleteProject,
     onRenameProject,
     className,
@@ -90,34 +82,6 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
           <GitBranch className="h-4 w-4 text-primary/70" />
           所有项目
         </CardTitle>
-        <Dialog open={isNewProjectOpen} onOpenChange={setIsNewProjectOpen}>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-primary/10">
-              <Plus className="h-4 w-4" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="rounded-3xl border-border/40 bg-card/95 backdrop-blur-xl">
-            <DialogHeader>
-              <DialogTitle className="text-xl font-black">新建本体项目</DialogTitle>
-              <DialogDescription className="text-muted-foreground">
-                创建一个新的 Git 存储库用于管理本体版本。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/60">项目 ID (唯一标识)</label>
-                <Input placeholder="my-new-project" className="rounded-xl border-border/40 bg-muted/20" value={newProjectId} onChange={(event) => setNewProjectId(event.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-black uppercase tracking-widest text-muted-foreground/60">项目名称 (显示名)</label>
-                <Input placeholder="智能引擎本体项目" className="rounded-xl border-border/40 bg-muted/20" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button onClick={onInitProject} disabled={!newProjectId} className="rounded-full px-6 font-bold">初始化项目</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
         <Dialog
           open={Boolean(renamingProject)}
           onOpenChange={(open) => {
@@ -168,6 +132,11 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
         </Dialog>
       </CardHeader>
       <CardContent className="p-3 flex-1 flex flex-col min-h-0">
+        {!isNewProjectOpen && !newProjectId && !newProjectName ? (
+          <p className="mb-3 px-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+            界面右上角可直接新建项目
+          </p>
+        ) : null}
         <ScrollArea className="flex-1 min-h-0 mb-4">
           <div className="space-y-1.5 pr-2">
             {loading && projects.length === 0 ? (

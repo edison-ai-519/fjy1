@@ -82,6 +82,14 @@ function Get-Config {
   $rootDir = Split-Path -Parent $scriptPath
   $backendPort = if ([string]::IsNullOrWhiteSpace($Port)) { 8787 } else { [int]$Port }
   $frontendPort = if ([string]::IsNullOrWhiteSpace($VitePort)) { 5173 } else { [int]$VitePort }
+  $xiaoGuGitDir = Join-Path $rootDir 'OntoGit\xiaogugit'
+  $probabilityDir = Join-Path $rootDir 'OntoGit\probability'
+  $gatewayDir = Join-Path $rootDir 'OntoGit\gateway'
+  $hasLocalOntoGitLayout = (
+    (Test-Path -LiteralPath $xiaoGuGitDir -PathType Container) -and
+    (Test-Path -LiteralPath $probabilityDir -PathType Container) -and
+    (Test-Path -LiteralPath $gatewayDir -PathType Container)
+  )
   $wikiMgRoot = if ([string]::IsNullOrWhiteSpace($WIKIMG_ROOT)) {
     Join-Path $rootDir 'Ontology_Factory'
   } else {
@@ -103,9 +111,9 @@ function Get-Config {
     ScriptPath = $scriptPath
     PowerShellExecutable = Get-PowerShellExecutablePath
     AppDir = Join-Path $rootDir 'kimi-agent-knowledge-base-collab\app'
-    XiaoGuGitDir = Join-Path $rootDir 'OntoGit\xiaogugit'
-    ProbabilityDir = Join-Path $rootDir 'OntoGit\probability'
-    GatewayDir = Join-Path $rootDir 'OntoGit\gateway'
+    XiaoGuGitDir = $xiaoGuGitDir
+    ProbabilityDir = $probabilityDir
+    GatewayDir = $gatewayDir
     LogDir = Join-Path $rootDir '.run-logs'
     BackendLogFile = Join-Path $rootDir '.run-logs\kimi-backend.log'
     FrontendLogFile = Join-Path $rootDir '.run-logs\kimi-frontend.log'
@@ -126,6 +134,8 @@ function Get-Config {
     ProbabilityPort = 5001
     GatewayPort = 8080
     OntoGitGatewayUrl = if ([string]::IsNullOrWhiteSpace($ONTOGIT_GATEWAY_URL)) { 'http://81.70.12.214:8080' } else { $ONTOGIT_GATEWAY_URL }
+    HasLocalOntoGitLayout = $hasLocalOntoGitLayout
+    UseRemoteOntoGit = ($SkipOntoGit -or -not $hasLocalOntoGitLayout)
     PythonBin = Resolve-PythonCommand -ExplicitPythonBin $PythonBin
     WikiMgRoot = $wikiMgRoot
     KnowledgeDataRoot = $knowledgeDataRoot
@@ -190,14 +200,21 @@ function Assert-Prerequisites {
 
   Assert-Command -CommandName 'node'
   Assert-Command -CommandName 'npm'
-  Assert-Command -CommandName $Config.PythonBin
+  if (-not $Config.UseRemoteOntoGit) {
+    Assert-Command -CommandName $Config.PythonBin
+  }
 
-  foreach ($dir in @($Config.AppDir, $Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)) {
+  $requiredDirs = @($Config.AppDir)
+  if (-not $Config.UseRemoteOntoGit) {
+    $requiredDirs += @($Config.XiaoGuGitDir, $Config.ProbabilityDir, $Config.GatewayDir, $Config.WikiMgRoot)
+  }
+
+  foreach ($dir in $requiredDirs) {
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
       throw "Required directory not found: $dir"
     }
   }
-  if (-not (Test-Path -LiteralPath $Config.WikiMgCliPath -PathType Leaf)) {
+  if (-not $Config.UseRemoteOntoGit -and -not (Test-Path -LiteralPath $Config.WikiMgCliPath -PathType Leaf)) {
     throw "WiKiMG CLI not found: $($Config.WikiMgCliPath)"
   }
 
@@ -754,8 +771,8 @@ function Start-OntoGitGateway {
 function Start-OntoGitServices {
   param([Parameter(Mandatory)][psobject]$Config)
 
-  if ($SkipOntoGit) {
-    Write-Host 'Skipping OntoGit services.'
+  if ($Config.UseRemoteOntoGit) {
+    Write-Host "Using remote OntoGit gateway: $($Config.OntoGitGatewayUrl)"
     return
   }
 
@@ -810,6 +827,7 @@ function Start-OntoGitServices {
   Wait-ForHttpReady -Url "http://127.0.0.1:$($Config.ProbabilityPort)/health" -Name 'probability'
 
   Start-OntoGitGateway -Config $Config
+  $Config.OntoGitGatewayUrl = "http://127.0.0.1:$($Config.GatewayPort)"
 }
 
 function Invoke-LoggedCommand {
@@ -871,25 +889,45 @@ function Invoke-FrontendProcess {
 function Show-Summary {
   param([Parameter(Mandatory)][psobject]$Config)
 
+  $ontoGitLines = if ($Config.UseRemoteOntoGit) {
+    @(
+      "  OntoGit gateway (remote): $($Config.OntoGitGatewayUrl)"
+    )
+  } else {
+    @(
+      "  xiaogugit health: http://127.0.0.1:$($Config.XiaoGuGitPort)/health",
+      "  probability health: http://127.0.0.1:$($Config.ProbabilityPort)/health",
+      "  OntoGit gateway: http://127.0.0.1:$($Config.GatewayPort)/health"
+    )
+  }
+
+  $ontoGitLogLines = if ($Config.UseRemoteOntoGit) {
+    @(
+      '  OntoGit 由远端提供，本地未启动 xiaogugit / probability / gateway'
+    )
+  } else {
+    @(
+      "  xiaogugit: $($Config.XiaoGuGitLogFile)",
+      "  xiaogugit error: $($Config.XiaoGuGitErrorLogFile)",
+      "  probability: $($Config.ProbabilityLogFile)",
+      "  probability error: $($Config.ProbabilityErrorLogFile)",
+      "  OntoGit gateway: $($Config.GatewayLogFile)"
+    )
+  }
+
   @(
     '',
     'Startup complete',
     "  Frontend: http://127.0.0.1:$($Config.FrontendPort)",
     "  Backend health: http://127.0.0.1:$($Config.BackendPort)/api/health",
-    "  xiaogugit health: http://127.0.0.1:$($Config.XiaoGuGitPort)/health",
-    "  probability health: http://127.0.0.1:$($Config.ProbabilityPort)/health",
-    "  OntoGit gateway: http://127.0.0.1:$($Config.GatewayPort)/health",
+    $ontoGitLines,
     "  Knowledge data root: $($Config.KnowledgeDataRoot)",
     "  Shared storage: $($Config.SharedStorageRoot)",
     '',
     'Log files:',
     "  Backend: $($Config.BackendLogFile)",
     "  Frontend: $($Config.FrontendLogFile)",
-    "  xiaogugit: $($Config.XiaoGuGitLogFile)",
-    "  xiaogugit error: $($Config.XiaoGuGitErrorLogFile)",
-    "  probability: $($Config.ProbabilityLogFile)",
-    "  probability error: $($Config.ProbabilityErrorLogFile)",
-    "  OntoGit gateway: $($Config.GatewayLogFile)"
+    $ontoGitLogLines
   ) | ForEach-Object { Write-Host $_ }
 }
 
@@ -905,9 +943,11 @@ function Start-KimiStack {
   Get-NetTCPConnection -LocalPort $Config.BackendPort -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
   Get-NetTCPConnection -LocalPort $Config.FrontendPort -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
   Start-Sleep -Seconds 1
-  Stop-OntoGitService -Name 'xiaogugit' -PidFile $Config.XiaoGuGitPidFile -Port $Config.XiaoGuGitPort
-  Stop-OntoGitService -Name 'probability' -PidFile $Config.ProbabilityPidFile -Port $Config.ProbabilityPort
-  Stop-OntoGitService -Name 'gateway' -PidFile $Config.GatewayPidFile -Port $Config.GatewayPort
+  if (-not $Config.UseRemoteOntoGit) {
+    Stop-OntoGitService -Name 'xiaogugit' -PidFile $Config.XiaoGuGitPidFile -Port $Config.XiaoGuGitPort
+    Stop-OntoGitService -Name 'probability' -PidFile $Config.ProbabilityPidFile -Port $Config.ProbabilityPort
+    Stop-OntoGitService -Name 'gateway' -PidFile $Config.GatewayPidFile -Port $Config.GatewayPort
+  }
   Stop-PortListeners -Port $Config.BackendPort
   Stop-PortListeners -Port $Config.FrontendPort
   Start-OntoGitServices -Config $Config

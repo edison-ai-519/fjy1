@@ -17,7 +17,7 @@ const projectRoot = path.resolve(appRoot, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
 const workflowRuntimeRoot = path.join(projectRoot, ".workflow-runtime");
 const knowledgeGraphCacheRoot = path.join(appRoot, "storage", "cache", "knowledge-graph");
-export const DEFAULT_GATEWAY_URL = "http://81.70.12.214:8000";
+export const DEFAULT_GATEWAY_URL = "http://81.70.12.214:8080";
 const WINDOWS_GLOBAL_ENV_NAMES = [
   "ONTOGIT_PROJECT_ID",
   "ONTOGIT_GATEWAY_URL",

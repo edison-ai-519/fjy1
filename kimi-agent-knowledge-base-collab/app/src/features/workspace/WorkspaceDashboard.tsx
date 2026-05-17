@@ -6,10 +6,13 @@ import { ProjectListPanel } from '@/features/workspace/components/ProjectListPan
 import { RecommendationPanel } from '@/features/workspace/components/RecommendationPanel';
 import { TimelinePanel } from '@/features/workspace/components/TimelinePanel';
 import { DiffDialog } from '@/features/workspace/components/DiffDialog';
-import { useWorkspaceState } from '@/features/workspace/useWorkspaceState';
+import type { WorkspaceState } from '@/features/workspace/useWorkspaceState';
 
-export function WorkspaceDashboard() {
-  const workspace = useWorkspaceState();
+interface WorkspaceDashboardProps {
+  workspace: WorkspaceState;
+}
+
+export function WorkspaceDashboard({ workspace }: WorkspaceDashboardProps) {
 
   const handleSelectFile = async (filename: string) => {
     workspace.setSelectedFile(filename);
@@ -38,14 +41,10 @@ export function WorkspaceDashboard() {
             selectedProjectId={workspace.selectedProjectId}
             loading={workspace.loading}
             newProjectId={workspace.newProjectId}
-            setNewProjectId={workspace.setNewProjectId}
             newProjectName={workspace.newProjectName}
-            setNewProjectName={workspace.setNewProjectName}
             isNewProjectOpen={workspace.isNewProjectOpen}
-            setIsNewProjectOpen={workspace.setIsNewProjectOpen}
             onSelectProject={workspace.handleSelectProject}
             onRefresh={workspace.loadProjects}
-            onInitProject={workspace.handleInitProject}
             onDeleteProject={workspace.handleDeleteProject}
             onRenameProject={workspace.handleRenameProject}
           />

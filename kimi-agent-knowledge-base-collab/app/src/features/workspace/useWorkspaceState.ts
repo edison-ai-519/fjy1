@@ -379,3 +379,5 @@ export function useWorkspaceState() {
     handleRenameProject,
   };
 }
+
+export type WorkspaceState = ReturnType<typeof useWorkspaceState>;

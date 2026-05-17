@@ -3,12 +3,14 @@ import { GitBranch, Activity, LayoutDashboard } from 'lucide-react';
 
 import { WorkspaceDashboard } from '@/features/workspace/WorkspaceDashboard';
 import { Button } from '@/components/ui/button';
+import { useWorkspaceState } from '@/features/workspace/useWorkspaceState';
 import { cn } from '@/lib/utils';
 
 const SystemHubPage = lazy(() => import('@/app/pages/SystemHubPage').then((module) => ({ default: module.SystemHubPage })));
 
 export function WorkspacePage() {
   const [viewMode, setViewMode] = useState<'business' | 'tech-hub'>('business');
+  const workspace = useWorkspaceState();
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -33,7 +35,7 @@ export function WorkspacePage() {
                   </p>
                 </div>
 
-                <div className="flex flex-col gap-2 z-10">
+                <div className="flex flex-col items-end gap-2 z-10">
                   <Button 
                     variant="outline"
                     size="sm"
@@ -69,7 +71,7 @@ export function WorkspacePage() {
           {/* Main Content Sections */}
           {viewMode === 'business' ? (
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
-              <WorkspaceDashboard />
+              <WorkspaceDashboard workspace={workspace} />
             </div>
           ) : (
             <Suspense

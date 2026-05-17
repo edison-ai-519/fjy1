@@ -72,7 +72,7 @@ test("createAppServices 使用 .agent/config.json 补齐 workflow LLM key", () =
 
     assert.equal(services.workflowService.workflowLlmApiKey, "agent-config-key");
     assert.equal(services.workflowService.workflowLlmBaseUrl, "https://openrouter.ai/api/v1");
-    assert.equal(services.workflowService.workflowModel, "openai/gpt-4o-mini");
+    assert.equal(services.workflowService.workflowModel, "deepseek/deepseek-v4-flash");
   });
 });
 
@@ -83,6 +83,6 @@ test("createAppServices 默认指向远端 OntoGit gateway", () => {
       agentConfigReader: () => ({}),
     });
 
-    assert.equal(services.workflowService.gatewayBaseUrl, "http://81.70.12.214:8000");
+    assert.equal(services.workflowService.gatewayBaseUrl, "http://81.70.12.214:8080");
   });
 });

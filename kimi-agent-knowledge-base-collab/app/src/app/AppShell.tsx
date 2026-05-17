@@ -4,6 +4,7 @@ import {
   Blocks,
   ChevronDown,
   GitBranch,
+  Plus,
   Menu,
   MessageSquareText,
   Network,
@@ -36,10 +37,12 @@ import { LAYER_FILTERS } from '@/features/ontology/layerFilters';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import { EnterGateIntro } from '@/components/EnterGateIntro';
 import { SearchPanel } from '@/components/SearchPanel';
-import { fetchXgProjects, type XgProject } from '@/features/workspace/api';
+import { NewProjectDialog } from '@/features/workspace/components/NewProjectDialog';
+import { fetchXgProjects, initXgProject, type XgProject } from '@/features/workspace/api';
 import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 import { prefetchKnowledgeGraph, prefetchOntologies } from '@/features/ontology/api';
 import type { Entity } from '@/types/ontology';
+import { toast } from 'sonner';
 
 const loadAssistantPage = () => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage }));
 const loadExplorerPage = () => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage }));
@@ -272,6 +275,9 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
   const [workspaceProjects, setWorkspaceProjects] = useState<XgProject[]>([]);
   const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false);
   const [selectedWorkspaceProjectId, setSelectedWorkspaceProjectId] = useState<string>(() => getStoredSelectedProjectId());
+  const [newProjectId, setNewProjectId] = useState('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
@@ -343,6 +349,29 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
     }
     setSelectedWorkspaceProjectId(nextProjectId);
     setStoredSelectedProjectId(nextProjectId);
+  };
+
+  const handleGlobalInitProject = async () => {
+    const nextProjectId = newProjectId.trim();
+    if (!nextProjectId) {
+      return;
+    }
+
+    try {
+      await initXgProject({
+        project_id: nextProjectId,
+        name: newProjectName.trim() || nextProjectId,
+      });
+      toast.success('项目初始化完成');
+      setSelectedWorkspaceProjectId(nextProjectId);
+      setStoredSelectedProjectId(nextProjectId);
+      setIsNewProjectOpen(false);
+      setNewProjectId('');
+      setNewProjectName('');
+      await loadWorkspaceProjects();
+    } catch (error) {
+      toast.error('初始化失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    }
   };
 
   useEffect(() => {
@@ -511,6 +540,25 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
                 )} />
               </div>
             </Button>
+            <NewProjectDialog
+              open={isNewProjectOpen}
+              onOpenChange={setIsNewProjectOpen}
+              newProjectId={newProjectId}
+              onProjectIdChange={setNewProjectId}
+              newProjectName={newProjectName}
+              onProjectNameChange={setNewProjectName}
+              onSubmit={handleGlobalInitProject}
+              trigger={(
+                <Button
+                  size="sm"
+                  className="h-9 rounded-xl px-4 font-black tracking-wide shadow-sm"
+                  title="新建项目"
+                >
+                  <Plus className="mr-1.5 h-4 w-4" />
+                  新建项目
+                </Button>
+              )}
+            />
 
             <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
               <SheetTrigger asChild>
@@ -575,10 +623,6 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
                 >
                   <Zap className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">本体图谱</span>
-                </TabsTrigger>
-                <TabsTrigger value="workspace" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
-                  <GitBranch className="mr-3 h-5 w-5 text-primary" />
-                  <span className="font-black text-sm uppercase tracking-tight">小故Git</span>
                 </TabsTrigger>
                 <TabsTrigger value="file-workflow" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <FileUp className="mr-3 h-5 w-5 text-primary" />

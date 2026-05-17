@@ -18,6 +18,7 @@ XIAOGUGIT_PORT=8001
 PROBABILITY_PORT=5001
 GATEWAY_PORT=8080
 ONTOGIT_GATEWAY_URL="${ONTOGIT_GATEWAY_URL:-http://81.70.12.214:8080}"
+USE_REMOTE_ONTOGIT="${USE_REMOTE_ONTOGIT:-auto}"
 
 find_python() {
   for cmd in python python3 py; do
@@ -51,6 +52,35 @@ DMXAPI_BASE_URL="${DMXAPI_BASE_URL:-${OPENROUTER_BASE_URL:-https://openrouter.ai
 DMXAPI_MODEL="${DMXAPI_MODEL:-${OPENROUTER_MODEL:-openai/gpt-4o-mini}}"
 
 mkdir -p "${LOG_DIR}"
+
+LOCAL_ONTOGIT_AVAILABLE=false
+if [[ -d "${XIAOGUGIT_DIR}" && -d "${PROBABILITY_DIR}" && -d "${GATEWAY_DIR}" ]]; then
+  LOCAL_ONTOGIT_AVAILABLE=true
+fi
+
+REMOTE_ONTOGIT_ONLY=false
+case "${USE_REMOTE_ONTOGIT}" in
+  auto)
+    if [[ "${LOCAL_ONTOGIT_AVAILABLE}" != true ]]; then
+      REMOTE_ONTOGIT_ONLY=true
+    fi
+    ;;
+  1|true|TRUE|yes|YES|remote|REMOTE)
+    REMOTE_ONTOGIT_ONLY=true
+    ;;
+  0|false|FALSE|no|NO|local|LOCAL)
+    REMOTE_ONTOGIT_ONLY=false
+    ;;
+  *)
+    echo "USE_REMOTE_ONTOGIT 仅支持 auto|true|false，当前值: ${USE_REMOTE_ONTOGIT}" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${REMOTE_ONTOGIT_ONLY}" != true && "${LOCAL_ONTOGIT_AVAILABLE}" != true ]]; then
+  echo "缺少本地 OntoGit 目录，无法启用本地模式。请改用 USE_REMOTE_ONTOGIT=true 或恢复 OntoGit 目录。" >&2
+  exit 1
+fi
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -224,6 +254,11 @@ function start_detached() {
 }
 
 start_ontogit_services() {
+  if [[ "${REMOTE_ONTOGIT_ONLY}" == true ]]; then
+    echo "检测到远端 OntoGit 模式，跳过本地 xiaogugit / probability / gateway 启动。"
+    return
+  fi
+
   echo "启动 xiaogugit..."
   start_detached \
     "${XIAOGUGIT_DIR}" \
@@ -258,6 +293,8 @@ start_ontogit_services() {
   if [[ -f "${LOG_DIR}/ontogit-gateway.pid" ]]; then
     wait_for_http "http://127.0.0.1:${GATEWAY_PORT}/health" "OntoGit gateway"
   fi
+
+  ONTOGIT_GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}"
 }
 
 start_backend() {
@@ -283,21 +320,27 @@ start_frontend() {
 }
 
 print_summary() {
+  local ontogit_summary=""
+  local ontogit_logs=""
+  if [[ "${REMOTE_ONTOGIT_ONLY}" == true ]]; then
+    ontogit_summary="  OntoGit gateway(远端): ${ONTOGIT_GATEWAY_URL}"
+    ontogit_logs='  OntoGit 由远端提供，本地未启动 xiaogugit / probability / gateway'
+  else
+    ontogit_summary=$'  xiaogugit: http://127.0.0.1:'"${XIAOGUGIT_PORT}"$'/health\n  probability: http://127.0.0.1:'"${PROBABILITY_PORT}"$'/health\n  OntoGit gateway: http://127.0.0.1:'"${GATEWAY_PORT}"$'/health'
+    ontogit_logs=$'  xiaogugit: '"${LOG_DIR}"$'/xiaogugit.log\n  probability: '"${LOG_DIR}"$'/probability.log\n  gateway: '"${LOG_DIR}"$'/ontogit-gateway.log'
+  fi
+
   cat <<EOF
 
 启动完成
   前端: http://127.0.0.1:${FRONTEND_PORT}
   后端: http://127.0.0.1:${BACKEND_PORT}/api/health
-  xiaogugit: http://127.0.0.1:${XIAOGUGIT_PORT}/health
-  probability: http://127.0.0.1:${PROBABILITY_PORT}/health
-  OntoGit gateway: http://127.0.0.1:${GATEWAY_PORT}/health
+${ontogit_summary}
 
 日志文件
   前端: ${LOG_DIR}/kimi-frontend.log
   后端: ${LOG_DIR}/kimi-backend.log
-  xiaogugit: ${LOG_DIR}/xiaogugit.log
-  probability: ${LOG_DIR}/probability.log
-  gateway: ${LOG_DIR}/ontogit-gateway.log
+${ontogit_logs}
 
 常用命令
   查看前端日志: tail -f "${LOG_DIR}/kimi-frontend.log"
@@ -324,15 +367,17 @@ fi
 echo "关闭旧进程..."
 stop_pid_file "${LOG_DIR}/kimi-backend.pid"
 stop_pid_file "${LOG_DIR}/kimi-frontend.pid"
-stop_pid_file "${LOG_DIR}/xiaogugit.pid"
-stop_pid_file "${LOG_DIR}/probability.pid"
-stop_pid_file "${LOG_DIR}/ontogit-gateway.pid"
 
 stop_port "${BACKEND_PORT}" "后端"
 stop_port "${FRONTEND_PORT}" "前端"
-stop_port "${XIAOGUGIT_PORT}" "xiaogugit"
-stop_port "${PROBABILITY_PORT}" "probability"
-stop_port "${GATEWAY_PORT}" "gateway"
+if [[ "${REMOTE_ONTOGIT_ONLY}" != true ]]; then
+  stop_pid_file "${LOG_DIR}/xiaogugit.pid"
+  stop_pid_file "${LOG_DIR}/probability.pid"
+  stop_pid_file "${LOG_DIR}/ontogit-gateway.pid"
+  stop_port "${XIAOGUGIT_PORT}" "xiaogugit"
+  stop_port "${PROBABILITY_PORT}" "probability"
+  stop_port "${GATEWAY_PORT}" "gateway"
+fi
 
 # 依次启动服务
 start_ontogit_services
