@@ -95,6 +95,7 @@ export function LabPage({ onSelectEntity }: LabPageProps) {
               <TabsContent value="systems" className="mt-0 flex-1">
                 <SystemsOntologyView
                   entities={filteredEntities}
+                  crossReferences={filteredCrossReferences}
                   selectedEntity={selectedEntity}
                   onSelectEntity={onSelectEntity}
                 />

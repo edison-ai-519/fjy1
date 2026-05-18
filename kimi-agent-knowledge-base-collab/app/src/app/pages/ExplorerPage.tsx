@@ -1,11 +1,14 @@
+import { useEffect, useState } from 'react';
+
 import { KnowledgeGraph } from '@/components/KnowledgeGraph';
 import { EntityDetail } from '@/components/EntityDetail';
 import { EntitySelectorPanel } from '@/components/EntitySelectorPanel';
+import { SystemRelationshipPanel } from '@/components/SystemRelationshipPanel';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Network, Info, Zap, LayoutList } from 'lucide-react';
+import { Network, Info, Zap, LayoutList, Boxes } from 'lucide-react';
 import type { Entity } from '@/types/ontology';
 
 interface ExplorerPageProps {
@@ -22,7 +25,7 @@ function ExplorerLoadingState() {
         </div>
       </div>
 
-      <div className="w-[450px] flex flex-col min-h-0 border-l border-border bg-card/30 backdrop-blur-sm">
+      <div className="w-[520px] flex flex-col min-h-0 border-l border-border bg-card/30 backdrop-blur-sm">
         <div className="p-3 border-b border-border bg-card flex flex-col gap-3 shrink-0">
           <Skeleton className="h-5 w-32 rounded-full" />
           <Skeleton className="h-10 w-full rounded-xl" />
@@ -45,7 +48,14 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
     selectedEntityId,
     loading,
   } = useOntologyContext();
+  const [activePanelTab, setActivePanelTab] = useState<'details' | 'structure' | 'selector'>('structure');
   const showLoading = loading && filteredEntities.length === 0;
+
+  useEffect(() => {
+    if (selectedEntityId) {
+      setActivePanelTab('structure');
+    }
+  }, [selectedEntityId]);
 
   if (showLoading) {
     return <ExplorerLoadingState />;
@@ -67,8 +77,12 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
       </div>
 
       {/* Side Info Panel */}
-      <div className="w-[450px] flex flex-col min-h-0 border-l border-border bg-card/30 backdrop-blur-sm animate-in slide-in-from-right-4 duration-500">
-        <Tabs defaultValue="details" className="flex flex-col flex-1 min-h-0">
+      <div className="w-[520px] flex flex-col min-h-0 border-l border-border bg-card/30 backdrop-blur-sm animate-in slide-in-from-right-4 duration-500">
+        <Tabs
+          value={activePanelTab}
+          onValueChange={(value) => setActivePanelTab(value as 'details' | 'structure' | 'selector')}
+          className="flex flex-col flex-1 min-h-0"
+        >
           <div className="p-3 border-b border-border bg-card flex flex-col gap-3 shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -82,7 +96,13 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
                 </div>
               )}
             </div>
-            <TabsList className="grid w-full grid-cols-2 h-10 rounded-xl bg-muted/60 p-1 border border-border/40">
+            <TabsList className="grid w-full grid-cols-3 h-10 rounded-xl bg-muted/60 p-1 border border-border/40">
+              <TabsTrigger
+                value="structure"
+                className="rounded-lg text-[11px] font-black uppercase tracking-widest transition-all data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-md hover:text-foreground/80"
+              >
+                <Boxes className="w-4 h-4 mr-2" /> 系统结构
+              </TabsTrigger>
               <TabsTrigger
                 value="details"
                 className="rounded-lg text-[11px] font-black uppercase tracking-widest transition-all data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-md hover:text-foreground/80"
@@ -99,6 +119,20 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
           </div>
 
           <div className="flex-1 min-h-0 overflow-hidden">
+            <TabsContent value="structure" className="mt-0 outline-none h-full data-[state=active]:flex flex-col">
+              <ScrollArea className="flex-1 h-full">
+                <div className="p-4">
+                  <SystemRelationshipPanel
+                    entities={filteredEntities}
+                    crossReferences={filteredCrossReferences}
+                    selectedEntity={selectedEntity}
+                    onSelectEntity={onSelectEntity}
+                    maxDepth={1}
+                    emptyMessage="请先在左侧本体图谱中选择一个节点，系统结构会以该节点为根系统展开。"
+                  />
+                </div>
+              </ScrollArea>
+            </TabsContent>
             <TabsContent value="details" className="mt-0 outline-none h-full data-[state=active]:flex flex-col">
               <ScrollArea className="flex-1 h-full">
                 <div className="p-4">
