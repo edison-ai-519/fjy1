@@ -43,10 +43,17 @@ export function KnowledgeGraph({
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [draggedNode, setDraggedNode] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  const panStartRef = useRef<{
+    clientX: number;
+    clientY: number;
+    translateX: number;
+    translateY: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -203,8 +210,6 @@ export function KnowledgeGraph({
           node.x += node.vx;
           node.y += node.vy;
           totalSpeed += Math.abs(node.vx) + Math.abs(node.vy);
-          node.x = Math.max(node.radius + 5, Math.min(width - node.radius - 5, node.x));
-          node.y = Math.max(node.radius + 5, Math.min(height - node.radius - 5, node.y));
         }
       });
 
@@ -237,13 +242,46 @@ export function KnowledgeGraph({
     };
   }, [draggedNode, height, isActive, links, width]);
 
-  const handleMouseDown = (nodeId: string) => {
+  const handleNodeMouseDown = (nodeId: string) => {
     setIsDragging(true);
+    setIsPanning(false);
     setDraggedNode(nodeId);
   };
 
+  const handlePanMouseDown = (e: MouseEvent<SVGRectElement>) => {
+    if (e.button !== 0) {
+      return;
+    }
+
+    if (e.target !== e.currentTarget) {
+      return;
+    }
+
+    setIsPanning(true);
+    setIsDragging(false);
+    setDraggedNode(null);
+    panStartRef.current = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      translateX: translate.x,
+      translateY: translate.y,
+    };
+  };
+
   const handleMouseMove = (e: MouseEvent<SVGSVGElement>) => {
-    if (!isDragging || !draggedNode || !svgRef.current) return;
+    if (!svgRef.current) return;
+
+    if (isPanning && panStartRef.current) {
+      const deltaX = e.clientX - panStartRef.current.clientX;
+      const deltaY = e.clientY - panStartRef.current.clientY;
+      setTranslate({
+        x: panStartRef.current.translateX + deltaX,
+        y: panStartRef.current.translateY + deltaY,
+      });
+      return;
+    }
+
+    if (!isDragging || !draggedNode) return;
 
     const rect = svgRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left - translate.x) / scale;
@@ -280,11 +318,25 @@ export function KnowledgeGraph({
   const handleMouseUp = () => {
     snapshotGraphLayout(nodesRef.current);
     setIsDragging(false);
+    setIsPanning(false);
     setDraggedNode(null);
+    panStartRef.current = null;
   };
 
-  const handleZoomIn = () => setScale((value) => Math.min(value * 1.2, 3));
-  const handleZoomOut = () => setScale((value) => Math.max(value / 1.2, 0.3));
+  const handleZoom = (factor: number) => {
+    setScale((currentScale) => {
+      const nextScale = Math.min(Math.max(currentScale * factor, 0.3), 3);
+      const centerX = width / 2;
+      const centerY = height / 2;
+      setTranslate((currentTranslate) => ({
+        x: centerX - (nextScale / currentScale) * (centerX - currentTranslate.x),
+        y: centerY - (nextScale / currentScale) * (centerY - currentTranslate.y),
+      }));
+      return nextScale;
+    });
+  };
+  const handleZoomIn = () => handleZoom(1.2);
+  const handleZoomOut = () => handleZoom(1 / 1.2);
   const handleReset = () => {
     setScale(1);
     setTranslate({ x: 0, y: 0 });
@@ -317,11 +369,7 @@ export function KnowledgeGraph({
             width={width}
             height={height}
             viewBox={`0 0 ${width} ${height}`}
-            className="cursor-grab active:cursor-grabbing w-full h-full"
-            style={{
-              transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
-              transformOrigin: 'center',
-            }}
+            className={`w-full h-full ${isDragging || isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
@@ -331,92 +379,107 @@ export function KnowledgeGraph({
                 <circle cx="1" cy="1" r="1" className="fill-border/40" />
               </pattern>
             </defs>
-            <rect width="100%" height="100%" fill="url(#grid)" />
+            <g transform={`translate(${translate.x}, ${translate.y}) scale(${scale})`}>
+              <rect
+                x={-width * 2}
+                y={-height * 2}
+                width={width * 5}
+                height={height * 5}
+                fill="url(#grid)"
+                onMouseDown={handlePanMouseDown}
+              />
 
-            {links.map((link) => {
-              const sourceNode = nodeIndexRef.current.get(link.source);
-              const targetNode = nodeIndexRef.current.get(link.target);
-              if (!sourceNode || !targetNode) return null;
-              if (!isVisibleEntity(sourceNode.entity) || !isVisibleEntity(targetNode.entity)) return null;
-              const displayLevel = Math.max(sourceNode.entity.display_level ?? 2, targetNode.entity.display_level ?? 2);
-              const muted = displayLevel >= 3;
+              {links.map((link) => {
+                const sourceNode = nodeIndexRef.current.get(link.source);
+                const targetNode = nodeIndexRef.current.get(link.target);
+                if (!sourceNode || !targetNode) return null;
+                if (!isVisibleEntity(sourceNode.entity) || !isVisibleEntity(targetNode.entity)) return null;
+                const displayLevel = Math.max(sourceNode.entity.display_level ?? 2, targetNode.entity.display_level ?? 2);
+                const muted = displayLevel >= 3;
 
-              return (
-                <g key={`${link.source}--${link.target}`}>
-                  <line
-                    x1={sourceNode.x}
-                    y1={sourceNode.y}
-                    x2={targetNode.x}
-                    y2={targetNode.y}
-                    className="stroke-muted-foreground/30"
-                    strokeWidth={muted ? 0.8 : 1.5}
-                    opacity={muted ? 0.35 : 1}
+                return (
+                  <g key={`${link.source}--${link.target}`} pointerEvents="none">
+                    <line
+                      x1={sourceNode.x}
+                      y1={sourceNode.y}
+                      x2={targetNode.x}
+                      y2={targetNode.y}
+                      className="stroke-muted-foreground/30"
+                      strokeWidth={muted ? 0.8 : 1.5}
+                      opacity={muted ? 0.35 : 1}
+                    />
+                    <text
+                      x={(sourceNode.x + targetNode.x) / 2}
+                      y={(sourceNode.y + targetNode.y) / 2}
+                      textAnchor="middle"
+                      className="text-[10px] fill-muted-foreground font-medium"
+                      style={{ textShadow: '0 0 4px hsl(var(--background))', opacity: muted ? 0.45 : 1 }}
+                    >
+                      {link.relation}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {nodes.map((node) => (
+                <g
+                  key={node.id}
+                  transform={`translate(${node.x}, ${node.y})`}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    handleNodeMouseDown(node.id);
+                  }}
+                  onClick={() => onSelectEntity(node.entity)}
+                  className="cursor-pointer"
+                  opacity={node.entity.visible === false ? 0.2 : node.entity.display_level === 3 ? 0.55 : 1}
+                >
+                  {node.id === selectedEntityId && (
+                    <circle
+                      r={node.radius + 6}
+                      fill="none"
+                      stroke="currentColor"
+                      className={node.entity.highlight ? 'text-cyan-500' : 'text-primary'}
+                      strokeWidth={node.entity.highlight ? 3 : 2.5}
+                      strokeDasharray="4,4"
+                    >
+                      <animateTransform
+                        attributeName="transform"
+                        attributeType="XML"
+                        type="rotate"
+                        from="0 0 0"
+                        to="360 0 0"
+                        dur="10s"
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  )}
+                  <circle
+                    r={node.radius}
+                    fill={node.color}
+                    stroke={layerStrokeColors[node.entity.layer]}
+                    strokeWidth={node.entity.layer === 'private' ? 4 : 2.5}
+                    opacity={node.entity.display_level === 3 ? 0.7 : 1}
+                    className="hover:opacity-80 transition-opacity"
                   />
                   <text
-                    x={(sourceNode.x + targetNode.x) / 2}
-                    y={(sourceNode.y + targetNode.y) / 2}
                     textAnchor="middle"
-                    className="text-[10px] fill-muted-foreground font-medium"
-                    style={{ textShadow: '0 0 4px hsl(var(--background))', opacity: muted ? 0.45 : 1 }}
+                    dy={node.radius + 18}
+                    className="text-xs fill-foreground font-bold"
+                    style={{
+                      fontSize: node.entity.display_level === 1 ? '14px' : '13px',
+                      pointerEvents: 'none',
+                      textShadow: '0 1px 2px hsl(var(--background))',
+                    }}
                   >
-                    {link.relation}
+                    {node.name}
                   </text>
                 </g>
-              );
-            })}
-
-            {nodes.map((node) => (
-              <g
-                key={node.id}
-                transform={`translate(${node.x}, ${node.y})`}
-                onMouseDown={() => handleMouseDown(node.id)}
-                onClick={() => onSelectEntity(node.entity)}
-                className="cursor-pointer"
-                opacity={node.entity.visible === false ? 0.2 : node.entity.display_level === 3 ? 0.55 : 1}
-              >
-                {node.id === selectedEntityId && (
-                  <circle
-                    r={node.radius + 6}
-                    fill="none"
-                    stroke="currentColor"
-                    className={node.entity.highlight ? 'text-cyan-500' : 'text-primary'}
-                    strokeWidth={node.entity.highlight ? 3 : 2.5}
-                    strokeDasharray="4,4"
-                  >
-                    <animateTransform
-                      attributeName="transform"
-                      attributeType="XML"
-                      type="rotate"
-                      from="0 0 0"
-                      to="360 0 0"
-                      dur="10s"
-                      repeatCount="indefinite"
-                    />
-                  </circle>
-                )}
-                <circle
-                  r={node.radius}
-                  fill={node.color}
-                  stroke={layerStrokeColors[node.entity.layer]}
-                  strokeWidth={node.entity.layer === 'private' ? 4 : 2.5}
-                  opacity={node.entity.display_level === 3 ? 0.7 : 1}
-                  className="hover:opacity-80 transition-opacity"
-                />
-                <text
-                  textAnchor="middle"
-                  dy={node.radius + 18}
-                  className="text-xs fill-foreground font-bold"
-                  style={{
-                    fontSize: node.entity.display_level === 1 ? '14px' : '13px',
-                    pointerEvents: 'none',
-                    textShadow: '0 1px 2px hsl(var(--background))',
-                  }}
-                >
-                  {node.name}
-                </text>
-              </g>
-            ))}
+              ))}
+            </g>
           </svg>
+          <div className="pointer-events-none absolute bottom-3 left-3 rounded-full border border-border/40 bg-background/70 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur-md">
+            拖动画布可平移视野
+          </div>
         </div>
       </CardContent>
     </Card>

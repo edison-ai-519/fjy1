@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, GitBranch, PencilLine, RefreshCw, Settings2, Trash2 } from 'lucide-react';
+import { CheckCircle2, GitBranch, Loader2, PencilLine, RefreshCw, Settings2, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ interface ProjectListPanelProps {
   projects: XgProject[];
   selectedProjectId: string;
   loading: boolean;
+  switchingProjectId?: string;
   newProjectId: string;
   newProjectName: string;
   isNewProjectOpen: boolean;
@@ -30,6 +31,7 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
     projects,
     selectedProjectId,
     loading,
+    switchingProjectId,
     newProjectId,
     newProjectName,
     isNewProjectOpen,
@@ -174,6 +176,7 @@ export function ProjectListPanel(props: ProjectListPanelProps) {
               >
                 <span className="min-w-0 truncate">{project.id}</span>
                 <div className="flex shrink-0 items-center gap-1">
+                  {switchingProjectId === project.id && <Loader2 className="h-4 w-4 animate-spin" />}
                   {selectedProjectId === project.id && <CheckCircle2 className="h-4 w-4" />}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>

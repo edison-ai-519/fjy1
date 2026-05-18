@@ -32,6 +32,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { fetchKnowledgeGraph } from '@/features/ontology/api';
 import {
@@ -42,7 +49,8 @@ import {
   subscribeWorkflowSession,
   terminateWorkflowRun,
 } from '@/features/workflow/runtime';
-import { fetchWorkflowConfig, updateWorkflowConfig } from '@/features/workspace/api';
+import { fetchWorkflowConfig, fetchXgProjects, updateWorkflowConfig, type XgProject } from '@/features/workspace/api';
+import { getStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { WORKFLOW_STAGE_DEFINITIONS } from '../../shared/workflowStages.js';
@@ -250,9 +258,14 @@ function getStageLlmRawText(stageResults: WorkflowStageResult[], stageName: stri
 }
 
 export function FileWorkflowPage() {
+  const initialSelectedProjectId = getStoredSelectedProjectId();
+  const latestSession = getLatestWorkflowSession();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [conversationId, setConversationId] = useState<string | null>(() => getLatestWorkflowSession()?.conversationId ?? null);
-  const [projectId, setProjectId] = useState('demo');
+  const [conversationId, setConversationId] = useState<string | null>(latestSession?.conversationId ?? null);
+  const [projectId, setProjectId] = useState(latestSession?.projectId || initialSelectedProjectId);
+  const [currentWorkspaceProjectId, setCurrentWorkspaceProjectId] = useState(initialSelectedProjectId);
+  const [workspaceProjects, setWorkspaceProjects] = useState<XgProject[]>([]);
+  const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false);
   const [workflowModel, setWorkflowModel] = useState('deepseek/deepseek-v4-flash');
   const [workflowConfigLoading, setWorkflowConfigLoading] = useState(false);
   const [workflowConfigSaving, setWorkflowConfigSaving] = useState(false);
@@ -262,6 +275,28 @@ export function FileWorkflowPage() {
   const [runResult, setRunResult] = useState<FileWorkflowRunResponse | null>(null);
   const [logs, setLogs] = useState<WorkflowLogItem[]>([]);
   const completedSessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return subscribeSelectedProjectIdChange((nextProjectId) => {
+      setCurrentWorkspaceProjectId(nextProjectId);
+    });
+  }, []);
+
+  useEffect(() => {
+    const loadWorkspaceProjects = async () => {
+      setWorkspaceProjectsLoading(true);
+      try {
+        const data = await fetchXgProjects();
+        setWorkspaceProjects(data);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '读取项目列表失败');
+      } finally {
+        setWorkspaceProjectsLoading(false);
+      }
+    };
+
+    void loadWorkspaceProjects();
+  }, []);
 
   useEffect(() => {
     const loadWorkflowConfig = async () => {
@@ -282,10 +317,9 @@ export function FileWorkflowPage() {
   }, []);
 
   useEffect(() => {
-    const latestSession = getLatestWorkflowSession();
     if (!latestSession) return;
     setConversationId(latestSession.conversationId);
-    setProjectId(latestSession.projectId || 'demo');
+    setProjectId(latestSession.projectId || initialSelectedProjectId);
     setLastRunAt(latestSession.lastRunAt);
     setStatusMessage(latestSession.statusMessage);
     setIsRunning(latestSession.isRunning);
@@ -296,7 +330,7 @@ export function FileWorkflowPage() {
   useEffect(() => {
     if (!conversationId) return;
     return subscribeWorkflowSession(conversationId, (session) => {
-      setProjectId(session.projectId || 'demo');
+      setProjectId(session.projectId || initialSelectedProjectId);
       setLastRunAt(session.lastRunAt);
       setStatusMessage(session.statusMessage);
       setIsRunning(session.isRunning);
@@ -304,6 +338,35 @@ export function FileWorkflowPage() {
       setLogs(session.logs);
     });
   }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId || isRunning) {
+      return;
+    }
+
+    if (!selectedFile && !runResult) {
+      setProjectId(currentWorkspaceProjectId);
+      return;
+    }
+
+    setProjectId((current) => current || currentWorkspaceProjectId);
+  }, [conversationId, currentWorkspaceProjectId, isRunning, runResult, selectedFile]);
+
+  useEffect(() => {
+    if (workspaceProjects.length === 0) {
+      return;
+    }
+
+    setProjectId((current) => {
+      if (workspaceProjects.some((project) => project.id === current)) {
+        return current;
+      }
+      if (workspaceProjects.some((project) => project.id === currentWorkspaceProjectId)) {
+        return currentWorkspaceProjectId;
+      }
+      return workspaceProjects[0]?.id || current;
+    });
+  }, [currentWorkspaceProjectId, workspaceProjects]);
 
   useEffect(() => {
     if (!conversationId || !runResult || isRunning) return;
@@ -337,7 +400,7 @@ export function FileWorkflowPage() {
       removeWorkflowSession(conversationId);
     }
     setSelectedFile(null);
-    setProjectId('demo');
+    setProjectId(currentWorkspaceProjectId);
     setLastRunAt(null);
     setStatusMessage('等待文件输入');
     setRunResult(null);
@@ -354,7 +417,7 @@ export function FileWorkflowPage() {
       return;
     }
     if (!projectId.trim()) {
-      setStatusMessage('请先填写 project_id');
+      setStatusMessage('请先选择目标 project_id');
       return;
     }
 
@@ -515,12 +578,22 @@ export function FileWorkflowPage() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-muted-foreground">目标 project_id</div>
-                  <Input
+                  <Select
                     value={projectId}
-                    onChange={(event) => setProjectId(event.target.value)}
-                    placeholder="demo"
-                    className="h-11 rounded-xl border-border/50 bg-background/80"
-                  />
+                    onValueChange={setProjectId}
+                    disabled={workspaceProjectsLoading || workspaceProjects.length === 0}
+                  >
+                    <SelectTrigger className="h-11 rounded-xl border-border/50 bg-background/80">
+                      <SelectValue placeholder={workspaceProjectsLoading ? '正在加载项目...' : '选择目标项目'} />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-xl">
+                      {workspaceProjects.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {project.name && project.name !== project.id ? `${project.name} (${project.id})` : project.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <div className="text-xs font-semibold text-muted-foreground">输入文件</div>

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
-
   deleteXgProject,
   fetchProbabilityReason,
   fetchXgDiff,
@@ -27,13 +26,23 @@ import {
 } from '@/features/workspace/state';
 import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
 
+interface LoadTimelinesOptions {
+  switchRequestId?: number;
+}
+
+interface LoadContentOptions {
+  switchRequestId?: number;
+}
+
 export function useWorkspaceState() {
   const [projects, setProjects] = useState<XgProject[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(getStoredSelectedProjectId);
+  const [selectedProjectId, setSelectedProjectIdState] = useState<string>(getStoredSelectedProjectId);
   const [timelines, setTimelines] = useState<XgTimeline[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string>('');
+  const [selectedFile, setSelectedFileState] = useState<string>('');
   const [fileContent, setFileContent] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
+  const [switchingProject, setSwitchingProject] = useState(false);
+  const [loadingContent, setLoadingContent] = useState(false);
   const [writeFilename, setWriteFilename] = useState('');
   const [writeData, setWriteData] = useState('');
   const [writeMessage, setWriteMessage] = useState('');
@@ -51,6 +60,9 @@ export function useWorkspaceState() {
   const [errorMessage, setErrorMessage] = useState('');
   const selectedProjectIdRef = useRef('');
   const selectedFileRef = useRef('');
+  const projectSwitchRequestRef = useRef(0);
+  const timelineRequestRef = useRef(0);
+  const contentRequestRef = useRef(0);
 
   useEffect(() => {
     void loadProjects();
@@ -58,7 +70,8 @@ export function useWorkspaceState() {
 
   useEffect(() => {
     if (selectedProjectId) {
-      void loadTimelines(selectedProjectId);
+      const switchRequestId = ++projectSwitchRequestRef.current;
+      void loadTimelines(selectedProjectId, { switchRequestId });
     }
   }, [selectedProjectId]);
 
@@ -73,19 +86,36 @@ export function useWorkspaceState() {
   }, [selectedProjectId]);
 
   useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
-    setSelectedProjectId(projectId);
+    selectedProjectIdRef.current = projectId;
+    setSelectedProjectIdState(projectId);
   }), []);
 
   useEffect(() => {
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
 
+  const setSelectedProjectId = (projectId: string) => {
+    const nextProjectId = projectId.trim();
+    selectedProjectIdRef.current = nextProjectId;
+    setSelectedProjectIdState(nextProjectId);
+  };
+
+  const setSelectedFile = (filename: string) => {
+    selectedFileRef.current = filename;
+    setSelectedFileState(filename);
+  };
+
   const loadProjects = async () => {
     setLoading(true);
     try {
       const data = await fetchXgProjects();
+      const nextProjectId = pickSelectedProjectId(
+        data,
+        selectedProjectIdRef.current || getStoredSelectedProjectId(),
+      );
       setProjects(data);
-      setSelectedProjectId((current) => pickSelectedProjectId(data, current || getStoredSelectedProjectId()));
+      selectedProjectIdRef.current = nextProjectId;
+      setSelectedProjectIdState(nextProjectId);
       setErrorMessage('');
     } catch (error) {
       const message = formatWorkspaceError(
@@ -100,44 +130,141 @@ export function useWorkspaceState() {
     }
   };
 
-  const loadTimelines = async (projectId: string) => {
+  const loadTimelines = async (projectId: string, options: LoadTimelinesOptions = {}) => {
+    const requestId = ++timelineRequestRef.current;
+    const isProjectSwitch = typeof options.switchRequestId === 'number';
+    const isCurrentProject = projectId === selectedProjectIdRef.current;
+
+    if (isProjectSwitch || isCurrentProject) {
+      setSwitchingProject(true);
+    }
+
     try {
       const data = await fetchXgTimelines(projectId);
+      if (requestId !== timelineRequestRef.current) {
+        return;
+      }
+
+      if (typeof options.switchRequestId === 'number' && options.switchRequestId !== projectSwitchRequestRef.current) {
+        return;
+      }
+
+      if (projectId !== selectedProjectIdRef.current) {
+        return;
+      }
+
       setTimelines(data);
       setErrorMessage('');
       const nextFile = pickSelectedFile(data, selectedFileRef.current);
       setSelectedFile(nextFile);
       if (nextFile) {
-        await loadContent(projectId, nextFile);
+        await loadContent(projectId, nextFile, options);
+        return;
       }
+
+      setFileContent(null);
+      setWriteFilename('');
+      setWriteData('');
+      setLoadingContent(false);
+      setSwitchingProject(false);
     } catch (error) {
+      if (requestId !== timelineRequestRef.current) {
+        return;
+      }
+
+      if (typeof options.switchRequestId === 'number' && options.switchRequestId !== projectSwitchRequestRef.current) {
+        return;
+      }
+
+      if (projectId !== selectedProjectIdRef.current) {
+        return;
+      }
+
       const message = formatWorkspaceError(
         error,
         '加载项目时间线失败',
         '请确认项目已初始化，且仓库可正常访问',
       );
       setErrorMessage(message);
+      setTimelines([]);
+      setSelectedFile('');
+      setFileContent(null);
+      setLoadingContent(false);
       toast.error(message);
+    } finally {
+      if (
+        requestId === timelineRequestRef.current
+        && projectId === selectedProjectIdRef.current
+        && (!options.switchRequestId || options.switchRequestId === projectSwitchRequestRef.current)
+      ) {
+        setSwitchingProject(false);
+      }
     }
   };
 
-  const loadContent = async (projectId: string, filename: string) => {
+  const loadContent = async (projectId: string, filename: string, options: LoadContentOptions = {}) => {
+    const requestId = ++contentRequestRef.current;
+    setLoadingContent(true);
+
     try {
       const data = await fetchXgRead(projectId, filename);
+      if (requestId !== contentRequestRef.current) {
+        return;
+      }
+
+      if (typeof options.switchRequestId === 'number' && options.switchRequestId !== projectSwitchRequestRef.current) {
+        return;
+      }
+
+      if (projectId !== selectedProjectIdRef.current || filename !== selectedFileRef.current) {
+        return;
+      }
+
       setFileContent(data);
       setErrorMessage('');
       const nextEditorState = syncEditorStateFromContent(filename, data);
       setWriteFilename(nextEditorState.writeFilename);
       setWriteData(nextEditorState.writeData);
     } catch (error) {
+      if (requestId !== contentRequestRef.current) {
+        return;
+      }
+
+      if (typeof options.switchRequestId === 'number' && options.switchRequestId !== projectSwitchRequestRef.current) {
+        return;
+      }
+
+      if (projectId !== selectedProjectIdRef.current || filename !== selectedFileRef.current) {
+        return;
+      }
+
       const message = formatWorkspaceError(
         error,
         '读取内容失败',
         '请确认文件存在且当前项目仓库可访问',
       );
       setErrorMessage(message);
+      setFileContent(null);
       toast.error(message);
+    } finally {
+      if (
+        requestId === contentRequestRef.current
+        && projectId === selectedProjectIdRef.current
+        && filename === selectedFileRef.current
+        && (!options.switchRequestId || options.switchRequestId === projectSwitchRequestRef.current)
+      ) {
+        setLoadingContent(false);
+        setSwitchingProject(false);
+      }
     }
+  };
+
+  const refreshProjectView = async (projectId: string, filename?: string) => {
+    if (filename) {
+      setSelectedFile(filename);
+    }
+
+    await loadTimelines(projectId);
   };
 
   const handleWrite = async () => {
@@ -164,11 +291,7 @@ export function useWorkspaceState() {
         inference_committer_name: 'Web UI',
       });
       toast.success(result.commit_id ? `写入成功: ${result.commit_id.slice(0, 7)}` : '写入成功');
-      await loadTimelines(selectedProjectId);
-      if (writeFilename) {
-        setSelectedFile(writeFilename);
-        await loadContent(selectedProjectId, writeFilename);
-      }
+      await refreshProjectView(selectedProjectId, writeFilename);
     } catch (error) {
       toast.error('写入失败: ' + (error instanceof Error ? error.message : '未知错误'));
     } finally {
@@ -182,12 +305,21 @@ export function useWorkspaceState() {
       return;
     }
 
+    selectedProjectIdRef.current = nextProjectId;
     selectedFileRef.current = '';
+    contentRequestRef.current += 1;
     setFileSearch('');
     setErrorMessage('');
     setCompareTarget('');
     setDiffData(null);
     setIsDiffOpen(false);
+    setTimelines([]);
+    setSelectedFile('');
+    setFileContent(null);
+    setWriteFilename('');
+    setWriteData('');
+    setLoadingContent(false);
+    setSwitchingProject(true);
     setSelectedProjectId(nextProjectId);
   };
 
@@ -218,10 +350,7 @@ export function useWorkspaceState() {
     try {
       await rollbackXgVersion(selectedProjectId, commitId);
       toast.success('回滚成功');
-      await loadTimelines(selectedProjectId);
-      if (selectedFile) {
-        await loadContent(selectedProjectId, selectedFile);
-      }
+      await refreshProjectView(selectedProjectId, selectedFile);
     } catch (error) {
       toast.error('回滚失败: ' + (error instanceof Error ? error.message : '未知错误'));
     }
@@ -317,17 +446,18 @@ export function useWorkspaceState() {
     return subscribeRepositorySync((detail) => {
       void loadProjects();
 
-      const projectId = detail.projectId || selectedProjectIdRef.current;
+      const currentProjectId = selectedProjectIdRef.current;
+      const projectId = detail.projectId || currentProjectId;
       if (!projectId) {
         return;
       }
 
+      if (detail.projectId && currentProjectId && detail.projectId !== currentProjectId) {
+        return;
+      }
+
       void (async () => {
-        await loadTimelines(projectId);
-        if (detail.filename) {
-          setSelectedFile(detail.filename);
-          await loadContent(projectId, detail.filename);
-        }
+        await refreshProjectView(projectId, detail.filename);
       })();
     });
   }, []);
@@ -342,6 +472,8 @@ export function useWorkspaceState() {
     setSelectedFile,
     fileContent,
     loading,
+    switchingProject,
+    loadingContent,
     writeFilename,
     setWriteFilename,
     writeData,

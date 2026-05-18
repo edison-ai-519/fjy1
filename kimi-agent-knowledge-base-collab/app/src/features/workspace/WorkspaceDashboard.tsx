@@ -20,10 +20,14 @@ export function WorkspaceDashboard({ workspace }: WorkspaceDashboardProps) {
   };
 
   const handleSourceCommitted = async (projectId: string, filename: string) => {
-    workspace.setSelectedProjectId(projectId);
-    await workspace.loadTimelines(projectId);
+    if (projectId !== workspace.selectedProjectId) {
+      workspace.handleSelectProject(projectId);
+      workspace.setSelectedFile(filename);
+      return;
+    }
+
     workspace.setSelectedFile(filename);
-    await workspace.loadContent(projectId, filename);
+    await workspace.loadTimelines(projectId);
   };
 
   return (
@@ -40,6 +44,7 @@ export function WorkspaceDashboard({ workspace }: WorkspaceDashboardProps) {
             projects={workspace.projects}
             selectedProjectId={workspace.selectedProjectId}
             loading={workspace.loading}
+            switchingProjectId={workspace.switchingProject ? workspace.selectedProjectId : undefined}
             newProjectId={workspace.newProjectId}
             newProjectName={workspace.newProjectName}
             isNewProjectOpen={workspace.isNewProjectOpen}
@@ -52,6 +57,7 @@ export function WorkspaceDashboard({ workspace }: WorkspaceDashboardProps) {
             className="h-[545px]" 
             timelines={workspace.timelines} 
             selectedFile={workspace.selectedFile} 
+            loading={workspace.switchingProject}
             onSelectFile={handleSelectFile} 
             fileSearch={workspace.fileSearch}
             onSearchChange={workspace.setFileSearch}
@@ -62,13 +68,14 @@ export function WorkspaceDashboard({ workspace }: WorkspaceDashboardProps) {
             <FileContentPanel 
               selectedFile={workspace.selectedFile} 
               fileContent={workspace.fileContent} 
+              loading={workspace.switchingProject || workspace.loadingContent}
               onRefresh={() => workspace.loadContent(workspace.selectedProjectId, workspace.selectedFile)} 
               onNavigate={workspace.setFileSearch}
             />
             <GraphIngestPanel selectedProjectId={workspace.selectedProjectId} onSourceCommitted={handleSourceCommitted} />
           </div>
           <div className="grid gap-6 md:grid-cols-2">
-            <TimelinePanel selectedFile={workspace.selectedFile} timelines={workspace.timelines} onViewDiff={workspace.handleViewDiff} onSetOfficial={workspace.handleSetOfficial} onRollback={workspace.handleRollback} />
+            <TimelinePanel selectedFile={workspace.selectedFile} timelines={workspace.timelines} loading={workspace.switchingProject} onViewDiff={workspace.handleViewDiff} onSetOfficial={workspace.handleSetOfficial} onRollback={workspace.handleRollback} />
             <ProbabilityPanel probInput={workspace.probInput} setProbInput={workspace.setProbInput} probResult={workspace.probResult} analyzing={workspace.analyzing} onAnalyze={workspace.handleProbAnalysis} />
           </div>
           <RecommendationPanel />
