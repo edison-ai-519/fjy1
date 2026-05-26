@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchKnowledgeGraph, fetchOntologies, searchEntities as searchEntitiesRequest } from '@/features/ontology/api';
 import { subscribeRepositorySync } from '@/shared/events/repositorySync';
 import type { KnowledgeGraphData, Entity, OntologyModule } from '@/types/ontology';
@@ -15,15 +15,25 @@ export function useOntologyData(options: { enabled?: boolean } = {}) {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
-  const [isPageVisible, setIsPageVisible] = useState(() => (
-    typeof document === 'undefined'
-      ? true
-      : document.visibilityState !== 'hidden'
-  ));
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  const requestSequenceRef = useRef(0);
+  const activeRequestIdRef = useRef(0);
 
-  const refreshKnowledgeGraph = async (options: { silent?: boolean; forceRefresh?: boolean } = {}) => {
+  useEffect(() => {
+    selectedProjectIdRef.current = selectedProjectId;
+  }, [selectedProjectId]);
+
+  const refreshKnowledgeGraph = useCallback(async (options: { silent?: boolean; forceRefresh?: boolean } = {}) => {
+    if (!enabled) {
+      return;
+    }
+
     const silent = options.silent ?? true;
+    const projectId = selectedProjectId;
+    const requestId = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestId;
+    activeRequestIdRef.current = requestId;
+
     try {
       if (silent) {
         setRefreshing(true);
@@ -32,77 +42,73 @@ export function useOntologyData(options: { enabled?: boolean } = {}) {
       }
       setError(null);
 
-      const knowledgeGraphPromise = fetchKnowledgeGraph({ refresh: options.forceRefresh, projectId: selectedProjectId });
+      const knowledgeGraphPromise = fetchKnowledgeGraph({ refresh: options.forceRefresh, projectId });
       const ontologiesPromise = fetchOntologies();
       const [kgData, ontologies] = await Promise.all([
         knowledgeGraphPromise,
         ontologiesPromise,
       ]);
 
+      if (activeRequestIdRef.current !== requestId || selectedProjectIdRef.current !== projectId) {
+        return;
+      }
+
       setKnowledgeGraph(kgData);
       setPhilosophicalOntology(ontologies.philosophicalOntology);
       setFormalOntology(ontologies.formalOntology);
       setScientificOntology(ontologies.scientificOntology);
       setLastRefreshAt(new Date().toISOString());
-      setHasLoadedOnce(true);
     } catch (err) {
+      if (activeRequestIdRef.current !== requestId || selectedProjectIdRef.current !== projectId) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
+      if (activeRequestIdRef.current !== requestId) {
+        return;
+      }
       if (silent) {
         setRefreshing(false);
       } else {
         setLoading(false);
       }
     }
-  };
+  }, [enabled, selectedProjectId]);
 
   useEffect(() => {
     if (!enabled) {
+      requestSequenceRef.current += 1;
+      activeRequestIdRef.current = requestSequenceRef.current;
       setLoading(false);
       setRefreshing(false);
       setError(null);
       return undefined;
     }
 
-    setHasLoadedOnce(false);
     void refreshKnowledgeGraph({ silent: false });
-  }, [enabled, selectedProjectId]);
-
-  useEffect(() => {
-    if (typeof document === 'undefined') {
-      return undefined;
-    }
-
-    const handleVisibilityChange = () => {
-      setIsPageVisible(document.visibilityState !== 'hidden');
-    };
-
-    handleVisibilityChange();
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
-
-  useEffect(() => {
-    if (!enabled || !hasLoadedOnce || !isPageVisible) {
-      return undefined;
-    }
-
-    const interval = window.setInterval(() => {
-      void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
-    }, 10000);
-
-    return () => window.clearInterval(interval);
-  }, [enabled, hasLoadedOnce, isPageVisible, selectedProjectId]);
+  }, [enabled, refreshKnowledgeGraph, selectedProjectId]);
 
   useEffect(() => {
     if (!enabled) {
       return undefined;
     }
 
-    return subscribeRepositorySync(() => {
+    return subscribeRepositorySync((detail) => {
+      if (
+        detail.source === 'initXgProject'
+        || detail.source === 'updateXgProjectName'
+        || detail.source === 'softDeleteXgProject'
+      ) {
+        return;
+      }
+
+      const detailProjectId = detail.projectId?.trim();
+      if (detailProjectId && detailProjectId !== selectedProjectIdRef.current) {
+        return;
+      }
       void refreshKnowledgeGraph({ silent: true, forceRefresh: true });
     });
-  }, [enabled, selectedProjectId]);
+  }, [enabled, refreshKnowledgeGraph]);
 
   useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
     setSelectedProjectId(projectId);

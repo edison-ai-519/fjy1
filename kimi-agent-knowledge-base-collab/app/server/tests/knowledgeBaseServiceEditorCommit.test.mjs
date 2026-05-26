@@ -60,12 +60,18 @@ function createValidWorkflowSource(overrides = {}) {
 
 function createRepository() {
   let invalidated = 0;
+  let invalidatedProjectId = null;
+  let loadedProjectId = null;
   return {
     invalidated: () => invalidated,
-    invalidateCache() {
+    invalidatedProjectId: () => invalidatedProjectId,
+    loadedProjectId: () => loadedProjectId,
+    invalidateCache(projectId) {
       invalidated += 1;
+      invalidatedProjectId = projectId ?? null;
     },
-    async loadDataset() {
+    async loadDataset(projectId) {
+      loadedProjectId = projectId ?? null;
       return {
         knowledgeGraph: {
           statistics: {
@@ -132,6 +138,8 @@ test("KnowledgeBaseService commitEditorDraft writes only the JSON source", async
   assert.equal(calls[0].message, "新增盐度监测");
   assert.equal(calls[0].basevision, 0);
   assert.equal(repository.invalidated(), 1);
+  assert.equal(repository.invalidatedProjectId(), "demo");
+  assert.equal(repository.loadedProjectId(), "demo");
   assert.equal(result.updatedEntityId, "domain:entity_salinity_monitoring");
   assert.equal(result.layer, "domain");
   assert.equal(result.slug, "entity_salinity_monitoring");

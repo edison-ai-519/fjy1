@@ -95,3 +95,18 @@ test('buildSystemRelationshipMap 能从包含和依赖关系中生成结构图',
   assert.equal(map?.containmentCount, 4);
   assert.equal(map?.dependencyCount, 1);
 });
+
+test('buildSystemRelationshipMap 能识别 part_of 方向并还原整体到部分结构', () => {
+  const map = buildSystemRelationshipMap(entities[0], entities, [
+    {
+      source: 'cpu',
+      target: 'system',
+      relation: 'part_of',
+      description: 'CPU part_of 电脑',
+    },
+  ]);
+
+  assert.ok(map);
+  assert.deepEqual(map?.root.children.map((child) => child.name), ['CPU', '机箱']);
+  assert.equal(map?.containmentCount, 2);
+});

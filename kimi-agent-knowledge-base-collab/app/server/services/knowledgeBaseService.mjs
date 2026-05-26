@@ -262,9 +262,9 @@ export class KnowledgeBaseService {
 
     try {
       if (typeof this.repository.invalidateCache === "function") {
-        this.repository.invalidateCache();
+        this.repository.invalidateCache(input.projectId || this.projectId);
       }
-      const dataset = await this.repository.loadDataset();
+      const dataset = await this.repository.loadDataset(input.projectId || this.projectId);
       const safeTitle = asText(sourceEntity.name || sourceOntology.entity_name || reference.slug);
 
       return {

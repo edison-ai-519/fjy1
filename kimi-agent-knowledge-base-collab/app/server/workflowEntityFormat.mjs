@@ -185,6 +185,10 @@ export function validateWorkflowEntityFileData(data) {
       return { ok: false, error: "data.ablation 必须是对象或 null" };
     }
     const ablationKeys = [
+      "keep_probability",
+      "remove_probability",
+      "probability_gap",
+      "judge_reason",
       "entity_id",
       "entity_name",
       "impact_level",
@@ -196,16 +200,15 @@ export function validateWorkflowEntityFileData(data) {
       "remove_impact",
       "observation",
       "evidence",
-      "keep_probability",
-      "remove_probability",
-      "probability_gap",
-      "judge_reason",
       "small_reason",
     ];
     if (!hasOnlyKeys(ablation, ablationKeys)) {
       return { ok: false, error: "data.ablation 包含未支持字段" };
     }
-    const ablationRequired = ["entity_id", "entity_name"];
+    const hasLegacyIdentity = asText(ablation.entity_id) || asText(ablation.entity_name);
+    const ablationRequired = hasLegacyIdentity
+      ? ["entity_id", "entity_name"]
+      : ["keep_probability", "remove_probability", "probability_gap", "judge_reason"];
     for (const field of ablationRequired) {
       if (!asText(ablation[field])) {
         return { ok: false, error: `data.ablation.${field} 必须是非空字符串` };

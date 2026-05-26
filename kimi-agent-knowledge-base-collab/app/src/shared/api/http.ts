@@ -120,6 +120,18 @@ function attachStoredAuthHeader(input: RequestInfo | URL, init?: RequestInit): R
   };
 }
 
+function disableCacheForReadRequest(init: RequestInit = {}): RequestInit {
+  const method = (init.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    return init;
+  }
+
+  return {
+    ...init,
+    cache: 'no-store',
+  };
+}
+
 async function ensureBrowserAccessToken(): Promise<string> {
   if (typeof window === 'undefined') {
     return '';
@@ -169,7 +181,8 @@ async function withBrowserAuth(path: string, init: RequestInit = {}, retry = tru
     await ensureBrowserAccessToken();
   }
 
-  const response = await fetch(buildApiUrl(path), attachStoredAuthHeader(path, init));
+  const requestInit = attachStoredAuthHeader(path, disableCacheForReadRequest(init));
+  const response = await fetch(buildApiUrl(path), requestInit);
   if (retry && typeof window !== 'undefined' && !shouldSkipAutoLogin(path) && response.status === 401) {
     clearStoredAccessToken();
     await ensureBrowserAccessToken();

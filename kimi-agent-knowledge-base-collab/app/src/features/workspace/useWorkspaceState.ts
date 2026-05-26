@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
-  deleteXgProject,
   fetchProbabilityReason,
   fetchXgDiff,
   fetchXgProjects,
@@ -11,6 +10,7 @@ import {
   initXgProject,
   rollbackXgVersion,
   setOfficialRecommend,
+  softDeleteXgProject,
   updateXgProjectName,
   writeXgAndInfer,
   type ProbabilityResult,
@@ -377,20 +377,31 @@ export function useWorkspaceState() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!confirm(`确定要彻底删除项目 ${projectId} 吗？此操作不可撤销且会清除所有 Git 历史。`)) {
+    const confirmationText = `I CHOOSE DELETE PROJECT ${projectId}`;
+    const typedConfirmation = window.prompt(
+      `即将软删除项目 ${projectId}。\n项目不会被物理清除，但会从当前项目列表中隐藏。\n请输入以下文本确认：\n${confirmationText}`,
+      '',
+    );
+
+    if (typedConfirmation === null) {
+      return;
+    }
+
+    if (typedConfirmation.trim() !== confirmationText) {
+      toast.error('确认文本不匹配，已取消删除');
       return;
     }
 
     try {
-      await deleteXgProject(projectId);
-      toast.success('项目已成功删除');
+      softDeleteXgProject(projectId);
+      toast.success('项目已软删除');
       setErrorMessage('');
       if (selectedProjectId === projectId) {
         setSelectedProjectId('');
       }
       await loadProjects();
     } catch (error) {
-      const message = formatWorkspaceError(error, '删除项目失败');
+      const message = formatWorkspaceError(error, '软删除项目失败');
       setErrorMessage(message);
       toast.error(message);
     }

@@ -15,6 +15,39 @@ const ontologiesRequestCache = new Map<string, SessionCacheEntry<{
   formalOntology: OntologyModule;
   scientificOntology: OntologyModule;
 }>>();
+const SESSION_CACHE_LIMIT = 6;
+
+function touchSessionCacheEntry<T>(
+  cache: Map<string, SessionCacheEntry<T>>,
+  key: string,
+  entry: SessionCacheEntry<T>,
+) {
+  if (cache.get(key) === entry) {
+    cache.delete(key);
+  }
+  cache.set(key, entry);
+}
+
+function pruneSessionCache<T>(cache: Map<string, SessionCacheEntry<T>>) {
+  while (cache.size > SESSION_CACHE_LIMIT) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) {
+      return;
+    }
+
+    const oldestEntry = cache.get(oldestKey);
+    if (oldestEntry?.promise) {
+      const settledKey = [...cache.entries()].find(([, entry]) => !entry.promise)?.[0];
+      if (settledKey === undefined) {
+        return;
+      }
+      cache.delete(settledKey);
+      continue;
+    }
+
+    cache.delete(oldestKey);
+  }
+}
 
 function getSharedSessionPromise<T>(
   cache: Map<string, SessionCacheEntry<T>>,
@@ -25,6 +58,7 @@ function getSharedSessionPromise<T>(
   const refresh = Boolean(options.refresh);
   const existing = cache.get(key);
   if (existing && !refresh) {
+    touchSessionCacheEntry(cache, key, existing);
     if (existing.promise) {
       return existing.promise;
     }
@@ -36,13 +70,16 @@ function getSharedSessionPromise<T>(
   const entry = existing ?? { promise: null, value: null };
   const promise = factory();
   entry.promise = promise;
-  cache.set(key, entry);
+  touchSessionCacheEntry(cache, key, entry);
+  pruneSessionCache(cache);
 
   void promise.then((value) => {
     const current = cache.get(key);
     if (current?.promise === promise) {
       current.promise = null;
       current.value = value;
+      touchSessionCacheEntry(cache, key, current);
+      pruneSessionCache(cache);
     }
   }).catch(() => {
     const current = cache.get(key);

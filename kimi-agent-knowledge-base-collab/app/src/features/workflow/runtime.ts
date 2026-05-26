@@ -62,6 +62,7 @@ export interface WorkflowRunSession {
 }
 
 type Subscriber = (session: WorkflowRunSession) => void;
+type SessionsSubscriber = (sessions: WorkflowRunSession[]) => void;
 
 const STORAGE_KEY = 'kimi.fileWorkflow.sessions.v1';
 const MAX_LOG_ITEMS = 120;
@@ -157,6 +158,7 @@ function canUseStorage() {
 class WorkflowRuntimeManager {
   private sessions = new Map<string, WorkflowRunSession>();
   private subscribers = new Map<string, Set<Subscriber>>();
+  private sessionSubscribers = new Set<SessionsSubscriber>();
   private latestConversationId: string | null = null;
   private currentReader: ReadableStreamDefaultReader | null = null;
 
@@ -200,10 +202,22 @@ class WorkflowRuntimeManager {
     }));
   }
 
+  private getSortedSessions() {
+    return Array.from(this.sessions.values()).sort((a, b) => (
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    ));
+  }
+
+  private emitSessions() {
+    const sessions = this.getSortedSessions();
+    this.sessionSubscribers.forEach((subscriber) => subscriber(sessions));
+  }
+
   private emit(conversationId: string) {
     const session = this.sessions.get(conversationId);
     if (!session) return;
     this.persist();
+    this.emitSessions();
     const callbacks = this.subscribers.get(conversationId);
     callbacks?.forEach((callback) => callback(session));
   }
@@ -220,6 +234,10 @@ class WorkflowRuntimeManager {
   getLatestSession() {
     if (!this.latestConversationId) return null;
     return this.sessions.get(this.latestConversationId) ?? null;
+  }
+
+  getAllSessions() {
+    return this.getSortedSessions();
   }
 
   getSession(conversationId: string) {
@@ -244,6 +262,28 @@ class WorkflowRuntimeManager {
     };
   }
 
+  subscribeSessions(subscriber: SessionsSubscriber) {
+    this.sessionSubscribers.add(subscriber);
+    subscriber(this.getSortedSessions());
+    return () => {
+      this.sessionSubscribers.delete(subscriber);
+    };
+  }
+
+  activateSession(conversationId: string) {
+    if (!this.sessions.has(conversationId)) {
+      return;
+    }
+    this.latestConversationId = conversationId;
+    this.persist();
+    this.emitSessions();
+    const session = this.sessions.get(conversationId);
+    const callbacks = this.subscribers.get(conversationId);
+    if (session) {
+      callbacks?.forEach((callback) => callback(session));
+    }
+  }
+
   removeSession(conversationId: string) {
     this.sessions.delete(conversationId);
     this.subscribers.delete(conversationId);
@@ -254,6 +294,7 @@ class WorkflowRuntimeManager {
       this.latestConversationId = nextLatest?.conversationId ?? null;
     }
     this.persist();
+    this.emitSessions();
   }
 
   startRun(input: {
@@ -453,6 +494,13 @@ class WorkflowRuntimeManager {
       const stageData = data as WorkflowStageResult;
       this.update(conversationId, (current) => {
         const base = current.runResult ?? draft;
+        const previousStage = base.stage_results.find((stage) => stage.stage === stageData.stage) ?? null;
+        const shouldAppendLog = (
+          !previousStage
+          || previousStage.status !== stageData.status
+          || previousStage.error !== stageData.error
+          || previousStage.finished_at !== stageData.finished_at
+        );
         return {
           ...current,
           runResult: {
@@ -463,13 +511,15 @@ class WorkflowRuntimeManager {
               status: stageData.status === 'failed' ? 'failed' : 'running',
             },
           },
-          logs: appendUniqueLog(current.logs, {
-            id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-            level: stageData.status === 'failed' ? 'error' : stageData.status === 'success' ? 'success' : 'info',
-            message: `${stageData.order}. ${stageData.stage} ${stageData.status === 'running' ? '开始' : stageData.status === 'success' ? '完成' : '失败'}`,
-            stage: stageData.stage,
-            createdAt: new Date().toLocaleTimeString(),
-          }),
+          logs: shouldAppendLog
+            ? appendUniqueLog(current.logs, {
+              id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              level: stageData.status === 'failed' ? 'error' : stageData.status === 'success' ? 'success' : 'info',
+              message: `${stageData.order}. ${stageData.stage} ${stageData.status === 'running' ? '开始' : stageData.status === 'success' ? '完成' : '失败'}`,
+              stage: stageData.stage,
+              createdAt: new Date().toLocaleTimeString(),
+            })
+            : current.logs,
           updatedAt: new Date().toISOString(),
         };
       });
@@ -525,8 +575,16 @@ export function getWorkflowSession(conversationId: string) {
   return workflowRuntimeManager.getSession(conversationId);
 }
 
+export function getAllWorkflowSessions() {
+  return workflowRuntimeManager.getAllSessions();
+}
+
 export function subscribeWorkflowSession(conversationId: string, subscriber: Subscriber) {
   return workflowRuntimeManager.subscribe(conversationId, subscriber);
+}
+
+export function subscribeWorkflowSessions(subscriber: SessionsSubscriber) {
+  return workflowRuntimeManager.subscribeSessions(subscriber);
 }
 
 export function startWorkflowRun(input: { file: File; projectId: string }) {
@@ -543,4 +601,8 @@ export function removeWorkflowSession(conversationId: string) {
 
 export function terminateWorkflowRun(conversationId: string) {
   return workflowRuntimeManager.terminateRun(conversationId);
+}
+
+export function activateWorkflowSession(conversationId: string) {
+  return workflowRuntimeManager.activateSession(conversationId);
 }

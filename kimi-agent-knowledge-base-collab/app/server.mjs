@@ -27,9 +27,12 @@ const {
   assistantSessionStateService,
   conversationGraphStateService,
   workflowService,
+  workflowV2Service,
   appRoot,
 } = createAppServices();
 const workflowControllers = new Map();
+const workflowV2Controllers = new Map();
+const workflowV2Subscribers = new Map();
 
 function getCorsHeaders() {
   return {
@@ -83,6 +86,55 @@ function writeSse(res, event, payload) {
 
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function addWorkflowV2Subscriber(conversationId, res) {
+  const subscribers = workflowV2Subscribers.get(conversationId) ?? new Set();
+  subscribers.add(res);
+  workflowV2Subscribers.set(conversationId, subscribers);
+  const cleanup = () => {
+    const current = workflowV2Subscribers.get(conversationId);
+    if (!current) {
+      return;
+    }
+    current.delete(res);
+    if (current.size === 0) {
+      workflowV2Subscribers.delete(conversationId);
+    }
+  };
+  res.on("close", cleanup);
+  res.on("error", cleanup);
+  return cleanup;
+}
+
+function broadcastWorkflowV2Event(conversationId, event, payload) {
+  const subscribers = workflowV2Subscribers.get(conversationId);
+  if (!subscribers || subscribers.size === 0) {
+    return;
+  }
+  for (const res of [...subscribers]) {
+    if (res.writableEnded || res.destroyed) {
+      subscribers.delete(res);
+      continue;
+    }
+    writeSse(res, event, payload);
+  }
+  if (subscribers.size === 0) {
+    workflowV2Subscribers.delete(conversationId);
+  }
+}
+
+function closeWorkflowV2Subscribers(conversationId) {
+  const subscribers = workflowV2Subscribers.get(conversationId);
+  if (!subscribers) {
+    return;
+  }
+  for (const res of [...subscribers]) {
+    if (!res.writableEnded) {
+      res.end();
+    }
+  }
+  workflowV2Subscribers.delete(conversationId);
 }
 
 async function parseBody(req) {
@@ -221,24 +273,83 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/workflow/config") {
       const body = await parseBody(req);
-      const workflowModel = typeof body?.workflowModel === "string"
-        ? body.workflowModel.trim()
-        : "";
+      const workflowModel = typeof body?.workflowModel === "string" ? body.workflowModel.trim() : undefined;
+      const workflowModelA = typeof body?.workflowModelA === "string" ? body.workflowModelA.trim() : undefined;
+      const workflowModelB = typeof body?.workflowModelB === "string" ? body.workflowModelB.trim() : undefined;
+      const workflowParallelCount = body?.workflowParallelCount;
+      const workflowDebateRounds = body?.workflowDebateRounds;
 
-      if (!workflowModel) {
-        sendJson(res, 400, { error: "workflowModel is required" });
+      if (
+        workflowModel === undefined
+        && workflowModelA === undefined
+        && workflowModelB === undefined
+        && workflowParallelCount === undefined
+        && workflowDebateRounds === undefined
+      ) {
+        sendJson(res, 400, { error: "workflow config payload is required" });
         return;
       }
 
-      sendJson(res, 200, workflowService.setWorkflowModel(workflowModel));
+      sendJson(res, 200, workflowService.setWorkflowConfig({
+        workflowModel,
+        workflowModelA,
+        workflowModelB,
+        workflowParallelCount,
+        workflowDebateRounds,
+      }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workflow/v2/config") {
+      await workflowV2Service.refreshWorkflowConfigFromResolver();
+      sendJson(res, 200, workflowV2Service.getWorkflowConfig());
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/v2/config") {
+      const body = await parseBody(req);
+      sendJson(res, 200, workflowV2Service.setWorkflowConfig({
+        workflowModel: typeof body?.workflowModel === "string" ? body.workflowModel.trim() : undefined,
+        workflowModelA: typeof body?.workflowModelA === "string" ? body.workflowModelA.trim() : undefined,
+        workflowModelB: typeof body?.workflowModelB === "string" ? body.workflowModelB.trim() : undefined,
+        workflowJudgeModel: typeof body?.workflowJudgeModel === "string" ? body.workflowJudgeModel.trim() : undefined,
+        chunkMaxChars: body?.chunkMaxChars,
+        chunkMinChars: body?.chunkMinChars,
+        windowSize: body?.windowSize,
+        windowStep: body?.windowStep,
+        parallelWindows: body?.parallelWindows,
+      }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workflow/v2/session") {
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+      try {
+        const payload = await workflowV2Service.getFileWorkflowSession(conversationId);
+        sendJson(res, 200, payload);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "workflow V2 session not found";
+        if (/ENOENT/i.test(message)) {
+          sendJson(res, 404, { error: "workflow V2 session snapshot not found" });
+          return;
+        }
+        sendJson(res, 500, { error: message });
+      }
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/knowledge-graph") {
+      const projectId = url.searchParams.get("project_id") || undefined;
       if (url.searchParams.get("refresh") === "1" && typeof knowledgeBaseService.repository?.invalidateCache === "function") {
-        knowledgeBaseService.repository.invalidateCache();
+        knowledgeBaseService.repository.invalidateCache(projectId);
       }
-      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph(url.searchParams.get("project_id") || undefined));
+      sendJson(res, 200, await knowledgeBaseService.getKnowledgeGraph(projectId));
       return;
     }
 
@@ -581,7 +692,7 @@ const server = createServer(async (req, res) => {
       });
 
       if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
-        knowledgeBaseService.repository.invalidateCache();
+        knowledgeBaseService.repository.invalidateCache(decodeURIComponent(projectId));
       }
 
       sendJson(res, result.ok ? 200 : 502, result);
@@ -633,8 +744,8 @@ const server = createServer(async (req, res) => {
           conversationId,
           signal: controller.signal,
           handlers: {
-            onStatus(message) {
-              writeSse(res, "status", { message });
+            onStatus(payload) {
+              writeSse(res, "status", typeof payload === "string" ? { message: payload } : payload);
             },
             onStageUpdate(stageResult) {
               writeSse(res, "workflow_stage", stageResult);
@@ -643,7 +754,7 @@ const server = createServer(async (req, res) => {
         });
 
         if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
-          knowledgeBaseService.repository.invalidateCache();
+          knowledgeBaseService.repository.invalidateCache(decodeURIComponent(projectId));
         }
 
         writeSse(res, "complete", result);
@@ -712,8 +823,8 @@ const server = createServer(async (req, res) => {
           startStage,
           signal: controller.signal,
           handlers: {
-            onStatus(message) {
-              writeSse(res, "status", { message });
+            onStatus(payload) {
+              writeSse(res, "status", typeof payload === "string" ? { message: payload } : payload);
             },
             onStageUpdate(stageResult) {
               writeSse(res, "workflow_stage", stageResult);
@@ -722,7 +833,7 @@ const server = createServer(async (req, res) => {
         });
 
         if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
-          knowledgeBaseService.repository.invalidateCache();
+          knowledgeBaseService.repository.invalidateCache(decodeURIComponent(projectId));
         }
 
         writeSse(res, "complete", result);
@@ -731,6 +842,176 @@ const server = createServer(async (req, res) => {
       } finally {
         if (workflowControllers.get(runKey) === controller) {
           workflowControllers.delete(runKey);
+        }
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/v2/file/run/stream") {
+      const fileName = typeof url.searchParams.get("fileName") === "string"
+        ? url.searchParams.get("fileName").trim()
+        : "";
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      const bodyBuffer = await readRequestBodyBuffer(req);
+
+      if (!fileName) {
+        sendJson(res, 400, { error: "fileName is required" });
+        return;
+      }
+      if (bodyBuffer.byteLength === 0) {
+        sendJson(res, 400, { error: "file content is empty" });
+        return;
+      }
+      if (!projectId) {
+        sendJson(res, 400, { error: "projectId is required" });
+        return;
+      }
+
+      openSse(res);
+      addWorkflowV2Subscriber(conversationId || "default", res);
+      writeSse(res, "status", {
+        message: "文件已接收，准备启动 V2 六阶段分析工作流",
+      });
+
+      const controller = new AbortController();
+      const runKey = conversationId || "default";
+      workflowV2Controllers.set(runKey, controller);
+
+      try {
+        const result = await workflowV2Service.runFileWorkflow({
+          fileName: decodeURIComponent(fileName),
+          projectId: decodeURIComponent(projectId),
+          mimeType: typeof req.headers["content-type"] === "string"
+            ? req.headers["content-type"]
+            : "application/octet-stream",
+          content: bodyBuffer,
+          conversationId,
+          signal: controller.signal,
+          handlers: {
+            onStatus(payload) {
+              broadcastWorkflowV2Event(runKey, "status", typeof payload === "string" ? { message: payload } : payload);
+            },
+            onStageUpdate(stageResult) {
+              broadcastWorkflowV2Event(runKey, "workflow_stage", stageResult);
+            },
+          },
+        });
+
+        broadcastWorkflowV2Event(runKey, "complete", result);
+        closeWorkflowV2Subscribers(runKey);
+      } catch (error) {
+        broadcastWorkflowV2Event(runKey, "error", {
+          message: error instanceof Error ? error.message : "V2 workflow server error",
+        });
+        closeWorkflowV2Subscribers(runKey);
+      } finally {
+        if (workflowV2Controllers.get(runKey) === controller) {
+          workflowV2Controllers.delete(runKey);
+        }
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workflow/v2/attach/stream") {
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+      if (!workflowV2Controllers.has(conversationId)) {
+        sendJson(res, 404, { error: "No running workflow V2 found for this conversation" });
+        return;
+      }
+      openSse(res);
+      addWorkflowV2Subscriber(conversationId, res);
+      writeSse(res, "status", {
+        message: "已重新连接到正在运行的 V2 工作流",
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/v2/terminate") {
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "default";
+      const controller = workflowV2Controllers.get(conversationId);
+      if (controller) {
+        controller.abort();
+        workflowV2Controllers.delete(conversationId);
+        closeWorkflowV2Subscribers(conversationId);
+        sendJson(res, 200, { ok: true, message: "Workflow V2 termination signal sent" });
+      } else {
+        sendJson(res, 404, { error: "No running workflow V2 found for this conversation" });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/workflow/v2/file/retry/stream") {
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+      const startStage = typeof url.searchParams.get("startStage") === "string"
+        ? url.searchParams.get("startStage").trim()
+        : "";
+
+      if (!projectId) {
+        sendJson(res, 400, { error: "projectId is required" });
+        return;
+      }
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+      if (!startStage) {
+        sendJson(res, 400, { error: "startStage is required" });
+        return;
+      }
+
+      openSse(res);
+      addWorkflowV2Subscriber(conversationId, res);
+      writeSse(res, "status", {
+        message: `正在从 ${startStage} 重试 V2 工作流`,
+      });
+
+      const controller = new AbortController();
+      const runKey = conversationId;
+      workflowV2Controllers.set(runKey, controller);
+
+      try {
+        const result = await workflowV2Service.retryFileWorkflowFromStage({
+          projectId: decodeURIComponent(projectId),
+          conversationId,
+          startStage,
+          signal: controller.signal,
+          handlers: {
+            onStatus(payload) {
+              broadcastWorkflowV2Event(runKey, "status", typeof payload === "string" ? { message: payload } : payload);
+            },
+            onStageUpdate(stageResult) {
+              broadcastWorkflowV2Event(runKey, "workflow_stage", stageResult);
+            },
+          },
+        });
+        broadcastWorkflowV2Event(runKey, "complete", result);
+        closeWorkflowV2Subscribers(runKey);
+      } catch (error) {
+        broadcastWorkflowV2Event(runKey, "error", {
+          message: error instanceof Error ? error.message : "V2 workflow retry server error",
+        });
+        closeWorkflowV2Subscribers(runKey);
+      } finally {
+        if (workflowV2Controllers.get(runKey) === controller) {
+          workflowV2Controllers.delete(runKey);
         }
       }
       return;

@@ -26,7 +26,8 @@ function safeJsonParse(text) {
 }
 
 const GATEWAY_LOGIN_TIMEOUT_MS = 8_000;
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
+const MAX_PROJECT_DATASET_CACHE = 6;
 
 function resolveGatewayRequestUrl(gatewayBaseUrl, pathname) {
   const requestPath = asText(pathname);
@@ -338,6 +339,7 @@ function parseWorkflowEntityRecord(raw, projectId, filename) {
         project_id: sourceProject,
         filename,
       },
+      ablation: Object.keys(ablationRaw).length > 0 ? ablationRaw : null,
     },
     relations: normalizedRelations,
     ablation: Object.keys(ablationRaw).length > 0 ? ablationRaw : null,
@@ -354,16 +356,57 @@ export class OntoGitKnowledgeBaseRepository {
     this.cacheByProject = new Map();
     this.pendingDatasetLoads = new Map();
     this.skipDiskCacheOnce = false;
+    this.skipDiskCacheProjects = new Set();
     this.cacheGeneration = 0;
     this.gatewayAccessToken = "";
     this.gatewayLoginPromise = null;
   }
 
-  invalidateCache() {
+  invalidateCache(projectId) {
+    const normalizedProjectId = asText(projectId);
+    if (normalizedProjectId) {
+      this.cacheByProject.delete(normalizedProjectId);
+      for (const loadKey of this.pendingDatasetLoads.keys()) {
+        if (loadKey.startsWith(`${normalizedProjectId}\u001f`)) {
+          this.pendingDatasetLoads.delete(loadKey);
+        }
+      }
+      this.skipDiskCacheProjects.add(normalizedProjectId);
+      this.cacheGeneration += 1;
+      return;
+    }
+
     this.cacheByProject.clear();
     this.pendingDatasetLoads.clear();
     this.skipDiskCacheOnce = true;
+    this.skipDiskCacheProjects.clear();
     this.cacheGeneration += 1;
+  }
+
+  getCachedProjectDataset(projectId) {
+    const cached = this.cacheByProject.get(projectId);
+    if (!cached) {
+      return null;
+    }
+
+    this.cacheByProject.delete(projectId);
+    this.cacheByProject.set(projectId, cached);
+    return cached;
+  }
+
+  setCachedProjectDataset(projectId, dataset) {
+    if (this.cacheByProject.has(projectId)) {
+      this.cacheByProject.delete(projectId);
+    }
+    this.cacheByProject.set(projectId, dataset);
+
+    while (this.cacheByProject.size > MAX_PROJECT_DATASET_CACHE) {
+      const oldestProjectId = this.cacheByProject.keys().next().value;
+      if (oldestProjectId === undefined) {
+        break;
+      }
+      this.cacheByProject.delete(oldestProjectId);
+    }
   }
 
   async buildGatewayHeaders(forceRefresh = false) {
@@ -1081,7 +1124,7 @@ export class OntoGitKnowledgeBaseRepository {
     const timelineState = buildProjectTimelineState(timelines);
     const fingerprint = timelineState.fingerprint;
     const fileVersions = timelineState.fileVersions;
-    const cached = this.cacheByProject.get(normalizedProjectId);
+    const cached = this.getCachedProjectDataset(normalizedProjectId);
     if (cached && cached.fingerprint === fingerprint) {
       return cached;
     }
@@ -1092,13 +1135,13 @@ export class OntoGitKnowledgeBaseRepository {
       return pending;
     }
 
-    const bypassDiskCache = this.skipDiskCacheOnce;
+    const bypassDiskCache = this.skipDiskCacheOnce || this.skipDiskCacheProjects.has(normalizedProjectId);
     const datasetPromise = (async () => {
       if (!bypassDiskCache) {
         const exactCachedDataset = await this.readCachedDataset(normalizedProjectId, fingerprint);
         if (exactCachedDataset) {
           if (loadGeneration === this.cacheGeneration) {
-            this.cacheByProject.set(normalizedProjectId, exactCachedDataset);
+            this.setCachedProjectDataset(normalizedProjectId, exactCachedDataset);
           }
           return exactCachedDataset;
         }
@@ -1114,7 +1157,7 @@ export class OntoGitKnowledgeBaseRepository {
           );
           if (incrementalDataset) {
             if (loadGeneration === this.cacheGeneration) {
-              this.cacheByProject.set(normalizedProjectId, incrementalDataset);
+              this.setCachedProjectDataset(normalizedProjectId, incrementalDataset);
               await this.writeCachedDataset(normalizedProjectId, incrementalDataset);
             }
             return incrementalDataset;
@@ -1137,7 +1180,7 @@ export class OntoGitKnowledgeBaseRepository {
           );
           if (incrementalDataset) {
             if (loadGeneration === this.cacheGeneration) {
-              this.cacheByProject.set(normalizedProjectId, incrementalDataset);
+              this.setCachedProjectDataset(normalizedProjectId, incrementalDataset);
               await this.writeCachedDataset(normalizedProjectId, incrementalDataset);
             }
             return incrementalDataset;
@@ -1154,7 +1197,7 @@ export class OntoGitKnowledgeBaseRepository {
         fileVersions,
       });
       if (loadGeneration === this.cacheGeneration) {
-        this.cacheByProject.set(normalizedProjectId, dataset);
+        this.setCachedProjectDataset(normalizedProjectId, dataset);
         await this.writeCachedDataset(normalizedProjectId, dataset);
       }
       return dataset;
@@ -1164,6 +1207,9 @@ export class OntoGitKnowledgeBaseRepository {
     try {
       return await datasetPromise;
     } finally {
+      if (this.skipDiskCacheProjects.has(normalizedProjectId)) {
+        this.skipDiskCacheProjects.delete(normalizedProjectId);
+      }
       if (bypassDiskCache) {
         this.skipDiskCacheOnce = false;
       }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useState } from 'react';
 import {
   BookOpen,
   Blocks,
@@ -40,19 +40,21 @@ import { SearchPanel } from '@/components/SearchPanel';
 import { NewProjectDialog } from '@/features/workspace/components/NewProjectDialog';
 import { fetchXgProjects, initXgProject, type XgProject } from '@/features/workspace/api';
 import { getStoredSelectedProjectId, setStoredSelectedProjectId, subscribeSelectedProjectIdChange } from '@/features/workspace/selectedProject';
-import { prefetchKnowledgeGraph, prefetchOntologies } from '@/features/ontology/api';
+import { subscribeRepositorySync } from '@/shared/events/repositorySync';
 import type { Entity } from '@/types/ontology';
 import { toast } from 'sonner';
 
 const loadAssistantPage = () => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage }));
 const loadExplorerPage = () => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage }));
 const loadFileWorkflowPage = () => import('@/app/pages/FileWorkflowPage').then((module) => ({ default: module.FileWorkflowPage }));
+const loadFileWorkflowV2Page = () => import('@/app/pages/FileWorkflowV2Page').then((module) => ({ default: module.FileWorkflowV2Page }));
 const loadLabPage = () => import('@/app/pages/LabPage').then((module) => ({ default: module.LabPage }));
 const loadWorkspacePage = () => import('@/app/pages/WorkspacePage').then((module) => ({ default: module.WorkspacePage }));
 
 const AssistantPage = lazy(loadAssistantPage);
 const ExplorerPage = lazy(loadExplorerPage);
 const FileWorkflowPage = lazy(loadFileWorkflowPage);
+const FileWorkflowV2Page = lazy(loadFileWorkflowV2Page);
 const LabPage = lazy(loadLabPage);
 const WorkspacePage = lazy(loadWorkspacePage);
 
@@ -94,32 +96,6 @@ function formatProjectLabel(fallbackProjectId: string): string {
 
 type OntologyTabKey = 'assistant' | 'lab' | 'explorer';
 
-function scheduleIdlePrefetch(task: () => void): () => void {
-  if (typeof window === 'undefined') {
-    return () => {};
-  }
-
-  const requestIdleCallbackFn = window.requestIdleCallback?.bind(window);
-  const cancelIdleCallbackFn = window.cancelIdleCallback?.bind(window);
-  if (requestIdleCallbackFn) {
-    const handle = requestIdleCallbackFn(() => {
-      task();
-    });
-    return () => {
-      cancelIdleCallbackFn?.(handle);
-    };
-  }
-
-  const timeoutHandle = window.setTimeout(task, 0);
-  return () => window.clearTimeout(timeoutHandle);
-}
-
-function prefetchOntologyData() {
-  const projectId = getStoredSelectedProjectId();
-  void prefetchKnowledgeGraph({ projectId });
-  void prefetchOntologies();
-}
-
 function prefetchOntologyTab(tab: OntologyTabKey) {
   switch (tab) {
     case 'assistant':
@@ -127,11 +103,9 @@ function prefetchOntologyTab(tab: OntologyTabKey) {
       break;
     case 'lab':
       void loadLabPage();
-      prefetchOntologyData();
       break;
     case 'explorer':
       void loadExplorerPage();
-      prefetchOntologyData();
       break;
     default:
       break;
@@ -324,7 +298,7 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
     }
   }, [selectedWorkspaceProjectId, workspaceProjects]);
 
-  const loadWorkspaceProjects = async () => {
+  const loadWorkspaceProjects = useEffectEvent(async () => {
     setWorkspaceProjectsLoading(true);
     try {
       const data = await fetchXgProjects();
@@ -334,7 +308,11 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
     } finally {
       setWorkspaceProjectsLoading(false);
     }
-  };
+  });
+
+  useEffect(() => subscribeRepositorySync(() => {
+    void loadWorkspaceProjects();
+  }), []);
 
   const handleSelectEntity = (entity: Entity) => {
     selectEntity(entity);
@@ -373,16 +351,6 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
       toast.error('初始化失败: ' + (error instanceof Error ? error.message : '未知错误'));
     }
   };
-
-  useEffect(() => {
-    const cancelIdlePrefetch = scheduleIdlePrefetch(() => {
-      prefetchOntologyTab('assistant');
-      prefetchOntologyTab('lab');
-      prefetchOntologyTab('explorer');
-    });
-
-    return cancelIdlePrefetch;
-  }, []);
 
   const commonSidebarProps = {
     domainCount: new Set((filteredEntities || []).map(e => e.domain)).size,
@@ -437,7 +405,7 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
               />
             </div>
             <DropdownMenu onOpenChange={(open) => {
-              if (open && workspaceProjects.length === 0 && !workspaceProjectsLoading) {
+              if (open && !workspaceProjectsLoading) {
                 void loadWorkspaceProjects();
               }
             }}>
@@ -628,6 +596,10 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
                   <FileUp className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">文件工作流</span>
                 </TabsTrigger>
+                <TabsTrigger value="file-workflow-v2" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
+                  <Blocks className="mr-3 h-5 w-5 text-primary" />
+                  <span className="font-black text-sm uppercase tracking-tight">文件工作流 V2</span>
+                </TabsTrigger>
               </TabsList>
 
               <div className="flex flex-col gap-6 pb-2">
@@ -685,6 +657,11 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
           <TabsContent value="file-workflow" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
             <Suspense fallback={<PageLoader label="正在加载文件工作流..." />}>
               <FileWorkflowPage />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="file-workflow-v2" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
+            <Suspense fallback={<PageLoader label="正在加载文件工作流 V2..." />}>
+              <FileWorkflowV2Page />
             </Suspense>
           </TabsContent>
         </Tabs>

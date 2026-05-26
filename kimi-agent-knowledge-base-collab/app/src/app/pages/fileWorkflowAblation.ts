@@ -61,6 +61,7 @@ function buildJudgeCard(
       ['保留版概率', record.keep_probability],
       ['去除版概率', record.remove_probability],
       ['概率差', record.probability_gap],
+      ['兄弟节点状态', record.sibling_summary],
       ['判定依据', record.judge_reason],
       ['去除对象', candidateRecord.remove_target],
       ['保留对象', candidateRecord.retain_target],

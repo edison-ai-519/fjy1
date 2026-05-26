@@ -9,6 +9,7 @@ import { KnowledgeBaseService } from "./services/knowledgeBaseService.mjs";
 import { AssistantSessionStateService } from "./services/assistantSessionStateService.mjs";
 import { ConversationGraphStateService } from "./services/conversationGraphStateService.mjs";
 import { LinearWorkflowService } from "./services/linearWorkflowService.mjs";
+import { WorkflowV2Service } from "./services/workflowV2Service.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -193,21 +194,30 @@ export function createAppServices(options = {}) {
     || "https://openrouter.ai/api/v1";
   const workflowLlmApiKey = resolveEnvValue(["WORKFLOW_LLM_API_KEY", "OPENROUTER_API_KEY", "DMXAPI_API_KEY"], windowsGlobalEnv)
     || resolveAgentConfigValue(agentConfig, [["model", "apiKey"], ["model", "api_key"]]);
-  const workflowModel = resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], windowsGlobalEnv)
+  const workflowModel = resolveEnvValue(["WORKFLOW_MODEL_A", "WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], windowsGlobalEnv)
     || resolveAgentConfigValue(agentConfig, [["model", "name"], ["model", "model"]])
     || "deepseek/deepseek-v4-flash";
+  const workflowModelB = resolveEnvValue(["WORKFLOW_MODEL_B"], windowsGlobalEnv) || workflowModel;
+  const workflowJudgeModel = resolveEnvValue(["WORKFLOW_MODEL_JUDGE"], windowsGlobalEnv) || workflowModel;
+  const workflowParallelCount = Number(resolveEnvValue(["WORKFLOW_PARALLEL_COUNT"], windowsGlobalEnv) || 1);
+  const workflowDebateRounds = Number(resolveEnvValue(["WORKFLOW_DEBATE_ROUNDS"], windowsGlobalEnv) || 1);
   const workflowEnvResolver = () => {
     const nextAgentConfig = readAgentConfigSnapshot();
     const nextWindowsGlobalEnv = readWindowsGlobalEnvSnapshot();
+    const nextWorkflowModel = resolveEnvValue(["WORKFLOW_MODEL_A", "WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], nextWindowsGlobalEnv)
+      || resolveAgentConfigValue(nextAgentConfig, [["model", "name"], ["model", "model"]])
+      || "deepseek/deepseek-v4-flash";
     return {
       workflowLlmBaseUrl: resolveEnvValue(["WORKFLOW_LLM_BASE_URL", "OPENROUTER_BASE_URL", "DMXAPI_BASE_URL"], nextWindowsGlobalEnv)
         || resolveAgentConfigValue(nextAgentConfig, [["model", "baseUrl"], ["model", "baseURL"], ["model", "apiBaseUrl"], ["model", "api_base_url"]])
         || "https://openrouter.ai/api/v1",
       workflowLlmApiKey: resolveEnvValue(["WORKFLOW_LLM_API_KEY", "OPENROUTER_API_KEY", "DMXAPI_API_KEY"], nextWindowsGlobalEnv)
         || resolveAgentConfigValue(nextAgentConfig, [["model", "apiKey"], ["model", "api_key"]]),
-      workflowModel: resolveEnvValue(["WORKFLOW_MODEL", "OPENROUTER_MODEL", "DMXAPI_MODEL"], nextWindowsGlobalEnv)
-        || resolveAgentConfigValue(nextAgentConfig, [["model", "name"], ["model", "model"]])
-        || "deepseek/deepseek-v4-flash",
+      workflowModelA: nextWorkflowModel,
+      workflowModelB: resolveEnvValue(["WORKFLOW_MODEL_B"], nextWindowsGlobalEnv) || nextWorkflowModel,
+      workflowJudgeModel: resolveEnvValue(["WORKFLOW_MODEL_JUDGE"], nextWindowsGlobalEnv) || nextWorkflowModel,
+      workflowParallelCount: Number(resolveEnvValue(["WORKFLOW_PARALLEL_COUNT"], nextWindowsGlobalEnv) || 1),
+      workflowDebateRounds: Number(resolveEnvValue(["WORKFLOW_DEBATE_ROUNDS"], nextWindowsGlobalEnv) || 1),
     };
   };
 
@@ -311,7 +321,28 @@ export function createAppServices(options = {}) {
       workflowTimeoutMs,
       workflowLlmBaseUrl,
       workflowLlmApiKey,
-      workflowModel,
+      workflowModelA: workflowModel,
+      workflowModelB,
+      workflowJudgeModel,
+      workflowParallelCount,
+      workflowDebateRounds,
+      workflowEnvResolver,
+    }),
+    workflowV2Service: new WorkflowV2Service({
+      runtimeRoot: workflowRuntimeRoot,
+      gatewayBaseUrl,
+      gatewayApiKey: gatewayApiKeyRaw,
+      gatewayAuthUsername: authUsername,
+      gatewayAuthPassword: authPassword,
+      gatewayLoginInvoker: () => repository.ensureGatewayLogin(true),
+      gatewayRequestInvoker: (pathname, options) => repository.requestGatewayJson(pathname, options),
+      gatewayWriteInvoker: (pathname, payload, options) => repository.invokeGatewayJson(pathname, payload, options),
+      workflowTimeoutMs,
+      workflowLlmBaseUrl,
+      workflowLlmApiKey,
+      workflowModelA: workflowModel,
+      workflowModelB,
+      workflowJudgeModel,
       workflowEnvResolver,
     }),
     appRoot,

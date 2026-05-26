@@ -237,6 +237,52 @@ test("migrateDuplicateEntityIds 会同步改写实体、自引用和关系引用
   assert.equal(writtenB.data.ontology.ablation[0].entity_id, "ent_entity_6");
 });
 
+test("migrateDuplicateEntityIds 兼容仅保留最小四字段的 ablation", async () => {
+  const writes = [];
+  const originalFiles = new Map([
+    ["a.json", createWorkflowEntitySource({
+      entityId: "ent_entity_1",
+      entityName: "实体A",
+      ablation: {
+        keep_probability: "81%",
+        remove_probability: "52%",
+        probability_gap: "29%",
+        judge_reason: "去除后主链路不完整",
+      },
+    })],
+  ]);
+  const repository = {
+    async getJsonFileTimelines() {
+      return [{ filename: "a.json" }];
+    },
+    async loadLatestVersionIdMap() {
+      return new Map([["a.json", 5]]);
+    },
+    async readProjectFile(projectId, filename) {
+      return JSON.parse(JSON.stringify(originalFiles.get(filename)));
+    },
+    async writeWorkflowEntity(payload) {
+      writes.push(payload);
+      return {
+        write_result: {
+          version_id: 6,
+          commit_id: "commit-1",
+        },
+      };
+    },
+  };
+
+  const result = await migrateDuplicateEntityIds(repository, {
+    projectId: "demo",
+    dryRun: false,
+    strict: true,
+  });
+
+  assert.equal(result.status, "success");
+  assert.equal(writes.length, 0);
+  assert.equal(result.plan.summary.unresolved_references, 0);
+});
+
 test("migrateDuplicateEntityIds 支持分批执行并返回阶段记录", async () => {
   const writes = [];
   const checkpointSnapshots = [];

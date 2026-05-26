@@ -21,6 +21,14 @@ function asNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function asInteger(value, fallback, minimum = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(minimum, Math.floor(parsed));
+}
+
 function asStringSet(value) {
   if (value instanceof Set) {
     return new Set([...value].map((item) => asText(item)).filter(Boolean));
@@ -68,6 +76,9 @@ function createStageDebugOutput(debug = {}) {
   if (debug.llm_response !== undefined) {
     output.llm_response = debug.llm_response;
   }
+  if (debug.llm_ensemble !== undefined) {
+    output.llm_ensemble = debug.llm_ensemble;
+  }
   if (typeof debug.debug_error === "string" && debug.debug_error.trim()) {
     output.debug_error = debug.debug_error;
   }
@@ -88,6 +99,64 @@ function attachStageDebug(error, debug = {}) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function buildEnsembleTemperature(index, total) {
+  if (total <= 1) {
+    return 0;
+  }
+  const ratio = index / Math.max(1, total - 1);
+  return Math.min(0.8, Number((ratio * 0.6).toFixed(2)));
+}
+
+function compactLlmEnsembleEntry(result, extra = {}) {
+  if (!result || typeof result !== "object") {
+    return {
+      ...extra,
+      data: null,
+      raw_text: "",
+    };
+  }
+
+  return {
+    ...extra,
+    data: result.data ?? result.llm_raw ?? null,
+    raw_text: asText(result.llm_raw_text),
+  };
+}
+
+function normalizeLlmInvokerResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return {
+      llm_raw: result ?? null,
+      llm_raw_text: "",
+      llm_response: undefined,
+      llm_ensemble: undefined,
+      data: result ?? null,
+    };
+  }
+
+  const data = result.data ?? result.llm_raw ?? result;
+  return {
+    ...result,
+    llm_raw: result.llm_raw ?? data,
+    llm_raw_text: asText(result.llm_raw_text),
+    llm_response: result.llm_response,
+    llm_ensemble: result.llm_ensemble,
+    data,
+  };
+}
+
+function mergeStageOutputValue(previous, next) {
+  const prevRecord = previous && typeof previous === "object" && !Array.isArray(previous) ? previous : null;
+  const nextRecord = next && typeof next === "object" && !Array.isArray(next) ? next : null;
+  if (prevRecord && nextRecord) {
+    return {
+      ...prevRecord,
+      ...nextRecord,
+    };
+  }
+  return next;
 }
 
 function buildSlug(value, fallback = "session") {
@@ -166,13 +235,93 @@ function normalizeEntity(raw, index, entityIdAllocator) {
   };
 }
 
-function normalizeRelation(raw, entityByName) {
+const FORWARD_CONTAINMENT_KEYWORDS = [
+  "包含",
+  "包括",
+  "组成",
+  "构成",
+  "子系统",
+  "模块",
+  "component",
+  "components",
+  "contain",
+  "contains",
+  "haspart",
+  "has_part",
+  "subsystem",
+];
+
+const REVERSE_CONTAINMENT_KEYWORDS = [
+  "属于",
+  "隶属",
+  "从属",
+  "partof",
+  "part_of",
+  "memberof",
+  "member_of",
+];
+
+function normalizeRelationToken(value) {
+  return asText(value).toLowerCase().replace(/[\s_\-()/\\]+/g, "");
+}
+
+function getPartOfDirection(relationType) {
+  const normalized = normalizeRelationToken(relationType);
+  if (!normalized) {
+    return "part_to_whole";
+  }
+
+  if (FORWARD_CONTAINMENT_KEYWORDS.some((keyword) => normalized.includes(normalizeRelationToken(keyword)))) {
+    return "whole_to_part";
+  }
+
+  if (REVERSE_CONTAINMENT_KEYWORDS.some((keyword) => normalized.includes(normalizeRelationToken(keyword)))) {
+    return "part_to_whole";
+  }
+
+  return null;
+}
+
+function normalizePartOfRelation(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
-  const source = asText(item.source);
-  const target = asText(item.target);
-  if (!source || !target) {
+  const source = asText(item.source) || asText(item.source_name) || asText(item.source_id);
+  const target = asText(item.target) || asText(item.target_name) || asText(item.target_id);
+  if (!source || !target || source === target) {
     return null;
   }
+
+  const direction = getPartOfDirection(item.relation_type);
+  if (!direction) {
+    return null;
+  }
+  if (direction === "whole_to_part") {
+    return {
+      source: target,
+      target: source,
+      relation_type: "part_of",
+      evidence: asText(item.evidence),
+    };
+  }
+
+  return {
+    source,
+    target,
+    relation_type: "part_of",
+    evidence: asText(item.evidence),
+  };
+}
+
+function isPartOfRelation(relation) {
+  return asText(relation?.relation_type) === "part_of";
+}
+
+function normalizeRelation(raw, entityByName) {
+  const item = normalizePartOfRelation(raw);
+  if (!item) {
+    return null;
+  }
+  const source = item.source;
+  const target = item.target;
 
   const sourceEntity = entityByName.get(source) || entityByName.get(asText(item.source_id));
   const targetEntity = entityByName.get(target) || entityByName.get(asText(item.target_id));
@@ -185,9 +334,18 @@ function normalizeRelation(raw, entityByName) {
     source_name: sourceEntity.name,
     target_entity_id: targetEntity.id,
     target_name: targetEntity.name,
-    relation_type: asText(item.relation_type) || "包含",
+    relation_type: "part_of",
     evidence: asText(item.evidence),
   };
+}
+
+function buildRelationKey(relation) {
+  return [
+    asText(relation?.source_entity_id),
+    asText(relation?.target_entity_id),
+    asText(relation?.relation_type),
+    asText(relation?.evidence),
+  ].join("::");
 }
 
 function resolveAblationEntity(item, entityById, entityByName) {
@@ -232,6 +390,137 @@ function normalizeAblationCandidate(raw, entityById, entityByName = new Map()) {
     remove_impact: asText(item.remove_impact) || `${entity.name} 被去除后会影响关键能力稳定性`,
     observation: asText(item.observation),
     evidence: asText(item.evidence) || fallbackEvidence,
+  };
+}
+
+function buildPartOfTreeContext(entities, relations) {
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const childrenByParent = new Map();
+  const parentByChild = new Map();
+
+  for (const relation of relations) {
+    if (!isPartOfRelation(relation)) {
+      continue;
+    }
+    const childId = asText(relation.source_entity_id);
+    const parentId = asText(relation.target_entity_id);
+    if (!childId || !parentId || childId === parentId || !entityById.has(childId) || !entityById.has(parentId)) {
+      continue;
+    }
+    if (!parentByChild.has(childId)) {
+      parentByChild.set(childId, {
+        parent_id: parentId,
+        relation,
+      });
+    }
+    const list = childrenByParent.get(parentId) || [];
+    if (!list.some((item) => item.child_id === childId)) {
+      list.push({
+        child_id: childId,
+        relation,
+      });
+      childrenByParent.set(parentId, list);
+    }
+  }
+
+  const subtreeCache = new Map();
+  const collectSubtreeEntityIds = (entityId, active = new Set()) => {
+    if (subtreeCache.has(entityId)) {
+      return subtreeCache.get(entityId);
+    }
+    if (active.has(entityId)) {
+      return [entityId];
+    }
+    active.add(entityId);
+    const descendants = childrenByParent.get(entityId) || [];
+    const ids = [entityId];
+    for (const child of descendants) {
+      ids.push(...collectSubtreeEntityIds(child.child_id, active));
+    }
+    active.delete(entityId);
+    const uniqueIds = [...new Set(ids)];
+    subtreeCache.set(entityId, uniqueIds);
+    return uniqueIds;
+  };
+
+  const heightCache = new Map();
+  const computeHeightFromLeaf = (entityId, active = new Set()) => {
+    if (heightCache.has(entityId)) {
+      return heightCache.get(entityId);
+    }
+    if (active.has(entityId)) {
+      return 0;
+    }
+    active.add(entityId);
+    const children = childrenByParent.get(entityId) || [];
+    const height = children.length === 0
+      ? 0
+      : 1 + Math.max(...children.map((child) => computeHeightFromLeaf(child.child_id, active)));
+    active.delete(entityId);
+    heightCache.set(entityId, height);
+    return height;
+  };
+
+  return {
+    entityById,
+    childrenByParent,
+    parentByChild,
+    collectSubtreeEntityIds,
+    computeHeightFromLeaf,
+  };
+}
+
+function buildTreeAblationCandidates(entities, relations) {
+  const tree = buildPartOfTreeContext(entities, relations);
+  const candidates = [...tree.parentByChild.entries()]
+    .map(([childId, parentInfo]) => {
+      const childEntity = tree.entityById.get(childId);
+      const parentEntity = tree.entityById.get(parentInfo.parent_id);
+      if (!childEntity || !parentEntity) {
+        return null;
+      }
+      const removedSubtreeEntityIds = tree.collectSubtreeEntityIds(childId);
+      const systemEntityIds = tree.collectSubtreeEntityIds(parentEntity.id);
+      const descendantEntityIds = removedSubtreeEntityIds.filter((item) => item !== childEntity.id);
+      const siblingEntityIds = (tree.childrenByParent.get(parentEntity.id) || [])
+        .map((item) => asText(item.child_id))
+        .filter((item) => item && item !== childEntity.id);
+      const fallbackEvidence = asText(parentInfo.relation?.evidence)
+        || (Array.isArray(childEntity.citations) && childEntity.citations.length > 0 ? asText(childEntity.citations[0]) : "")
+        || (Array.isArray(parentEntity.citations) && parentEntity.citations.length > 0 ? asText(parentEntity.citations[0]) : "")
+        || childEntity.summary
+        || parentEntity.summary;
+
+      return {
+        entity_id: childEntity.id,
+        entity_name: childEntity.name,
+        remove_target: descendantEntityIds.length > 0 ? `${childEntity.name} 子树` : childEntity.name,
+        retain_target: parentEntity.name,
+        keep_role: childEntity.summary || `${childEntity.name} 是 ${parentEntity.name} 的组成部分`,
+        remove_impact: `移除 ${childEntity.name}${descendantEntityIds.length > 0 ? " 及其子树" : ""} 后，${parentEntity.name} 的系统完整性可能下降`,
+        observation: `在以 ${parentEntity.name} 为根的局部系统中，自下向上评估 ${childEntity.name} 对父节点的重要性`,
+        evidence: fallbackEvidence,
+        parent_entity_id: parentEntity.id,
+        parent_entity_name: parentEntity.name,
+        system_entity_ids: systemEntityIds,
+        removed_subtree_entity_ids: removedSubtreeEntityIds,
+        descendant_entity_ids: descendantEntityIds,
+        sibling_entity_ids: siblingEntityIds,
+        tree_height: tree.computeHeightFromLeaf(childEntity.id),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const levelGap = Number(left.tree_height || 0) - Number(right.tree_height || 0);
+      if (levelGap !== 0) {
+        return levelGap;
+      }
+      return asText(left.entity_name).localeCompare(asText(right.entity_name), "zh-Hans-CN");
+    });
+
+  return {
+    tree,
+    candidates,
   };
 }
 
@@ -293,7 +582,7 @@ function normalizeProbabilityDecision(raw, entity, label) {
   };
 }
 
-function buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit) {
+function buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit, siblingSummary = "") {
   const summary = isHit
     ? `差值 ${probabilityGap} 大于等于 10%，判定命中小故`
     : `差值 ${probabilityGap} 小于 10%，继续观察`;
@@ -303,10 +592,13 @@ function buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit) {
   const removeReason = asText(removeDecision?.reason)
     ? `去除版：${asText(removeDecision.reason)}`
     : "";
-  return [summary, keepReason, removeReason].filter(Boolean).join("；");
+  const siblingReason = asText(siblingSummary)
+    ? `兄弟节点：${asText(siblingSummary)}`
+    : "";
+  return [summary, keepReason, removeReason, siblingReason].filter(Boolean).join("；");
 }
 
-function buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision) {
+function buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecision, siblingAnalysis = null) {
   const gapValue = keepDecision.probability_value - removeDecision.probability_value;
   const probabilityGap = formatProbabilityValue(gapValue);
   const isHit = gapValue >= ABLATION_SMALL_REASON_THRESHOLD;
@@ -316,8 +608,15 @@ function buildAblationJudgeFromProbabilities(entity, keepDecision, removeDecisio
     keep_probability: keepDecision.probability,
     remove_probability: removeDecision.probability,
     probability_gap: probabilityGap,
-    judge_reason: buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit),
+    judge_reason: buildJudgeReason(keepDecision, removeDecision, probabilityGap, isHit, siblingAnalysis?.summary),
   };
+
+  if (asText(siblingAnalysis?.summary)) {
+    normalized.sibling_summary = asText(siblingAnalysis.summary);
+  }
+  if (Array.isArray(siblingAnalysis?.sibling_findings) && siblingAnalysis.sibling_findings.length > 0) {
+    normalized.sibling_findings = siblingAnalysis.sibling_findings;
+  }
 
   if (isHit) {
     normalized.small_reason = true;
@@ -345,6 +644,476 @@ function buildResponseFormat(responseSchema) {
   };
 }
 
+const CROSS_CITATION_RESPONSE_SCHEMA = {
+  name: "workflow_cross_citation",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      resolved_conflicts: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            item_key: { type: "string" },
+            decision: { type: "string" },
+            summary: { type: "string" },
+            final_value: {
+              type: "object",
+            },
+            citations: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  target_model: { type: "string" },
+                  stance: { type: "string" },
+                  reason: { type: "string" },
+                  suggestion: { type: "string" },
+                },
+                required: ["target_model", "stance", "reason", "suggestion"],
+              },
+            },
+          },
+          required: ["item_key", "decision", "summary", "final_value", "citations"],
+        },
+      },
+      remaining_conflicts: {
+        type: "array",
+        items: { type: "string" },
+      },
+      round_summary: { type: "string" },
+    },
+    required: ["resolved_conflicts", "remaining_conflicts", "round_summary"],
+  },
+};
+
+function stableJsonStringify(value) {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const record = asRecord(value);
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJsonStringify(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function buildStageEnsembleShape(stage, sample = null) {
+  if (stage.includes("节点1")) {
+    return {
+      kind: "array",
+      containerKey: "entities",
+      extractItems: extractEntityCandidates,
+      getItemKey: (item, index) => asText(item?.name) || `entities:${index + 1}`,
+      wrap(items) {
+        return { entities: items };
+      },
+    };
+  }
+
+  if (stage.includes("节点2")) {
+    return {
+      kind: "array",
+      containerKey: "relations",
+      extractItems(value) {
+        return extractRelationCandidates(value)
+          .map((item) => normalizePartOfRelation(item))
+          .filter(Boolean);
+      },
+      getItemKey: (item, index) => [
+        asText(item?.source),
+        asText(item?.relation_type),
+        asText(item?.target),
+      ].filter(Boolean).join(" -> ") || `relations:${index + 1}`,
+      wrap(items) {
+        return { relations: items };
+      },
+    };
+  }
+
+  if (stage.includes("节点3")) {
+    return {
+      kind: "array",
+      containerKey: "ablation_candidates",
+      extractItems: extractAblationCandidates,
+      getItemKey: (item, index) => asText(item?.entity_id) || asText(item?.entity_name) || `ablation:${index + 1}`,
+      wrap(items) {
+        return { ablation_candidates: items };
+      },
+    };
+  }
+
+  if (stage.includes("小故-")) {
+    return {
+      kind: "single_object",
+      containerKey: "root",
+      extractItems(value) {
+        const record = asRecord(value);
+        return Object.keys(record).length > 0 ? [record] : [];
+      },
+      getItemKey: () => "__root__",
+      wrap(items) {
+        return asRecord(items[0]);
+      },
+    };
+  }
+
+  if (Array.isArray(sample)) {
+    return {
+      kind: "array",
+      containerKey: "items",
+      extractItems(value) {
+        return Array.isArray(value) ? value : [];
+      },
+      getItemKey: (_item, index) => `items:${index + 1}`,
+      wrap(items) {
+        return items;
+      },
+    };
+  }
+
+  return {
+    kind: "single_object",
+    containerKey: "root",
+    extractItems(value) {
+      const record = asRecord(value);
+      return Object.keys(record).length > 0 ? [record] : [];
+    },
+    getItemKey: () => "__root__",
+    wrap(items) {
+      return asRecord(items[0]);
+    },
+  };
+}
+
+function buildSharedAndConflictItems(stage, modelAData, modelBData) {
+  const sample = modelAData ?? modelBData ?? null;
+  const shape = buildStageEnsembleShape(stage, sample);
+
+  if (shape.kind === "single_object") {
+    const aValue = asRecord(modelAData);
+    const bValue = asRecord(modelBData);
+    const hasA = Object.keys(aValue).length > 0;
+    const hasB = Object.keys(bValue).length > 0;
+
+    if (!hasA && !hasB) {
+      return {
+        shape,
+        shared_items: [],
+        conflicts: [],
+      };
+    }
+
+    if (stableJsonStringify(aValue) === stableJsonStringify(bValue)) {
+      return {
+        shape,
+        shared_items: [
+          {
+            item_key: "__root__",
+            value: cloneJsonValue(hasA ? aValue : bValue, {}),
+            order: 0,
+          },
+        ],
+        conflicts: [],
+      };
+    }
+
+    return {
+      shape,
+      shared_items: [],
+      conflicts: [
+        {
+          item_key: "__root__",
+          order: 0,
+          model_a_value: hasA ? cloneJsonValue(aValue, {}) : null,
+          model_b_value: hasB ? cloneJsonValue(bValue, {}) : null,
+        },
+      ],
+    };
+  }
+
+  const modelAItems = shape.extractItems(modelAData).map((item, index) => ({
+    index,
+    item,
+    item_key: shape.getItemKey(item, index),
+    stable: stableJsonStringify(item),
+  }));
+  const modelBItems = shape.extractItems(modelBData).map((item, index) => ({
+    index,
+    item,
+    item_key: shape.getItemKey(item, index),
+    stable: stableJsonStringify(item),
+  }));
+
+  const availableBByStable = new Map();
+  for (const entry of modelBItems) {
+    const queue = availableBByStable.get(entry.stable) || [];
+    queue.push(entry);
+    availableBByStable.set(entry.stable, queue);
+  }
+
+  const sharedItems = [];
+  const sharedBIndexes = new Set();
+  const remainingA = [];
+
+  for (const entry of modelAItems) {
+    const queue = availableBByStable.get(entry.stable) || [];
+    const matched = queue.shift() || null;
+    if (matched) {
+      sharedBIndexes.add(matched.index);
+      sharedItems.push({
+        item_key: entry.item_key,
+        value: cloneJsonValue(entry.item, null),
+        order: entry.index,
+      });
+      availableBByStable.set(entry.stable, queue);
+      continue;
+    }
+    remainingA.push(entry);
+  }
+
+  const remainingB = modelBItems.filter((entry) => !sharedBIndexes.has(entry.index));
+  const groupedConflicts = new Map();
+  const registerConflictEntry = (side, entry, totalAItems) => {
+    const existing = groupedConflicts.get(entry.item_key) || {
+      item_key: entry.item_key,
+      order: side === "model_a" ? entry.index : totalAItems + entry.index,
+      model_a_candidates: [],
+      model_b_candidates: [],
+    };
+    existing.order = Math.min(existing.order, side === "model_a" ? entry.index : totalAItems + entry.index);
+    if (side === "model_a") {
+      existing.model_a_candidates.push(cloneJsonValue(entry.item, null));
+    } else {
+      existing.model_b_candidates.push(cloneJsonValue(entry.item, null));
+    }
+    groupedConflicts.set(entry.item_key, existing);
+  };
+
+  for (const entry of remainingA) {
+    registerConflictEntry("model_a", entry, modelAItems.length);
+  }
+  for (const entry of remainingB) {
+    registerConflictEntry("model_b", entry, modelAItems.length);
+  }
+
+  const conflicts = [...groupedConflicts.values()]
+    .sort((left, right) => left.order - right.order)
+    .map((item) => ({
+      item_key: item.item_key,
+      order: item.order,
+      model_a_value: item.model_a_candidates[0] ?? null,
+      model_b_value: item.model_b_candidates[0] ?? null,
+      model_a_candidates: item.model_a_candidates,
+      model_b_candidates: item.model_b_candidates,
+    }));
+
+  return {
+    shape,
+    shared_items: sharedItems,
+    conflicts,
+  };
+}
+
+function normalizeCitationStance(value) {
+  const text = asText(value);
+  if (text === "同意" || text === "反对" || text === "修改") {
+    return text;
+  }
+  if (text.includes("同意")) {
+    return "同意";
+  }
+  if (text.includes("反对")) {
+    return "反对";
+  }
+  if (text.includes("修改")) {
+    return "修改";
+  }
+  return "修改";
+}
+
+function normalizeCrossCitationRound(roundData, conflictMap) {
+  const record = asRecord(roundData);
+  const resolvedConflicts = Array.isArray(record.resolved_conflicts)
+    ? record.resolved_conflicts.map((item) => asRecord(item)).map((item) => {
+      const itemKey = asText(item.item_key);
+      if (!itemKey || !conflictMap.has(itemKey)) {
+        return null;
+      }
+      const finalValue = asRecord(item.final_value);
+      if (Object.keys(finalValue).length === 0) {
+        return null;
+      }
+      const citations = Array.isArray(item.citations)
+        ? item.citations.map((citation) => asRecord(citation)).map((citation) => ({
+          target_model: asText(citation.target_model) || "model_a",
+          stance: normalizeCitationStance(citation.stance),
+          reason: asText(citation.reason),
+          suggestion: asText(citation.suggestion),
+        })).filter((citation) => citation.reason && citation.suggestion)
+        : [];
+
+      return {
+        item_key: itemKey,
+        decision: asText(item.decision) || "融合修改",
+        summary: asText(item.summary),
+        final_value: cloneJsonValue(finalValue, {}),
+        citations,
+      };
+    }).filter(Boolean)
+    : [];
+
+  const remainingConflicts = Array.isArray(record.remaining_conflicts)
+    ? record.remaining_conflicts.map((item) => asText(item)).filter((item) => item && conflictMap.has(item))
+    : [];
+
+  return {
+    resolved_conflicts: resolvedConflicts,
+    remaining_conflicts: remainingConflicts,
+    round_summary: asText(record.round_summary),
+  };
+}
+
+function buildFinalEnsembleData(comparison, resolvedConflictMap) {
+  const shape = comparison.shape;
+
+  if (shape.kind === "single_object") {
+    const sharedValue = comparison.shared_items[0]?.value;
+    if (sharedValue && typeof sharedValue === "object" && !Array.isArray(sharedValue)) {
+      return cloneJsonValue(sharedValue, {});
+    }
+    const resolved = resolvedConflictMap.get("__root__");
+    if (resolved) {
+      return cloneJsonValue(resolved.value, {});
+    }
+    const fallbackConflict = comparison.conflicts[0];
+    return cloneJsonValue(fallbackConflict?.model_a_value ?? fallbackConflict?.model_b_value ?? {}, {});
+  }
+
+  const mergedItems = [
+    ...comparison.shared_items.map((item) => ({
+      order: item.order,
+      value: cloneJsonValue(item.value, null),
+    })),
+    ...comparison.conflicts.map((conflict) => {
+      const resolved = resolvedConflictMap.get(conflict.item_key);
+      const value = resolved
+        ? resolved.value
+        : (conflict.model_a_value ?? conflict.model_b_value ?? null);
+      return {
+        order: conflict.order,
+        value: cloneJsonValue(value, null),
+      };
+    }),
+  ]
+    .filter((item) => item.value !== null)
+    .sort((left, right) => left.order - right.order)
+    .map((item) => item.value);
+
+  return shape.wrap(mergedItems);
+}
+
+function extractChatCompletionDeltaText(payload) {
+  const choice = payload && typeof payload === "object" ? payload?.choices?.[0] : null;
+  const delta = choice?.delta ?? choice?.message ?? null;
+  const content = delta?.content;
+
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      if (part && typeof part === "object") {
+        if (typeof part.text === "string") {
+          return part.text;
+        }
+        if (typeof part.content === "string") {
+          return part.content;
+        }
+      }
+      return "";
+    }).join("");
+  }
+
+  if (typeof choice?.text === "string") {
+    return choice.text;
+  }
+
+  return "";
+}
+
+async function consumeChatCompletionStream(response, onRawTextUpdate) {
+  if (!response.body) {
+    throw new Error("workflow LLM stream body is empty");
+  }
+
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let rawText = "";
+  let lastPayload = null;
+
+  const consumeEvent = async (rawEvent) => {
+    const lines = rawEvent.split(/\r?\n/);
+    const dataLines = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart());
+    if (dataLines.length === 0) {
+      return;
+    }
+
+    const payloadText = dataLines.join("\n").trim();
+    if (!payloadText || payloadText === "[DONE]") {
+      return;
+    }
+
+    const payload = safeJsonParse(payloadText);
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+
+    lastPayload = payload;
+    const deltaText = extractChatCompletionDeltaText(payload);
+    if (deltaText) {
+      rawText += deltaText;
+      if (typeof onRawTextUpdate === "function") {
+        await onRawTextUpdate(rawText, payload);
+      }
+    }
+  };
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+
+    let boundaryIndex = buffer.indexOf("\n\n");
+    while (boundaryIndex !== -1) {
+      const rawEvent = buffer.slice(0, boundaryIndex);
+      buffer = buffer.slice(boundaryIndex + 2);
+      await consumeEvent(rawEvent);
+      boundaryIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (buffer.trim()) {
+    await consumeEvent(buffer);
+  }
+
+  return {
+    rawText,
+    response: lastPayload,
+  };
+}
+
 function mergeAblationResult(candidate, judge) {
   const merged = {
     entity_id: asText(candidate?.entity_id) || asText(judge?.entity_id),
@@ -362,13 +1131,35 @@ function mergeAblationResult(candidate, judge) {
     remove_probability: asText(judge?.remove_probability),
     probability_gap: asText(judge?.probability_gap),
     judge_reason: asText(judge?.judge_reason),
+    sibling_summary: asText(judge?.sibling_summary),
   };
+
+  if (Array.isArray(judge?.sibling_findings) && judge.sibling_findings.length > 0) {
+    merged.sibling_findings = judge.sibling_findings;
+  }
 
   if (judge?.small_reason === true) {
     merged.small_reason = true;
   }
 
   return merged;
+}
+
+function isSmallReasonHit(ablation) {
+  return ablation?.small_reason === true;
+}
+
+function toPersistedAblation(ablation) {
+  if (!isSmallReasonHit(ablation)) {
+    return null;
+  }
+
+  return {
+    keep_probability: asText(ablation?.keep_probability),
+    remove_probability: asText(ablation?.remove_probability),
+    probability_gap: asText(ablation?.probability_gap),
+    judge_reason: asText(ablation?.judge_reason),
+  };
 }
 
 function extractRelationCandidates(llmResult) {
@@ -577,6 +1368,13 @@ function validateStageOutputShape(stageKey, output) {
 
 export class LinearWorkflowService {
   constructor(options) {
+    const primaryWorkflowModel = asText(options.workflowModelA)
+      || asText(options.workflowModel)
+      || process.env.WORKFLOW_MODEL_A
+      || process.env.WORKFLOW_MODEL
+      || process.env.OPENROUTER_MODEL
+      || process.env.DMXAPI_MODEL
+      || "deepseek/deepseek-v4-flash";
     this.runtimeRoot = options.runtimeRoot;
     this.gatewayBaseUrl = asText(options.gatewayBaseUrl);
     this.gatewayApiKey = asText(options.gatewayApiKey);
@@ -594,11 +1392,21 @@ export class LinearWorkflowService {
     this.gatewayAccessToken = "";
     this.gatewayLoginPromise = null;
     this.workflowTimeoutMs = asNumber(options.workflowTimeoutMs, DEFAULT_TIMEOUT_MS);
-    this.workflowModel = asText(options.workflowModel)
-      || process.env.WORKFLOW_MODEL
-      || process.env.OPENROUTER_MODEL
-      || process.env.DMXAPI_MODEL
-      || "deepseek/deepseek-v4-flash";
+    this.workflowModel = primaryWorkflowModel;
+    this.workflowModelA = primaryWorkflowModel;
+    this.workflowModelB = asText(options.workflowModelB)
+      || process.env.WORKFLOW_MODEL_B
+      || primaryWorkflowModel;
+    this.workflowParallelCount = asInteger(
+      options.workflowParallelCount ?? process.env.WORKFLOW_PARALLEL_COUNT,
+      1,
+      1,
+    );
+    this.workflowDebateRounds = asInteger(
+      options.workflowDebateRounds ?? process.env.WORKFLOW_DEBATE_ROUNDS,
+      1,
+      1,
+    );
     this.workflowLlmBaseUrl = asText(options.workflowLlmBaseUrl)
       || process.env.WORKFLOW_LLM_BASE_URL
       || process.env.OPENROUTER_BASE_URL
@@ -609,6 +1417,7 @@ export class LinearWorkflowService {
       || process.env.OPENROUTER_API_KEY
       || process.env.DMXAPI_API_KEY
       || "";
+    this.manualWorkflowConfig = {};
     this.workflowEnvResolver = typeof options.workflowEnvResolver === "function" ? options.workflowEnvResolver : null;
     this.entityIdSeedLoader = typeof options.entityIdSeedLoader === "function"
       ? options.entityIdSeedLoader
@@ -630,7 +1439,11 @@ export class LinearWorkflowService {
 
   getWorkflowConfig() {
     return {
-      workflowModel: this.workflowModel,
+      workflowModel: this.workflowModelA,
+      workflowModelA: this.workflowModelA,
+      workflowModelB: this.workflowModelB,
+      workflowParallelCount: this.workflowParallelCount,
+      workflowDebateRounds: this.workflowDebateRounds,
     };
   }
 
@@ -640,6 +1453,47 @@ export class LinearWorkflowService {
       throw new Error("workflow model cannot be empty");
     }
     this.workflowModel = nextModel;
+    this.workflowModelA = nextModel;
+    this.workflowModelB = nextModel;
+    return this.getWorkflowConfig();
+  }
+
+  setWorkflowConfig(input = {}) {
+    const nextPrimary = asText(input.workflowModelA) || asText(input.workflowModel);
+    const nextSecondary = asText(input.workflowModelB);
+
+    if (input.workflowModel !== undefined && !nextPrimary) {
+      throw new Error("workflow model cannot be empty");
+    }
+    if (input.workflowModelA !== undefined && !nextPrimary) {
+      throw new Error("workflow model A cannot be empty");
+    }
+    if (input.workflowModelB !== undefined && !nextSecondary) {
+      throw new Error("workflow model B cannot be empty");
+    }
+
+    if (nextPrimary) {
+      this.workflowModel = nextPrimary;
+      this.workflowModelA = nextPrimary;
+      this.manualWorkflowConfig.workflowModel = nextPrimary;
+      this.manualWorkflowConfig.workflowModelA = nextPrimary;
+      if (input.workflowModel !== undefined && input.workflowModelB === undefined) {
+        this.workflowModelB = nextPrimary;
+        this.manualWorkflowConfig.workflowModelB = nextPrimary;
+      }
+    }
+    if (nextSecondary) {
+      this.workflowModelB = nextSecondary;
+      this.manualWorkflowConfig.workflowModelB = nextSecondary;
+    }
+    if (input.workflowParallelCount !== undefined) {
+      this.workflowParallelCount = asInteger(input.workflowParallelCount, this.workflowParallelCount, 1);
+      this.manualWorkflowConfig.workflowParallelCount = this.workflowParallelCount;
+    }
+    if (input.workflowDebateRounds !== undefined) {
+      this.workflowDebateRounds = asInteger(input.workflowDebateRounds, this.workflowDebateRounds, 1);
+      this.manualWorkflowConfig.workflowDebateRounds = this.workflowDebateRounds;
+    }
     return this.getWorkflowConfig();
   }
 
@@ -676,18 +1530,53 @@ export class LinearWorkflowService {
 
     const resolved = await this.workflowEnvResolver();
     const config = resolved && typeof resolved === "object" && !Array.isArray(resolved) ? resolved : {};
-    const nextModel = asText(config.workflowModel);
+    const nextModel = asText(config.workflowModelA) || asText(config.workflowModel);
+    const nextModelB = asText(config.workflowModelB);
     const nextBaseUrl = asText(config.workflowLlmBaseUrl);
     const nextApiKey = asText(config.workflowLlmApiKey);
+    const nextParallelCount = config.workflowParallelCount;
+    const nextDebateRounds = config.workflowDebateRounds;
 
     if (nextModel) {
       this.workflowModel = nextModel;
+      this.workflowModelA = nextModel;
+      if (!nextModelB) {
+        this.workflowModelB = nextModel;
+      }
+    }
+    if (nextModelB) {
+      this.workflowModelB = nextModelB;
     }
     if (nextBaseUrl) {
       this.workflowLlmBaseUrl = nextBaseUrl;
     }
     if (nextApiKey) {
       this.workflowLlmApiKey = nextApiKey;
+    }
+    if (nextParallelCount !== undefined) {
+      this.workflowParallelCount = asInteger(nextParallelCount, this.workflowParallelCount, 1);
+    }
+    if (nextDebateRounds !== undefined) {
+      this.workflowDebateRounds = asInteger(nextDebateRounds, this.workflowDebateRounds, 1);
+    }
+
+    const manualConfig = asRecord(this.manualWorkflowConfig);
+    const manualModel = asText(manualConfig.workflowModelA) || asText(manualConfig.workflowModel);
+    const manualModelB = asText(manualConfig.workflowModelB);
+    if (manualModel) {
+      this.workflowModel = manualModel;
+      this.workflowModelA = manualModel;
+    }
+    if (manualModelB) {
+      this.workflowModelB = manualModelB;
+    } else if (manualModel) {
+      this.workflowModelB = manualModel;
+    }
+    if (manualConfig.workflowParallelCount !== undefined) {
+      this.workflowParallelCount = asInteger(manualConfig.workflowParallelCount, this.workflowParallelCount, 1);
+    }
+    if (manualConfig.workflowDebateRounds !== undefined) {
+      this.workflowDebateRounds = asInteger(manualConfig.workflowDebateRounds, this.workflowDebateRounds, 1);
     }
   }
 
@@ -809,7 +1698,15 @@ export class LinearWorkflowService {
     });
   }
 
-  async invokeWorkflowLlmJson({ stage, instruction, payload, temperature = 0, responseSchema = null }) {
+  async invokeWorkflowLlmJson({
+    stage,
+    instruction,
+    payload,
+    temperature = 0,
+    responseSchema = null,
+    modelOverride = "",
+    onRawTextUpdate = null,
+  }) {
     const userPrompt = [
       `你在执行线性工作流的 ${stage} 节点。`,
       instruction,
@@ -827,8 +1724,9 @@ export class LinearWorkflowService {
     }
 
     const requestBody = {
-      model: this.workflowModel,
+      model: asText(modelOverride) || this.workflowModelA,
       temperature,
+      stream: typeof onRawTextUpdate === "function",
       messages: [
         {
           role: "system",
@@ -859,8 +1757,21 @@ export class LinearWorkflowService {
       throw new Error(`workflow LLM request failed: ${response.status} ${text}`);
     }
 
-    const json = await response.json();
-    const content = asText(json?.choices?.[0]?.message?.content);
+    let json = null;
+    let content = "";
+
+    if (requestBody.stream && response.body) {
+      const streamed = await consumeChatCompletionStream(response, onRawTextUpdate);
+      json = streamed.response;
+      content = asText(streamed.rawText);
+    } else {
+      json = await response.json();
+      content = asText(json?.choices?.[0]?.message?.content);
+      if (requestBody.stream && typeof onRawTextUpdate === "function" && content) {
+        await onRawTextUpdate(content, json);
+      }
+    }
+
     const parsed = safeJsonParse(content);
     if (!parsed) {
       throw attachStageDebug(new Error("workflow LLM returned invalid JSON"), {
@@ -877,29 +1788,52 @@ export class LinearWorkflowService {
     };
   }
 
-  async invokeWorkflowLlmJsonWithRetry({ stage, instruction, payload, responseSchema = null }) {
-    const temperatures = [0, 0.3, 0.7];
+  async invokeWorkflowLlmJsonSingleWithRetry({
+    stage,
+    instruction,
+    payload,
+    responseSchema = null,
+    modelOverride = "",
+    temperature = 0,
+    ensembleRole = "single_run",
+    ensembleModelKey = "",
+    ensembleRound = 0,
+    ensembleCandidateIndex = 0,
+    onRawTextUpdate = null,
+  }) {
+    const retryTemperatures = [
+      temperature,
+      0.3,
+      0.7,
+    ].filter((value, index, list) => list.indexOf(value) === index);
     let lastError = null;
 
-    for (let index = 0; index < temperatures.length; index += 1) {
-      const temperature = temperatures[index];
+    for (let index = 0; index < retryTemperatures.length; index += 1) {
+      const nextTemperature = retryTemperatures[index];
       try {
-        return await this.llmJsonInvokerBase({
+        const result = await this.llmJsonInvokerBase({
           stage,
           instruction,
           payload,
           responseSchema,
-          temperature,
+          temperature: nextTemperature,
+          modelOverride,
+          ensembleRole,
+          ensembleModelKey,
+          ensembleRound,
+          ensembleCandidateIndex,
+          onRawTextUpdate,
           attempt: index + 1,
-          maxAttempts: temperatures.length,
+          maxAttempts: retryTemperatures.length,
         });
+        return normalizeLlmInvokerResult(result);
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
         if (!message.includes("workflow LLM returned invalid JSON")) {
           throw error;
         }
-        if (index < temperatures.length - 1) {
+        if (index < retryTemperatures.length - 1) {
           continue;
         }
       }
@@ -907,11 +1841,304 @@ export class LinearWorkflowService {
 
     const fallbackMessage = lastError instanceof Error ? lastError.message : "workflow LLM returned invalid JSON";
     throw attachStageDebug(
-      new Error(`${fallbackMessage} after ${temperatures.length} attempts`),
+      new Error(`${fallbackMessage} after ${retryTemperatures.length} attempts`),
       lastError && typeof lastError === "object" && lastError.stageOutput && typeof lastError.stageOutput === "object"
         ? lastError.stageOutput
         : {},
     );
+  }
+
+  async invokeWorkflowLlmJsonWithRetry({ stage, instruction, payload, responseSchema = null, progressReporter = null }) {
+    const modelRuns = [
+      { key: "model_a", model: this.workflowModelA },
+      { key: "model_b", model: this.workflowModelB || this.workflowModelA },
+    ];
+    const llmEnsemble = {
+      strategy: "dual-model-cross-debate",
+      stage,
+      parallel_count: this.workflowParallelCount,
+      debate_rounds: this.workflowDebateRounds,
+      models: {
+        model_a: {
+          model: modelRuns[0].model,
+          candidates: [],
+          single_result: null,
+        },
+        model_b: {
+          model: modelRuns[1].model,
+          candidates: [],
+          single_result: null,
+        },
+      },
+      cross_rounds: [],
+      shared_items: [],
+      conflicts: [],
+      final_result: null,
+    };
+    let lastProgressEmitAt = 0;
+    const emitEnsembleProgress = async (statusMessage = "", force = false) => {
+      if (typeof progressReporter !== "function") {
+        return;
+      }
+      const now = Date.now();
+      if (!force && now - lastProgressEmitAt < 150) {
+        return;
+      }
+      lastProgressEmitAt = now;
+      await progressReporter({
+        llm_ensemble: llmEnsemble,
+      }, statusMessage);
+    };
+
+    const runSingleModelLine = async (modelRun) => {
+      const candidates = await Promise.all(
+        Array.from({ length: this.workflowParallelCount }, async (_, index) => {
+          const candidateResult = await this.invokeWorkflowLlmJsonSingleWithRetry({
+            stage,
+            instruction: [
+              instruction,
+              `补充要求：这是 ${modelRun.key} 的第 ${index + 1}/${this.workflowParallelCount} 次独立候选生成，请独立判断，不要引用其他候选。`,
+            ].join("\n"),
+            payload,
+            responseSchema,
+            modelOverride: modelRun.model,
+            temperature: buildEnsembleTemperature(index, this.workflowParallelCount),
+            ensembleRole: "single_run",
+            ensembleModelKey: modelRun.key,
+            ensembleCandidateIndex: index + 1,
+            onRawTextUpdate: async (rawText) => {
+              llmEnsemble.models[modelRun.key].candidates[index] = {
+                model: modelRun.model,
+                candidate_index: index + 1,
+                data: null,
+                raw_text: rawText,
+                status: "streaming",
+              };
+              if (this.workflowParallelCount === 1) {
+                llmEnsemble.models[modelRun.key].single_result = {
+                  model: modelRun.model,
+                  data: null,
+                  raw_text: rawText,
+                  status: "streaming",
+                };
+              }
+              await emitEnsembleProgress("", false);
+            },
+          });
+          return candidateResult;
+        }),
+      );
+
+      llmEnsemble.models[modelRun.key].candidates = candidates.map((item, index) => compactLlmEnsembleEntry(item, {
+        model: modelRun.model,
+        candidate_index: index + 1,
+        status: "completed",
+      }));
+      await emitEnsembleProgress(`阶段 ${stage}：${modelRun.key} 已生成 ${candidates.length} 个候选`, true);
+
+      let singleResult = candidates[0];
+      if (candidates.length > 1) {
+        singleResult = await this.invokeWorkflowLlmJsonSingleWithRetry({
+          stage,
+          instruction: [
+            `你在执行线性工作流的 ${stage} 节点。`,
+            "下面给你同一模型的多个 JSON 候选结果，请只依据原始任务与这些候选做模型内归并。",
+            instruction,
+            "请综合这些候选的长处，输出一个最终唯一 JSON。",
+            "禁止解释比较过程，禁止输出 Markdown，只能输出最终 JSON。",
+          ].join("\n"),
+          payload: {
+            ...(payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {}),
+            ensemble_context: {
+              original_payload: payload,
+              candidate_results: candidates.map((item) => item.data ?? item.llm_raw ?? null),
+            },
+          },
+          responseSchema,
+          modelOverride: modelRun.model,
+          temperature: 0,
+          ensembleRole: "model_consensus",
+          ensembleModelKey: modelRun.key,
+          onRawTextUpdate: async (rawText) => {
+            llmEnsemble.models[modelRun.key].single_result = {
+              model: modelRun.model,
+              data: null,
+              raw_text: rawText,
+              status: "streaming",
+            };
+            await emitEnsembleProgress("", false);
+          },
+        });
+      }
+
+      llmEnsemble.models[modelRun.key].single_result = compactLlmEnsembleEntry(singleResult, {
+        model: modelRun.model,
+        status: "completed",
+      });
+      await emitEnsembleProgress(`阶段 ${stage}：${modelRun.key} 单次结果已完成`, true);
+
+      return {
+        key: modelRun.key,
+        result: singleResult,
+      };
+    };
+
+    const singleResults = {};
+    const modelLineResults = await Promise.all(
+      modelRuns.map((modelRun) => runSingleModelLine(modelRun)),
+    );
+    for (const item of modelLineResults) {
+      singleResults[item.key] = item.result;
+    }
+
+    const comparison = buildSharedAndConflictItems(
+      stage,
+      singleResults.model_a?.data ?? singleResults.model_a?.llm_raw ?? null,
+      singleResults.model_b?.data ?? singleResults.model_b?.llm_raw ?? null,
+    );
+    llmEnsemble.shared_items = comparison.shared_items.map((item) => ({
+      item_key: item.item_key,
+      value: cloneJsonValue(item.value, null),
+      order: item.order,
+    }));
+    llmEnsemble.conflicts = comparison.conflicts.map((item) => ({
+      item_key: item.item_key,
+      order: item.order,
+      model_a_value: cloneJsonValue(item.model_a_value, null),
+      model_b_value: cloneJsonValue(item.model_b_value, null),
+      model_a_candidates: cloneJsonValue(item.model_a_candidates, []),
+      model_b_candidates: cloneJsonValue(item.model_b_candidates, []),
+    }));
+    await emitEnsembleProgress(`阶段 ${stage}：已完成 shared/conflict 对比`, true);
+
+    const resolvedConflictMap = new Map();
+    let crossResult = null;
+    let pendingConflicts = [...comparison.conflicts];
+
+    for (let round = 0; round < this.workflowDebateRounds; round += 1) {
+      if (pendingConflicts.length === 0) {
+        break;
+      }
+
+      const reviewer = modelRuns[round % modelRuns.length];
+      crossResult = await this.invokeWorkflowLlmJsonSingleWithRetry({
+        stage,
+        instruction: [
+          `你在执行线性工作流的 ${stage} 节点。`,
+          "现在不要重写整份结果，而是先保留程序已经判定完全一致的 shared_items。",
+          "你只需要处理 unresolved_conflicts 中仍然不一致的部分。",
+          "每个冲突项都要输出 resolved_conflicts，且每条 citations 必须完整包含：target_model、stance、reason、suggestion。",
+          "其中 stance 只能是 同意 / 反对 / 修改 三选一；reason 写原因；suggestion 写修改建议。",
+          "final_value 只能写该冲突项最后要保留的 JSON 对象，不要输出整份总结果。",
+          "如果某个冲突项本轮仍不能定稿，就把 item_key 放进 remaining_conflicts。",
+          instruction,
+          `当前为第 ${round + 1}/${this.workflowDebateRounds} 轮交叉 citation。`,
+          "禁止输出 Markdown，禁止解释过程，只能输出符合 schema 的 JSON。",
+        ].join("\n"),
+        payload: {
+          ...(payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {}),
+          ensemble_context: {
+            original_payload: payload,
+            shared_items: comparison.shared_items.map((item) => ({
+              item_key: item.item_key,
+              value: item.value,
+            })),
+            unresolved_conflicts: pendingConflicts.map((item) => ({
+              item_key: item.item_key,
+              model_a_value: item.model_a_value,
+              model_b_value: item.model_b_value,
+              model_a_candidates: item.model_a_candidates,
+              model_b_candidates: item.model_b_candidates,
+            })),
+            previous_rounds: llmEnsemble.cross_rounds.map((item) => item?.data).filter(Boolean),
+            resolved_conflicts: [...resolvedConflictMap.entries()].map(([itemKey, value]) => ({
+              item_key: itemKey,
+              final_value: value.value,
+              decision: value.decision,
+              citations: value.citations,
+              summary: value.summary,
+            })),
+          },
+        },
+        responseSchema: CROSS_CITATION_RESPONSE_SCHEMA,
+        modelOverride: reviewer.model,
+        temperature: 0,
+        ensembleRole: "cross_round",
+        ensembleModelKey: reviewer.key,
+        ensembleRound: round + 1,
+        onRawTextUpdate: async (rawText) => {
+          llmEnsemble.cross_rounds[round] = {
+            round: round + 1,
+            reviewer_model_key: reviewer.key,
+            reviewer_model: reviewer.model,
+            data: null,
+            raw_text: rawText,
+            status: "streaming",
+          };
+          llmEnsemble.final_result = {
+            source: "citation_merge",
+            data: null,
+            raw_text: rawText,
+            status: "streaming",
+          };
+          await emitEnsembleProgress("", false);
+        },
+      });
+
+      const conflictMap = new Map(pendingConflicts.map((item) => [item.item_key, item]));
+      const normalizedRound = normalizeCrossCitationRound(
+        crossResult?.data ?? crossResult?.llm_raw ?? null,
+        conflictMap,
+      );
+
+      for (const item of normalizedRound.resolved_conflicts) {
+        resolvedConflictMap.set(item.item_key, {
+          value: item.final_value,
+          decision: item.decision,
+          citations: item.citations,
+          summary: item.summary,
+        });
+      }
+
+      const remainingSet = new Set(normalizedRound.remaining_conflicts);
+      const resolvedThisRound = new Set(normalizedRound.resolved_conflicts.map((item) => item.item_key));
+      pendingConflicts = pendingConflicts.filter((item) => (
+        remainingSet.size > 0 ? remainingSet.has(item.item_key) : !resolvedThisRound.has(item.item_key)
+      ));
+
+      llmEnsemble.cross_rounds[round] = compactLlmEnsembleEntry({
+        ...crossResult,
+        data: normalizedRound,
+      }, {
+        round: round + 1,
+        reviewer_model_key: reviewer.key,
+        reviewer_model: reviewer.model,
+        status: "completed",
+      });
+      await emitEnsembleProgress(`阶段 ${stage}：交叉 citation 第 ${round + 1} 轮完成`, true);
+    }
+
+    const finalData = buildFinalEnsembleData(comparison, resolvedConflictMap);
+    const finalResult = {
+      llm_raw: finalData,
+      llm_raw_text: crossResult?.llm_raw_text ?? JSON.stringify(finalData),
+      llm_response: crossResult?.llm_response,
+      data: finalData,
+    };
+    llmEnsemble.final_result = compactLlmEnsembleEntry(finalResult, {
+      source: comparison.conflicts.length > 0 ? "citation_merge" : "shared_consensus",
+      status: "completed",
+      unresolved_conflict_keys: pendingConflicts.map((item) => item.item_key),
+    });
+    await emitEnsembleProgress(`阶段 ${stage}：最终交叉结果已生成`, true);
+
+    return {
+      llm_raw: finalResult?.llm_raw ?? finalResult?.data ?? null,
+      llm_raw_text: asText(finalResult?.llm_raw_text),
+      llm_response: finalResult?.llm_response,
+      llm_ensemble: llmEnsemble,
+      data: finalResult?.data ?? finalResult?.llm_raw ?? null,
+    };
   }
 
   async buildGatewayHeaders(forceRefresh = false) {
@@ -1236,9 +2463,12 @@ export class LinearWorkflowService {
         state.ontology = null;
         state.ontologies = [];
       }
-      if (resumeFromStageIndex <= 4) {
+      if (resumeFromStageIndex <= 3) {
         state.ablation = [];
         state.ablationCandidates = [];
+        state.ablationJudges = [];
+      } else if (resumeFromStageIndex === 4) {
+        state.ablation = [];
         state.ablationJudges = [];
       }
       if (resumeFromStageIndex <= 6) {
@@ -1249,6 +2479,25 @@ export class LinearWorkflowService {
 
     const runStage = async (stageIndex, executor) => {
       const stage = stageResults[stageIndex];
+      const reportProgress = async (partialOutput, statusMessage = "") => {
+        if (stage.status !== "running") {
+          return;
+        }
+        stage.output = mergeStageOutputValue(stage.output, partialOutput);
+        await persistSnapshot();
+        handlers.onStageUpdate?.({
+          stage: stage.stage,
+          order: stage.order,
+          status: stage.status,
+          started_at: stage.started_at,
+          finished_at: stage.finished_at,
+          output: stage.output,
+          error: stage.error,
+        });
+        if (statusMessage) {
+          handlers.onStatus?.(statusMessage);
+        }
+      };
       stage.started_at = nowIso();
       stage.status = "running";
       stage.finished_at = null;
@@ -1266,7 +2515,9 @@ export class LinearWorkflowService {
       });
       handlers.onStatus?.(`阶段 ${stage.order}/${stageKeys.length}：${stage.stage} 执行中`);
       try {
-        const output = await executor();
+        const output = await executor({
+          reportProgress,
+        });
         validateStageOutputShape(stage.stage, output);
         stage.output = output;
         stage.status = "success";
@@ -1349,7 +2600,7 @@ export class LinearWorkflowService {
       });
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 1) {
-        await runStage(1, async () => {
+        await runStage(1, async ({ reportProgress }) => {
           ensureStagePrerequisite(Boolean(documentText), "节点1-观察", "文档内容为空或不可读");
           checkInterrupted();
           const llmResult = await this.llmJsonInvoker({
@@ -1364,6 +2615,7 @@ export class LinearWorkflowService {
               "不要遗漏明显会参与后续关系抽取的实体；宁可多提取，也不要过度保守。",
             ].join("\n"),
             payload: { document_text: documentText },
+            progressReporter: reportProgress,
           });
 
           const llmPayload = llmResult?.data ?? llmResult;
@@ -1374,6 +2626,7 @@ export class LinearWorkflowService {
               llm_raw: llmResult?.llm_raw ?? llmPayload,
               llm_raw_text: asText(llmResult?.llm_raw_text),
               llm_response: llmResult?.llm_response,
+              llm_ensemble: llmResult?.llm_ensemble,
               debug_error: "节点1失败：未提取到实体",
             });
           }
@@ -1384,12 +2637,13 @@ export class LinearWorkflowService {
             llm_raw: llmResult?.llm_raw ?? llmPayload,
             llm_raw_text: asText(llmResult?.llm_raw_text),
             llm_response: llmResult?.llm_response,
+            llm_ensemble: llmResult?.llm_ensemble,
           };
         });
       }
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 2) {
-        await runStage(2, async () => {
+        await runStage(2, async ({ reportProgress }) => {
           ensureStagePrerequisite(state.entities.length > 0, "节点2-关系", "尚未抽取到实体");
           checkInterrupted();
           const node1Entities = state.entities.map((entity) => ({
@@ -1404,17 +2658,20 @@ export class LinearWorkflowService {
             stage: "节点2-操作",
             instruction: [
               "根据节点1输出的 entities 提取 relations 数组。",
+              "当前阶段只允许抽取一种关系：part_of。",
               "你只能使用节点1中的实体作为 source 和 target，禁止凭空新增实体名。",
               "source 与 target 必须与节点1实体 name 精确一致；如果找不到可用实体，就不要生成这条关系。",
-              "每条关系必须包含 source、target、relation_type、evidence。",
+              "方向必须统一为：source part_of target，也就是 source 是部分，target 是整体。",
+              "每条关系必须包含 source、target、relation_type、evidence，其中 relation_type 必须固定写成 part_of。",
               "evidence 必须来自文档原文或节点1证据片段，并尽量简短明确。",
-              "优先输出能直接表达结构、依赖、组成、归属、作用、完成任务、关联、触发、支撑等关系。",
+              "如果文本只表达依赖、协作、调用、触发等非部分-整体关系，则不要输出。",
             ].join("\n"),
             payload: {
               entities: node1Entities,
               entity_names: node1Entities.map((entity) => entity.name),
               document_text: documentText,
             },
+            progressReporter: reportProgress,
           });
 
           const llmPayload = llmResult?.data ?? llmResult;
@@ -1430,6 +2687,7 @@ export class LinearWorkflowService {
             llm_raw: llmResult?.llm_raw ?? llmPayload,
             llm_raw_text: asText(llmResult?.llm_raw_text),
             llm_response: llmResult?.llm_response,
+            llm_ensemble: llmResult?.llm_ensemble,
           };
         });
       }
@@ -1438,34 +2696,21 @@ export class LinearWorkflowService {
         await runStage(3, async () => {
           ensureStagePrerequisite(state.entities.length > 0, "节点3-消融候选", "尚未抽取到实体");
           checkInterrupted();
-          const ablationResult = await this.systemAdapter.generateAblationCandidates({
-            entities: state.entities.map((entity) => ({
-              id: entity.id,
-              name: entity.name,
-              summary: entity.summary,
-              citations: entity.citations.slice(0, 2),
-            })),
-            relations: state.relations.map((relation) => ({
-              source_name: relation.source_name,
-              target_name: relation.target_name,
-              relation_type: relation.relation_type,
-              evidence: relation.evidence,
-            })),
-          });
-
-          state.ablationCandidates = ablationResult.candidates;
+          const ablationPlan = buildTreeAblationCandidates(state.entities, state.relations);
+          state.ablationCandidates = ablationPlan.candidates;
           return {
-            candidate_count: ablationResult.candidate_count,
-            candidates: ablationResult.candidates,
-            llm_raw: ablationResult.llm_raw,
-            llm_raw_text: ablationResult.llm_raw_text,
-            llm_response: ablationResult.llm_response,
+            candidate_count: ablationPlan.candidates.length,
+            candidates: ablationPlan.candidates,
+            llm_raw: {
+              strategy: "part_of_tree_bottom_up",
+              candidate_entity_ids: ablationPlan.candidates.map((item) => item.entity_id),
+            },
           };
         });
       }
 
       if (resumeFromStageIndex === null || resumeFromStageIndex <= 4) {
-        await runStage(4, async () => {
+        await runStage(4, async ({ reportProgress }) => {
           ensureStagePrerequisite(state.entities.length > 0, "节点4-小故命中", "尚未抽取到实体");
           checkInterrupted();
           const entityById = new Map(state.entities.map((entity) => [entity.id, entity]));
@@ -1473,96 +2718,143 @@ export class LinearWorkflowService {
           const candidateMap = new Map(state.ablationCandidates.map((item) => [item.entity_id, item]));
           const ablationJudges = [];
           const judgeDebug = [];
+          const judgeDebugMap = new Map();
+          const deferredRelations = new Map(state.relations.map((relation) => [buildRelationKey(relation), relation]));
+          const emitJudgeProgress = async (statusMessage) => {
+            await reportProgress({
+              relations: [...deferredRelations.values()],
+              ablation_candidates: state.ablationCandidates,
+              ablation_judges: [...ablationJudges].sort((left, right) => asText(left.entity_id).localeCompare(asText(right.entity_id), "zh-Hans-CN")),
+              llm_ensemble: {
+                judge_results: [...judgeDebugMap.values()].map((item) => ({
+                  entity_id: item.entity_id,
+                  llm_ensemble: item.llm_ensemble,
+                })),
+              },
+            }, statusMessage);
+          };
 
+          const candidateGroups = new Map();
           for (const candidate of state.ablationCandidates) {
-            const entity = entityById.get(candidate.entity_id);
-            if (!entity) continue;
-
-            // 检查中断信号
-            if (input?.signal?.aborted) {
-              throw new Error("Workflow interrupted by user");
-            }
-
-
-            const focusEntity = {
-              entity_id: entity.id,
-              entity_name: entity.name,
-              summary: entity.summary,
-              abilities: entity.abilities,
-              citations: entity.citations.slice(0, 2),
-              keep_role: candidate.keep_role,
-              remove_impact: candidate.remove_impact,
-              observation: candidate.observation,
-              evidence: candidate.evidence,
-            };
-            const relatedRelations = state.relations
-              .filter((relation) => relation.source_entity_id === entity.id || relation.target_entity_id === entity.id)
-              .map((relation) => ({
-                source_name: relation.source_name,
-                target_name: relation.target_name,
-                relation_type: relation.relation_type,
-                evidence: relation.evidence,
-              }));
-            const remainingEntities = state.entities
-              .filter((item) => item.id !== entity.id)
-              .map((item) => ({
-                id: item.id,
-                name: item.name,
-                summary: item.summary,
-                citations: item.citations.slice(0, 2),
-              }));
-            const remainingRelations = state.relations
-              .filter((relation) => relation.source_entity_id !== entity.id && relation.target_entity_id !== entity.id)
-              .map((relation) => ({
-                source_name: relation.source_name,
-                target_name: relation.target_name,
-                relation_type: relation.relation_type,
-                evidence: relation.evidence,
-              }));
-
-            try {
-              const judgeResult = await this.systemAdapter.judgeAblationCandidate({
-                entity,
-                candidate,
-                entities: state.entities,
-                relations: state.relations,
-              });
-              const judge = buildAblationJudgeFromProbabilities(entity, judgeResult.keepDecision, judgeResult.removeDecision);
-              const merged = mergeAblationResult(candidate, judge);
-              ablationJudges.push(merged);
-              judgeDebug.push({
-                entity_id: entity.id,
-                computed_judge: judge,
-              });
-            } catch (error) {
-              throw attachStageDebug(error, {
-                llm_raw: {
-                  candidate: candidate,
-                  keep_result: error?.stageOutput?.llm_raw?.keep_result,
-                  remove_result: error?.stageOutput?.llm_raw?.remove_result,
-                },
-              });
-            }
+            const level = Number(candidate.tree_height || 0);
+            const list = candidateGroups.get(level) || [];
+            list.push(candidate);
+            candidateGroups.set(level, list);
           }
 
-          const judgeMap = new Map(ablationJudges.map((item) => [item.entity_id, item]));
-          const ablation = state.entities
-            .map((entity) => {
-              const candidate = candidateMap.get(entity.id)
-                || normalizeAblationCandidate({ entity_id: entity.id }, entityById, entityByName);
-              const judge = judgeMap.get(entity.id) || null;
-              return mergeAblationResult(candidate, judge);
-            })
-            .filter((item) => item.entity_id && item.entity_name && item.impact_reason);
+          const orderedLevels = [...candidateGroups.keys()].sort((left, right) => left - right);
+
+          for (const level of orderedLevels) {
+            const group = candidateGroups.get(level) || [];
+            await Promise.all(group.map(async (candidate) => {
+              const entity = entityById.get(candidate.entity_id);
+              const parentEntity = entityById.get(asText(candidate.parent_entity_id));
+              if (!entity || !parentEntity) {
+                return;
+              }
+
+              if (input?.signal?.aborted) {
+                throw new Error("Workflow interrupted by user");
+              }
+
+              const systemEntityIds = new Set(Array.isArray(candidate.system_entity_ids) ? candidate.system_entity_ids.map((item) => asText(item)).filter(Boolean) : []);
+              const removedEntityIds = new Set(Array.isArray(candidate.removed_subtree_entity_ids) ? candidate.removed_subtree_entity_ids.map((item) => asText(item)).filter(Boolean) : [entity.id]);
+              const siblingEntityIds = new Set(Array.isArray(candidate.sibling_entity_ids) ? candidate.sibling_entity_ids.map((item) => asText(item)).filter(Boolean) : []);
+              const systemEntities = state.entities.filter((item) => systemEntityIds.has(item.id));
+              const systemRelations = state.relations.filter((relation) => systemEntityIds.has(relation.source_entity_id) && systemEntityIds.has(relation.target_entity_id));
+              const siblingEntities = state.entities.filter((item) => siblingEntityIds.has(item.id));
+              const siblingRelations = state.relations.filter((relation) => (
+                siblingEntityIds.has(relation.source_entity_id)
+                || siblingEntityIds.has(relation.target_entity_id)
+                || removedEntityIds.has(relation.source_entity_id)
+                || removedEntityIds.has(relation.target_entity_id)
+              ));
+              const descendantJudges = ablationJudges.filter((item) => removedEntityIds.has(item.entity_id) && item.entity_id !== entity.id);
+
+              try {
+                const judgeResult = await this.systemAdapter.judgeAblationCandidate({
+                  entity,
+                  candidate,
+                  entities: systemEntities,
+                  relations: systemRelations,
+                  systemContext: {
+                    parentEntity,
+                    systemEntities,
+                    systemRelations,
+                    siblingEntities,
+                    siblingRelations,
+                    removedEntityIds: [...removedEntityIds],
+                    descendantJudges,
+                  },
+                  progressReporter: async (partialEnsemble) => {
+                    judgeDebugMap.set(entity.id, {
+                      entity_id: entity.id,
+                      computed_judge: null,
+                      llm_ensemble: partialEnsemble,
+                    });
+                    await emitJudgeProgress(`阶段 5/${stageKeys.length}：正在自下向上分析 ${entity.name} -> ${parentEntity.name}`);
+                  },
+                });
+                if (Array.isArray(judgeResult.dependencyRelations)) {
+                  for (const relation of judgeResult.dependencyRelations) {
+                    const key = buildRelationKey(relation);
+                    if (key && !deferredRelations.has(key)) {
+                      deferredRelations.set(key, relation);
+                    }
+                  }
+                }
+                const judge = buildAblationJudgeFromProbabilities(
+                  entity,
+                  judgeResult.keepDecision,
+                  judgeResult.removeDecision,
+                  judgeResult.siblingAnalysis,
+                );
+                const merged = mergeAblationResult(candidate, judge);
+                ablationJudges.push(merged);
+                judgeDebug.push({
+                  entity_id: entity.id,
+                  computed_judge: judge,
+                  llm_ensemble: judgeResult.llm_ensemble || null,
+                });
+                judgeDebugMap.set(entity.id, {
+                  entity_id: entity.id,
+                  computed_judge: judge,
+                  llm_ensemble: judgeResult.llm_ensemble || null,
+                });
+                await emitJudgeProgress(`阶段 5/${stageKeys.length}：已完成 ${entity.name} 对 ${parentEntity.name} 的重要性评估`);
+              } catch (error) {
+                throw attachStageDebug(error, {
+                  llm_raw: {
+                    candidate,
+                    keep_result: error?.stageOutput?.llm_raw?.keep_result,
+                    remove_result: error?.stageOutput?.llm_raw?.remove_result,
+                  },
+                  llm_ensemble: error?.stageOutput?.llm_ensemble,
+                });
+              }
+            }));
+          }
+
+          const ablation = ablationJudges
+            .filter((item) => item.entity_id && item.entity_name && item.impact_reason)
+            .sort((left, right) => asText(left.entity_id).localeCompare(asText(right.entity_id), "zh-Hans-CN"));
+          state.relations = [...deferredRelations.values()];
           state.ablationJudges = ablationJudges;
           state.ablation = ablation;
           return {
             ablation_count: ablationJudges.length, // 使用完整的判定数作为总计
             ablation,
+            relations: state.relations,
             ablation_candidates: state.ablationCandidates,
             ablation_judges: ablationJudges,
             llm_raw: {
               judge_results: judgeDebug,
+            },
+            llm_ensemble: {
+              judge_results: judgeDebug.map((item) => ({
+                entity_id: item.entity_id,
+                llm_ensemble: item.llm_ensemble,
+              })),
             },
           };
         });
@@ -1572,6 +2864,14 @@ export class LinearWorkflowService {
         await runStage(5, async () => {
           ensureStagePrerequisite(state.entities.length > 0, "节点5-本体", "尚未抽取到实体");
           checkInterrupted();
+          const persistedAblationEntries = state.ablation
+            .map((item) => ({
+              entity_id: asText(item?.entity_id),
+              persisted: toPersistedAblation(item),
+            }))
+            .filter((item) => item.entity_id && item.persisted);
+          const persistedAblationMap = new Map(persistedAblationEntries.map((item) => [item.entity_id, item.persisted]));
+          const persistedAblationList = persistedAblationEntries.map((item) => item.persisted);
           const ontology = {
             workflow_version: "v1-linear-file-workflow",
             generated_at: nowIso(),
@@ -1579,11 +2879,11 @@ export class LinearWorkflowService {
             system_summary: {
               entity_count: state.entities.length,
               relation_count: state.relations.length,
-              ablation_count: state.ablation.length,
+              ablation_count: persistedAblationList.length,
             },
             entities: state.entities,
             relations: state.relations,
-            ablation: state.ablation,
+            ablation: persistedAblationList,
           };
 
           const usedNames = new Set();
@@ -1591,7 +2891,7 @@ export class LinearWorkflowService {
             const relatedRelations = state.relations.filter((relation) => (
               relation.source_entity_id === entity.id || relation.target_entity_id === entity.id
             ));
-            const relatedAblation = state.ablation.find((item) => item.entity_id === entity.id) || null;
+            const relatedAblation = persistedAblationMap.get(entity.id) || null;
             const filename = makeEntityFilename(entity.name, usedNames);
             const entityOntology = {
               workflow_version: "v1-linear-file-workflow",

@@ -295,6 +295,34 @@ test("OntoGitKnowledgeBaseRepository 会保留首个实体并显式暴露重复 
   assert.deepEqual(graph.entity_id_conflicts[0].entity_names, ["鱼家——智能养鱼系统", "微信小程序"]);
 });
 
+test("OntoGitKnowledgeBaseRepository 会把小故判定概率挂到图谱实体上", async () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+
+  repository.getJsonFileTimelines = async () => ([
+    { filename: "entity-a.json" },
+  ]);
+  repository.readProjectFile = async () => createWorkflowEntitySource({
+    entityId: "ent_entity_1",
+    entityName: "核心能力A",
+    ablation: {
+      entity_id: "ent_entity_1",
+      entity_name: "核心能力A",
+      keep_probability: "88%",
+      remove_probability: "34%",
+      probability_gap: "54%",
+      judge_reason: "核心能力移除后系统明显失稳",
+      small_reason: true,
+    },
+  });
+
+  const graph = await repository.getKnowledgeGraph("demo");
+  const entity = graph.entity_index["demo:ent_entity_1"];
+
+  assert.equal(entity?.ablation?.keep_probability, "88%");
+  assert.equal(entity?.ablation?.remove_probability, "34%");
+  assert.equal(entity?.ablation?.probability_gap, "54%");
+});
+
 test("OntoGitKnowledgeBaseRepository 扫描工作流实体时会限流并重试瞬时失败", async () => {
   const repository = new OntoGitKnowledgeBaseRepository();
   const attempts = new Map();
@@ -831,4 +859,39 @@ test("OntoGitKnowledgeBaseRepository 的 gateway 登录会在超时后失败并�
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
   }
+});
+
+test("OntoGitKnowledgeBaseRepository 会按项目粒度失效缓存", () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+
+  repository.setCachedProjectDataset("project-a", { fingerprint: "a" });
+  repository.setCachedProjectDataset("project-b", { fingerprint: "b" });
+  repository.pendingDatasetLoads.set("project-a\u001fload-a", Promise.resolve({}));
+  repository.pendingDatasetLoads.set("project-b\u001fload-b", Promise.resolve({}));
+
+  repository.invalidateCache("project-a");
+
+  assert.equal(repository.cacheByProject.has("project-a"), false);
+  assert.equal(repository.cacheByProject.has("project-b"), true);
+  assert.equal(repository.pendingDatasetLoads.has("project-a\u001fload-a"), false);
+  assert.equal(repository.pendingDatasetLoads.has("project-b\u001fload-b"), true);
+  assert.equal(repository.skipDiskCacheProjects.has("project-a"), true);
+  assert.equal(repository.skipDiskCacheProjects.has("project-b"), false);
+});
+
+test("OntoGitKnowledgeBaseRepository 只保留最近使用的项目缓存", () => {
+  const repository = new OntoGitKnowledgeBaseRepository();
+
+  for (let index = 0; index < 6; index += 1) {
+    repository.setCachedProjectDataset(`project-${index}`, { fingerprint: `${index}` });
+  }
+
+  assert.equal(repository.cacheByProject.size, 6);
+  repository.getCachedProjectDataset("project-0");
+  repository.setCachedProjectDataset("project-6", { fingerprint: "6" });
+
+  assert.equal(repository.cacheByProject.size, 6);
+  assert.equal(repository.cacheByProject.has("project-1"), false);
+  assert.equal(repository.cacheByProject.has("project-0"), true);
+  assert.equal(repository.cacheByProject.has("project-6"), true);
 });

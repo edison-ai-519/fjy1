@@ -1,9 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { KnowledgeGraph } from '@/components/KnowledgeGraph';
 import { EntityDetail } from '@/components/EntityDetail';
 import { EntitySelectorPanel } from '@/components/EntitySelectorPanel';
 import { SystemRelationshipPanel } from '@/components/SystemRelationshipPanel';
+import { GraphProbabilityFilterPanel } from '@/features/ontology/components/GraphProbabilityFilterPanel';
+import {
+  DEFAULT_GRAPH_PROBABILITY_FILTERS,
+  filterGraphCrossReferencesByProbability,
+  filterGraphEntitiesByProbability,
+  type GraphProbabilityFilters,
+} from '@/features/ontology/graphProbabilityFilters';
+import {
+  selectOntologyRelatedEntities,
+  selectOntologySelectedEntity,
+} from '@/features/ontology/stateSelectors';
 import { useOntologyContext } from '@/features/ontology/useOntologyContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -43,13 +54,39 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
   const {
     filteredEntities,
     filteredCrossReferences,
-    selectedEntity,
-    relatedEntities,
     selectedEntityId,
     loading,
   } = useOntologyContext();
   const [activePanelTab, setActivePanelTab] = useState<'details' | 'structure' | 'selector'>('structure');
+  const [probabilityFilters, setProbabilityFilters] = useState<GraphProbabilityFilters>(
+    DEFAULT_GRAPH_PROBABILITY_FILTERS,
+  );
   const showLoading = loading && filteredEntities.length === 0;
+
+  const graphEntities = useMemo(
+    () => filterGraphEntitiesByProbability(filteredEntities, probabilityFilters),
+    [filteredEntities, probabilityFilters],
+  );
+
+  const graphEntityIndex = useMemo(
+    () => new Map(graphEntities.map((entity) => [entity.id, entity])),
+    [graphEntities],
+  );
+
+  const graphCrossReferences = useMemo(
+    () => filterGraphCrossReferencesByProbability(filteredCrossReferences, graphEntities),
+    [filteredCrossReferences, graphEntities],
+  );
+
+  const selectedGraphEntity = useMemo(
+    () => selectOntologySelectedEntity(graphEntities, selectedEntityId, graphEntityIndex),
+    [graphEntities, graphEntityIndex, selectedEntityId],
+  );
+
+  const relatedGraphEntities = useMemo(
+    () => selectOntologyRelatedEntities(selectedGraphEntity, graphCrossReferences, graphEntityIndex),
+    [graphCrossReferences, graphEntityIndex, selectedGraphEntity],
+  );
 
   useEffect(() => {
     if (selectedEntityId) {
@@ -67,8 +104,8 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
       <div className="flex-1 relative flex flex-col min-h-0 min-w-0">
         <div className="flex-1 w-full relative min-h-0">
           <KnowledgeGraph
-            entities={filteredEntities}
-            crossReferences={filteredCrossReferences}
+            entities={graphEntities}
+            crossReferences={graphCrossReferences}
             onSelectEntity={onSelectEntity}
             selectedEntityId={selectedEntityId ?? undefined}
             isActive={isActive}
@@ -89,13 +126,21 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
                 <Zap className="w-4 h-4 text-amber-500 animate-pulse" />
                 <h3 className="text-sm font-black tracking-tight uppercase">图谱工作台</h3>
               </div>
-              {selectedEntity && (
+              {selectedGraphEntity && (
                 <div className="text-[10px] text-primary bg-primary/10 px-2 py-0.5 rounded-full font-black flex items-center gap-1">
                   <div className="w-1 h-1 rounded-full bg-primary animate-ping" />
-                  已选中: {selectedEntity.name}
+                  已选中: {selectedGraphEntity.name}
                 </div>
               )}
             </div>
+            <GraphProbabilityFilterPanel
+              filters={probabilityFilters}
+              onChange={setProbabilityFilters}
+              matchedEntityCount={graphEntities.length}
+              totalEntityCount={filteredEntities.length}
+              relationCount={graphCrossReferences.length}
+              compact
+            />
             <TabsList className="grid w-full grid-cols-3 h-10 rounded-xl bg-muted/60 p-1 border border-border/40">
               <TabsTrigger
                 value="structure"
@@ -123,9 +168,9 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
               <ScrollArea className="flex-1 h-full">
                 <div className="p-4">
                   <SystemRelationshipPanel
-                    entities={filteredEntities}
-                    crossReferences={filteredCrossReferences}
-                    selectedEntity={selectedEntity}
+                    entities={graphEntities}
+                    crossReferences={graphCrossReferences}
+                    selectedEntity={selectedGraphEntity}
                     onSelectEntity={onSelectEntity}
                     maxDepth={1}
                     emptyMessage="请先在左侧本体图谱中选择一个节点，系统结构会以该节点为根系统展开。"
@@ -136,10 +181,10 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
             <TabsContent value="details" className="mt-0 outline-none h-full data-[state=active]:flex flex-col">
               <ScrollArea className="flex-1 h-full">
                 <div className="p-4">
-                  {selectedEntity ? (
+                  {selectedGraphEntity ? (
                     <EntityDetail
-                      entity={selectedEntity}
-                      relatedEntities={relatedEntities}
+                      entity={selectedGraphEntity}
+                      relatedEntities={relatedGraphEntities}
                       onSelectRelated={onSelectEntity}
                     />
                   ) : (
@@ -160,8 +205,8 @@ export function ExplorerPage({ onSelectEntity, isActive = true }: ExplorerPagePr
               <ScrollArea className="flex-1 h-full">
                 <div className="p-4">
                   <EntitySelectorPanel
-                    entities={filteredEntities}
-                    crossReferences={filteredCrossReferences}
+                    entities={graphEntities}
+                    crossReferences={graphCrossReferences}
                     selectedEntityId={selectedEntityId ?? undefined}
                     onSelectEntity={(entity) => {
                       onSelectEntity(entity);

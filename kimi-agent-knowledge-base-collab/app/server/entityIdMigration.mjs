@@ -350,6 +350,9 @@ function rewriteEntityScopedRecord(record, contextFile, lookup) {
           });
           return item;
         }
+        if (!asText(ablation.entity_id) && !asText(ablation.entity_name)) {
+          return ablation;
+        }
         const next = { ...ablation };
         const reference = resolveEntityReference({
           referenceId: next.entity_id,
@@ -397,28 +400,32 @@ function rewriteEntityScopedRecord(record, contextFile, lookup) {
         reason: "ablation 必须是对象或 null",
       });
     } else {
-      const next = { ...ablation };
-      const reference = resolveEntityReference({
-        referenceId: next.entity_id,
-        referenceName: next.entity_name,
-        contextFile,
-        ...lookup,
-      });
-      if (reference.entity_id) {
-        if (next.entity_id !== reference.entity_id) {
-          next.entity_id = reference.entity_id;
-          changed = true;
-        }
+      if (!asText(ablation.entity_id) && !asText(ablation.entity_name)) {
+        root.ablation = ablation;
       } else {
-        unresolved.push({
-          filename: contextFile.filename,
-          path: "ablation.entity_id",
-          reference_id: asText(next.entity_id),
-          reference_name: asText(next.entity_name),
-          reason: reference.reason,
+        const next = { ...ablation };
+        const reference = resolveEntityReference({
+          referenceId: next.entity_id,
+          referenceName: next.entity_name,
+          contextFile,
+          ...lookup,
         });
+        if (reference.entity_id) {
+          if (next.entity_id !== reference.entity_id) {
+            next.entity_id = reference.entity_id;
+            changed = true;
+          }
+        } else {
+          unresolved.push({
+            filename: contextFile.filename,
+            path: "ablation.entity_id",
+            reference_id: asText(next.entity_id),
+            reference_name: asText(next.entity_name),
+            reason: reference.reason,
+          });
+        }
+        root.ablation = next;
       }
-      root.ablation = next;
     }
   }
 
@@ -839,6 +846,9 @@ export function rewriteWorkflowEntityData(record, contextFile, lookup) {
           });
           return item;
         }
+        if (!asText(ablation.entity_id) && !asText(ablation.entity_name)) {
+          return ablation;
+        }
         const next = { ...ablation };
         const reference = resolveEntityReference({
           referenceId: next.entity_id,
@@ -884,28 +894,32 @@ export function rewriteWorkflowEntityData(record, contextFile, lookup) {
         reason: "ablation 必须是对象或 null",
       });
     } else {
-      const next = { ...ablation };
-      const reference = resolveEntityReference({
-        referenceId: next.entity_id,
-        referenceName: next.entity_name,
-        contextFile,
-        ...lookup,
-      });
-      if (reference.entity_id) {
-        if (next.entity_id !== reference.entity_id) {
-          next.entity_id = reference.entity_id;
-          changed = true;
-        }
+      if (!asText(ablation.entity_id) && !asText(ablation.entity_name)) {
+        root.ablation = ablation;
       } else {
-        unresolved.push({
-          filename: contextFile.filename,
-          path: "ablation.entity_id",
-          reference_id: asText(next.entity_id),
-          reference_name: asText(next.entity_name),
-          reason: reference.reason,
+        const next = { ...ablation };
+        const reference = resolveEntityReference({
+          referenceId: next.entity_id,
+          referenceName: next.entity_name,
+          contextFile,
+          ...lookup,
         });
+        if (reference.entity_id) {
+          if (next.entity_id !== reference.entity_id) {
+            next.entity_id = reference.entity_id;
+            changed = true;
+          }
+        } else {
+          unresolved.push({
+            filename: contextFile.filename,
+            path: "ablation.entity_id",
+            reference_id: asText(next.entity_id),
+            reference_name: asText(next.entity_name),
+            reason: reference.reason,
+          });
+        }
+        root.ablation = next;
       }
-      root.ablation = next;
     }
   }
 
