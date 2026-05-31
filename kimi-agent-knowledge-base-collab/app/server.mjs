@@ -943,9 +943,7 @@ const server = createServer(async (req, res) => {
         : "default";
       const controller = workflowV2Controllers.get(conversationId);
       if (controller) {
-        controller.abort();
-        workflowV2Controllers.delete(conversationId);
-        closeWorkflowV2Subscribers(conversationId);
+        controller.abort(new Error("workflow V2 已被用户终止"));
         sendJson(res, 200, { ok: true, message: "Workflow V2 termination signal sent" });
       } else {
         sendJson(res, 404, { error: "No running workflow V2 found for this conversation" });

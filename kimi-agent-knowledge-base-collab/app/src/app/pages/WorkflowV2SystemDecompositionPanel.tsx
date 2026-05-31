@@ -32,9 +32,16 @@ function renderStructureNode(node: WorkflowV2SystemStructureNode): ReactNode {
             {node.normalizedName || '未提供 normalized_name'}
           </div>
         </div>
-        <Badge variant={isRoot ? 'default' : 'outline'} className="rounded-full">
-          {isRoot ? '主系统' : isLeaf ? '叶子节点' : `${node.childCount} 个子级`}
-        </Badge>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {node.objectLevel ? (
+            <Badge variant="secondary" className="rounded-full">
+              {node.objectLevel}
+            </Badge>
+          ) : null}
+          <Badge variant={isRoot ? 'default' : 'outline'} className="rounded-full">
+            {isRoot ? '根节点' : isLeaf ? '叶子节点' : `${node.childCount} 个子级`}
+          </Badge>
+        </div>
       </div>
 
       {node.coreFunction ? (
@@ -73,7 +80,13 @@ export function WorkflowV2SystemDecompositionPanel({
 }: {
   view: WorkflowV2SystemDecompositionView;
 }) {
-  if (!view.root || view.summary.containmentCount === 0) {
+  const legacyRoot = (view as WorkflowV2SystemDecompositionView & { root?: WorkflowV2SystemStructureNode | null }).root ?? null;
+  const roots = Array.isArray(view.roots) ? view.roots : (legacyRoot ? [legacyRoot] : []);
+  const clusterCount = typeof view.summary.clusterCount === 'number' && Number.isFinite(view.summary.clusterCount)
+    ? view.summary.clusterCount
+    : roots.length;
+
+  if (roots.length === 0 || view.summary.containmentCount === 0) {
     return (
       <div className="rounded-[28px] border border-dashed border-border/70 bg-background/65 p-6 text-sm text-muted-foreground">
         {view.emptyReason || '当前还没有足够的包含关系来生成系统拆解视图。'}
@@ -87,9 +100,13 @@ export function WorkflowV2SystemDecompositionPanel({
         <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
             <Boxes className="h-4 w-4 text-primary" />
-            主系统
+            拆解簇
           </div>
-          <div className="mt-2 break-words text-sm font-black">{view.root.name}</div>
+          <div className="mt-2 text-sm font-black">{clusterCount} 组</div>
+          <div className="mt-1 break-words text-xs text-muted-foreground">
+            {roots.slice(0, 3).map((node) => node.name).join(' / ')}
+            {roots.length > 3 ? ` 等 ${roots.length} 个根节点` : ''}
+          </div>
         </div>
         <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
@@ -123,8 +140,11 @@ export function WorkflowV2SystemDecompositionPanel({
             </Badge>
           ) : null}
           <Badge variant="outline" className="rounded-full">结构树优先</Badge>
+          <Badge variant="outline" className="rounded-full">根节点 {clusterCount}</Badge>
         </div>
-        {renderStructureNode(view.root)}
+        <div className="grid gap-4 xl:grid-cols-2">
+          {roots.map((root) => renderStructureNode(root))}
+        </div>
       </div>
     </div>
   );

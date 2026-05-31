@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildWorkflowV2DisplayObjects,
   buildWorkflowV2SystemDecompositionView,
   buildWorkflowV2GraphLayout,
   canWriteWorkflowV2Session,
@@ -26,6 +27,15 @@ test('extractWorkflowV2Summary 会读取 meta 统计信息', () => {
       total_objects: 5,
       total_edges: 4,
       is_dag: true,
+      system_scope_focus: '整车系统',
+      document_abstraction_level: 'mixed_depth',
+      structure_quality_score: 88,
+      structure_is_sound: true,
+      structure_orphan_count: 1,
+      structure_root_count: 1,
+      structure_max_depth: 4,
+      structure_too_flat_warning: '',
+      structure_mixed_granularity_warning: '',
     },
   });
 
@@ -35,7 +45,47 @@ test('extractWorkflowV2Summary 会读取 meta 统计信息', () => {
     objectCount: 5,
     edgeCount: 4,
     isDag: true,
+    primarySystem: '整车系统',
+    abstractionLevel: 'mixed_depth',
+    qualityScore: 88,
+    isStructurallySound: true,
+    orphanCount: 1,
+    rootCount: 1,
+    maxDepth: 4,
+    tooFlatWarning: '',
+    mixedGranularityWarning: '',
   });
+});
+
+test('extractWorkflowV2Summary 在 7 步后端缺少扩展 meta 时会从对象和边派生摘要', () => {
+  const summary = extractWorkflowV2Summary({
+    document: null,
+    chunks: [{ chunk_id: 'c1' }, { chunk_id: 'c2' }],
+    windows: [{ window_id: 'w1' }],
+    objects: [
+      { object_id: 'root', object_name: '整车系统' },
+      { object_id: 'power', object_name: '动力模块' },
+      { object_id: 'sensor', object_name: '传感器' },
+    ],
+    edges: [
+      { source_object_id: 'root', target_object_id: 'power' },
+      { source_object_id: 'power', target_object_id: 'sensor' },
+    ],
+    ablation: [],
+    meta: {
+      total_chunks: 2,
+      total_windows: 1,
+      total_objects: 3,
+      total_edges: 2,
+      is_dag: true,
+    },
+  });
+
+  assert.equal(summary.primarySystem, '整车系统');
+  assert.equal(summary.objectCount, 3);
+  assert.equal(summary.edgeCount, 2);
+  assert.equal(summary.maxDepth, 3);
+  assert.equal(summary.rootCount, 1);
 });
 
 test('canWriteWorkflowV2Session 只有在会话已有结果且未运行时才允许写回', () => {
@@ -165,7 +215,7 @@ test('extractWorkflowV2WritebackSummary 会提取最近成功写回的 commit、
   });
 });
 
-test('pickWorkflowV2PrimaryRoot 会优先选择可达后代更多的主系统', () => {
+test('pickWorkflowV2PrimaryRoot 会优先选择可达后代更多的根节点', () => {
   const rootId = pickWorkflowV2PrimaryRoot(
     [
       { object_id: 'root-b', object_name: 'B系统' },
@@ -199,12 +249,12 @@ test('pickWorkflowV2PrimaryRoot 在无结构边时会稳定回退到对象名称
 test('buildWorkflowV2SystemDecompositionView 会生成有深度上限的系统拆解树', () => {
   const view = buildWorkflowV2SystemDecompositionView({
     objects: [
-      { object_id: 'root', object_name: '整车', normalized_name: 'vehicle', core_function: '承载并协调所有子系统' },
-      { object_id: 'power', object_name: '动力系统', normalized_name: 'powertrain', core_function: '提供驱动力' },
-      { object_id: 'control', object_name: '控制系统', normalized_name: 'control', core_function: '协调整车控制' },
-      { object_id: 'engine', object_name: '发动机', normalized_name: 'engine', core_function: '输出机械能' },
-      { object_id: 'ecu', object_name: 'ECU', normalized_name: 'ecu', core_function: '执行控制逻辑' },
-      { object_id: 'sensor', object_name: '传感器', normalized_name: 'sensor', core_function: '采集状态' },
+      { object_id: 'root', object_name: '整车', normalized_name: 'vehicle', core_function: '承载并协调所有子系统', object_level: 'system', structure_depth: 1 },
+      { object_id: 'power', object_name: '动力系统', normalized_name: 'powertrain', core_function: '提供驱动力', object_level: 'subsystem', structure_depth: 2 },
+      { object_id: 'control', object_name: '控制系统', normalized_name: 'control', core_function: '协调整车控制', object_level: 'subsystem', structure_depth: 2 },
+      { object_id: 'engine', object_name: '发动机', normalized_name: 'engine', core_function: '输出机械能', object_level: 'component', structure_depth: 3 },
+      { object_id: 'ecu', object_name: 'ECU', normalized_name: 'ecu', core_function: '执行控制逻辑', object_level: 'component', structure_depth: 3 },
+      { object_id: 'sensor', object_name: '传感器', normalized_name: 'sensor', core_function: '采集状态', object_level: 'component', structure_depth: 4 },
     ],
     edges: [
       { source_object_id: 'root', target_object_id: 'power' },
@@ -216,13 +266,68 @@ test('buildWorkflowV2SystemDecompositionView 会生成有深度上限的系统�
     maxDepth: 2,
   });
 
-  assert.equal(view.root?.name, '整车');
+  assert.equal(view.roots[0]?.name, '整车');
+  assert.equal(view.summary.clusterCount, 1);
   assert.equal(view.summary.containmentCount, 5);
   assert.equal(view.summary.leafCount, 2);
   assert.equal(view.summary.maxDepth, 3);
-  assert.equal(view.root?.children.length, 2);
-  assert.equal(view.root?.children[1]?.children[0]?.name, 'ECU');
-  assert.equal(view.root?.children[1]?.children[0]?.hiddenDescendantCount, 1);
+  assert.equal(view.roots[0]?.children.length, 2);
+  assert.equal(view.roots[0]?.children[1]?.children[0]?.name, 'ECU');
+  assert.equal(view.roots[0]?.children[1]?.children[0]?.objectLevel, 'component');
+  assert.equal(view.roots[0]?.children[1]?.children[0]?.hiddenDescendantCount, 1);
+});
+
+test('buildWorkflowV2SystemDecompositionView 会在多根结构下返回森林视图', () => {
+  const view = buildWorkflowV2SystemDecompositionView({
+    objects: [
+      { object_id: 'dog', object_name: '机械狗', normalized_name: 'dog' },
+      { object_id: 'shell', object_name: '外壳', normalized_name: 'shell' },
+      { object_id: 'chip', object_name: '芯片', normalized_name: 'chip' },
+      { object_id: 'cat', object_name: '机械猫', normalized_name: 'cat' },
+      { object_id: 'armor', object_name: 'L3装甲', normalized_name: 'armor' },
+      { object_id: 'core', object_name: 'K2核心', normalized_name: 'core' },
+    ],
+    edges: [
+      { source_object_id: 'dog', target_object_id: 'shell' },
+      { source_object_id: 'dog', target_object_id: 'chip' },
+      { source_object_id: 'cat', target_object_id: 'armor' },
+      { source_object_id: 'cat', target_object_id: 'core' },
+    ],
+    maxDepth: 2,
+  });
+
+  assert.equal(view.roots.length, 2);
+  assert.deepEqual(view.roots.map((node) => node.name).sort(), ['机械狗', '机械猫']);
+  assert.equal(view.summary.clusterCount, 2);
+  assert.equal(view.summary.containmentCount, 4);
+  assert.equal(view.summary.leafCount, 4);
+});
+
+test('buildWorkflowV2DisplayObjects 会在旧版 7 步结果上补齐粒度和结构字段', () => {
+  const objects = buildWorkflowV2DisplayObjects(
+    [
+      { object_id: 'root', object_name: '整车系统', normalized_name: 'vehicle' },
+      { object_id: 'power', object_name: '动力模块', normalized_name: 'power' },
+      { object_id: 'sensor', object_name: '传感器', normalized_name: 'sensor' },
+      { object_id: 'note', object_name: '备注对象', normalized_name: 'note' },
+    ],
+    [
+      { source_object_id: 'root', target_object_id: 'power' },
+      { source_object_id: 'power', target_object_id: 'sensor' },
+    ],
+  );
+
+  const root = objects.find((item) => (item as Record<string, unknown>).object_id === 'root') as Record<string, unknown>;
+  const sensor = objects.find((item) => (item as Record<string, unknown>).object_id === 'sensor') as Record<string, unknown>;
+  const note = objects.find((item) => (item as Record<string, unknown>).object_id === 'note') as Record<string, unknown>;
+
+  assert.equal(root.object_level, 'system');
+  assert.equal(root.structural_role, 'root');
+  assert.equal(root.structure_depth, 1);
+  assert.equal(sensor.object_level, 'component');
+  assert.equal(sensor.structural_role, 'leaf');
+  assert.equal(sensor.structure_depth, 3);
+  assert.equal(note.structure_status, 'isolated');
 });
 
 test('buildWorkflowV2SystemDecompositionView 在没有结构边时返回明确空态原因', () => {
@@ -234,7 +339,7 @@ test('buildWorkflowV2SystemDecompositionView 在没有结构边时返回明确�
     maxDepth: 2,
   });
 
-  assert.equal(view.root?.name, '整车');
+  assert.equal(view.roots[0]?.name, '整车');
   assert.equal(view.summary.containmentCount, 0);
   assert.match(view.emptyReason, /没有形成可展示的系统拆解结构/);
 });
@@ -254,8 +359,8 @@ test('buildWorkflowV2SystemDecompositionView 遇到环时不会无限展开重�
     maxDepth: 3,
   });
 
-  assert.ok(view.root);
-  assert.equal(view.root?.children.some((child) => child.id === view.root?.id), false);
+  assert.ok(view.roots[0]);
+  assert.equal(view.roots[0]?.children.some((child) => child.id === view.roots[0]?.id), false);
 });
 
 test('buildWorkflowV2GraphLayout 会按拓扑深度生成简单 DAG 布局', () => {

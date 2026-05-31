@@ -11,7 +11,8 @@ const DEFAULT_CHUNK_MIN_CHARS = 80;
 const DEFAULT_WINDOW_SIZE = 5;
 const DEFAULT_WINDOW_STEP = 2;
 const DEFAULT_PARALLEL_WINDOWS = 4;
-const DEFAULT_WORKFLOW_LLM_TIMEOUT_MS = 120000;
+const DEFAULT_WORKFLOW_LLM_TIMEOUT_MS = 0;
+const DEFAULT_WORKFLOW_LLM_TEMPERATURE = 0.5;
 const DEFAULT_ABLATION_PARENT_CONCURRENCY = 2;
 const DEFAULT_ABLATION_CHILD_CONCURRENCY = 1;
 const WORKFLOW_V2_SOURCE = "linear-workflow-v2";
@@ -97,9 +98,65 @@ function getErrorMessage(error, fallback = "unknown error") {
   return fallback;
 }
 
+function getErrorCodeValue(value) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "";
+}
+
+function getErrorHttpStatusFromMessage(message) {
+  const match = asText(message).match(/request failed:\s*(\d{3})\b/);
+  return match?.[1] || "";
+}
+
+function getErrorDiagnostics(error) {
+  const diagnostics = {};
+  if (!error || typeof error !== "object") {
+    return diagnostics;
+  }
+
+  const errorName = asText(error.name);
+  const errorCode = getErrorCodeValue(error.code);
+  const errorHttpStatus = getErrorCodeValue(error.status) || getErrorHttpStatusFromMessage(getErrorMessage(error, ""));
+  const cause = error.cause && typeof error.cause === "object" ? error.cause : null;
+  const causeName = asText(cause?.name);
+  const causeCode = getErrorCodeValue(cause?.code);
+
+  if (errorName) {
+    diagnostics.error_name = errorName;
+  }
+  if (errorCode) {
+    diagnostics.error_code = errorCode;
+  }
+  if (errorHttpStatus) {
+    diagnostics.error_http_status = errorHttpStatus;
+  }
+  if (causeName) {
+    diagnostics.error_cause_name = causeName;
+  }
+  if (causeCode) {
+    diagnostics.error_cause_code = causeCode;
+  }
+
+  return diagnostics;
+}
+
 function getErrorRawText(error) {
   if (error && typeof error === "object" && typeof error.llm_raw_text === "string") {
     return error.llm_raw_text;
+  }
+  if (
+    error
+    && typeof error === "object"
+    && error.stageOutput
+    && typeof error.stageOutput === "object"
+    && typeof error.stageOutput.llm_raw_text === "string"
+  ) {
+    return error.stageOutput.llm_raw_text;
   }
   return "";
 }
@@ -142,6 +199,110 @@ function stableJsonStringify(value) {
   return JSON.stringify(value);
 }
 
+function buildWorkflowV2OutputExampleText(example) {
+  return [
+    "你必须严格参考下面这个合法 JSON 输出样例，字段名必须完全一致，你只能替换其中的值，不能改字段名、不能改层级、不能省略必填字段：",
+    JSON.stringify(example, null, 2),
+  ].join("\n");
+}
+
+function validateWorkflowV2ValueAgainstSchema(value, schema, path = "root") {
+  const schemaRecord = asRecord(schema);
+  const expectedType = asText(schemaRecord.type);
+  if (!expectedType) {
+    return "";
+  }
+
+  if (expectedType === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return `${path} 必须是对象`;
+    }
+    const record = asRecord(value);
+    const properties = asRecord(schemaRecord.properties);
+    const required = Array.isArray(schemaRecord.required) ? schemaRecord.required.map((item) => asText(item)).filter(Boolean) : [];
+    for (const key of required) {
+      if (!(key in record)) {
+        return `${path}.${key} 缺失`;
+      }
+    }
+    if (schemaRecord.additionalProperties === false) {
+      for (const key of Object.keys(record)) {
+        if (!(key in properties)) {
+          return `${path}.${key} 不允许出现`;
+        }
+      }
+    }
+    for (const [key, childSchema] of Object.entries(properties)) {
+      if (!(key in record)) {
+        continue;
+      }
+      const error = validateWorkflowV2ValueAgainstSchema(record[key], childSchema, `${path}.${key}`);
+      if (error) {
+        return error;
+      }
+    }
+    return "";
+  }
+
+  if (expectedType === "array") {
+    if (!Array.isArray(value)) {
+      return `${path} 必须是数组`;
+    }
+    const itemSchema = schemaRecord.items;
+    if (itemSchema) {
+      for (let index = 0; index < value.length; index += 1) {
+        const error = validateWorkflowV2ValueAgainstSchema(value[index], itemSchema, `${path}[${index}]`);
+        if (error) {
+          return error;
+        }
+      }
+    }
+    return "";
+  }
+
+  if (expectedType === "string") {
+    return typeof value === "string" ? "" : `${path} 必须是字符串`;
+  }
+
+  if (expectedType === "number") {
+    return typeof value === "number" && Number.isFinite(value) ? "" : `${path} 必须是数字`;
+  }
+
+  if (expectedType === "boolean") {
+    return typeof value === "boolean" ? "" : `${path} 必须是布尔值`;
+  }
+
+  return "";
+}
+
+function validateWorkflowV2StructuredPayload(data, responseSchema) {
+  const schema = responseSchema && typeof responseSchema === "object" ? responseSchema.schema : null;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return "";
+  }
+  return validateWorkflowV2ValueAgainstSchema(data, schema, "root");
+}
+
+function buildWorkflowV2StructuredPayloadError(result, responseSchema, validationError) {
+  const schemaName = asText(responseSchema?.name) || "unknown_schema";
+  const normalizedResult = normalizeWorkflowV2InvokerResult(result);
+  const rawText = normalizedResult.llm_raw_text || stableJsonStringify(normalizedResult.data);
+  return attachV2StageDebug(
+    new Error(`workflow V2 LLM returned schema-mismatched JSON (${schemaName}): ${validationError}`),
+    {
+      llm_raw_text: rawText,
+      llm_response: normalizedResult.llm_response ?? null,
+      debug_error: `workflow V2 LLM returned schema-mismatched JSON (${schemaName})`,
+    },
+  );
+}
+
+function isWorkflowV2RetriableStructureError(message) {
+  const text = asText(message);
+  return text.includes("workflow V2 LLM returned invalid JSON")
+    || text.includes("workflow V2 LLM returned schema-mismatched JSON");
+}
+
 function createV2StageDebugOutput(debug = {}) {
   const output = {};
   if (debug.llm_raw !== undefined) {
@@ -159,6 +320,21 @@ function createV2StageDebugOutput(debug = {}) {
   if (typeof debug.debug_error === "string" && debug.debug_error.trim()) {
     output.debug_error = debug.debug_error;
   }
+  if (typeof debug.error_name === "string" && debug.error_name.trim()) {
+    output.error_name = debug.error_name;
+  }
+  if (typeof debug.error_code === "string" && debug.error_code.trim()) {
+    output.error_code = debug.error_code;
+  }
+  if (typeof debug.error_http_status === "string" && debug.error_http_status.trim()) {
+    output.error_http_status = debug.error_http_status;
+  }
+  if (typeof debug.error_cause_name === "string" && debug.error_cause_name.trim()) {
+    output.error_cause_name = debug.error_cause_name;
+  }
+  if (typeof debug.error_cause_code === "string" && debug.error_cause_code.trim()) {
+    output.error_cause_code = debug.error_cause_code;
+  }
   return output;
 }
 
@@ -174,6 +350,89 @@ function attachV2StageDebug(error, debug = {}) {
   return baseError;
 }
 
+function mergeFailedStageOutput(previousOutput, error) {
+  const baseOutput = previousOutput && typeof previousOutput === "object" && !Array.isArray(previousOutput)
+    ? cloneJsonValue(previousOutput, {})
+    : {};
+  const debugOutput = error && typeof error === "object" && error.stageOutput && typeof error.stageOutput === "object"
+    ? cloneJsonValue(error.stageOutput, {})
+    : {};
+  const merged = {
+    ...baseOutput,
+    ...debugOutput,
+  };
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+function createWorkflowV2AbortError(message = "workflow V2 已被用户终止") {
+  const error = new Error(asText(message) || "workflow V2 已被用户终止");
+  error.name = "AbortError";
+  return error;
+}
+
+function getWorkflowV2AbortReason(signal, fallbackMessage = "workflow V2 已被用户终止") {
+  if (!signal) {
+    return createWorkflowV2AbortError(fallbackMessage);
+  }
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === "string" && reason.trim()) {
+    return createWorkflowV2AbortError(reason);
+  }
+  return createWorkflowV2AbortError(fallbackMessage);
+}
+
+function throwIfWorkflowV2Aborted(signal, fallbackMessage = "workflow V2 已被用户终止") {
+  if (signal?.aborted) {
+    throw getWorkflowV2AbortReason(signal, fallbackMessage);
+  }
+}
+
+function createCombinedAbortSignal(signals) {
+  const activeSignals = (Array.isArray(signals) ? signals : []).filter((signal) => signal && typeof signal.aborted === "boolean");
+  if (activeSignals.length === 0) {
+    return {
+      signal: undefined,
+      cleanup() {},
+    };
+  }
+  if (activeSignals.length === 1) {
+    return {
+      signal: activeSignals[0],
+      cleanup() {},
+    };
+  }
+
+  const controller = new AbortController();
+  const listeners = [];
+  const abortFromSignal = (signal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(getWorkflowV2AbortReason(signal));
+    }
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abortFromSignal(signal);
+      break;
+    }
+    const listener = () => abortFromSignal(signal);
+    signal.addEventListener("abort", listener, { once: true });
+    listeners.push({ signal, listener });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup() {
+      for (const item of listeners) {
+        item.signal.removeEventListener("abort", item.listener);
+      }
+    },
+  };
+}
+
 function compactV2EnsembleEntry(result, extra = {}) {
   if (!result || typeof result !== "object") {
     return {
@@ -186,6 +445,15 @@ function compactV2EnsembleEntry(result, extra = {}) {
     ...extra,
     data: result.data ?? result.llm_raw ?? null,
     raw_text: asText(result.llm_raw_text),
+  };
+}
+
+function normalizeWorkflowV2InvokerResult(result) {
+  return {
+    llm_raw: result?.llm_raw ?? result?.data ?? result,
+    llm_raw_text: asText(result?.llm_raw_text),
+    llm_response: result?.llm_response,
+    data: result?.data ?? result?.llm_raw ?? result,
   };
 }
 
@@ -237,7 +505,15 @@ function mergeWorkflowV2SharedValue(left, right, fieldName = "") {
   return cloneJsonValue([left, right], []);
 }
 
-function buildResponseFormat(responseSchema) {
+function buildResponseFormat(responseSchema, mode = "json_schema") {
+  if (mode === "none") {
+    return null;
+  }
+  if (mode === "json_object") {
+    return {
+      type: "json_object",
+    };
+  }
   if (!responseSchema || typeof responseSchema !== "object") {
     return null;
   }
@@ -543,7 +819,18 @@ function emptyWorkflowV2Result(document = null) {
       total_objects: 0,
       total_edges: 0,
       total_isolated_objects: 0,
+      total_removed_cycle_edges: 0,
       is_dag: true,
+      system_scope_focus: "",
+      system_scope_candidates: [],
+      document_abstraction_level: "",
+      structure_quality_score: 0,
+      structure_is_sound: false,
+      structure_orphan_count: 0,
+      structure_root_count: 0,
+      structure_max_depth: 0,
+      structure_too_flat_warning: "",
+      structure_mixed_granularity_warning: "",
     },
   };
 }
@@ -584,6 +871,8 @@ function buildWorkflowV2ResultFromState(state) {
   const objects = Array.isArray(safeState.fused_objects) ? safeState.fused_objects : [];
   const edges = Array.isArray(safeState.edges) ? safeState.edges : [];
   const nodeIds = objects.map((item) => asText(item?.object_id)).filter(Boolean);
+  const systemScope = asRecord(safeState.system_scope);
+  const structureQuality = asRecord(safeState.structure_quality);
   return {
     document: safeState.document ?? null,
     chunks: Array.isArray(safeState.chunks) ? safeState.chunks : [],
@@ -597,7 +886,18 @@ function buildWorkflowV2ResultFromState(state) {
       total_objects: objects.length,
       total_edges: edges.length,
       total_isolated_objects: objects.filter((item) => item?.is_isolated === true).length,
+      total_removed_cycle_edges: Array.isArray(safeState.removed_cycle_edges) ? safeState.removed_cycle_edges.length : 0,
       is_dag: computeTopologicalOrder(edges, nodeIds).cyclicNodeIds.length === 0,
+      system_scope_focus: asText(systemScope.document_focus),
+      system_scope_candidates: uniqueStrings(systemScope.primary_system_candidates),
+      document_abstraction_level: asText(systemScope.document_abstraction_level),
+      structure_quality_score: Number(structureQuality.quality_score ?? 0) || 0,
+      structure_is_sound: structureQuality.is_structurally_sound === true,
+      structure_orphan_count: Number(structureQuality.orphan_count ?? 0) || 0,
+      structure_root_count: Number(structureQuality.root_count ?? 0) || 0,
+      structure_max_depth: Number(structureQuality.max_depth ?? 0) || 0,
+      structure_too_flat_warning: asText(structureQuality.too_flat_warning),
+      structure_mixed_granularity_warning: asText(structureQuality.mixed_granularity_warning),
     },
   };
 }
@@ -625,6 +925,165 @@ function computeObjectDepthMap(objects, edges) {
   }
 
   return depthMap;
+}
+
+function countWorkflowV2Values(values) {
+  const counter = {};
+  for (const value of values) {
+    const normalized = asText(value);
+    if (!normalized) {
+      continue;
+    }
+    counter[normalized] = (counter[normalized] ?? 0) + 1;
+  }
+  return counter;
+}
+
+function normalizeWorkflowV2DisplayName(value) {
+  const text = normalizeWhitespace(value)
+    .replace(/^[的该本此这那一个种类项款型版式套份台类]+/, "")
+    .replace(/[：:，,、。；;（）()\[\]【】\s]+$/g, "")
+    .trim();
+  if (!text) {
+    return "";
+  }
+  const segments = text.split("的").map((item) => item.trim()).filter(Boolean);
+  const candidate = segments.at(-1) || text;
+  if (candidate.length > 24) {
+    return candidate.slice(-24);
+  }
+  return candidate;
+}
+
+function splitWorkflowV2Sentences(text) {
+  return asText(text)
+    .split(/[。！？!\n；;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function deriveWorkflowV2ScopeCandidates(chunks, rawText) {
+  const scored = new Map();
+  const evidenceChunkIds = new Map();
+  const firstSeen = new Map();
+  const chunkList = Array.isArray(chunks) ? chunks : [];
+
+  const rememberCandidate = (candidate, chunkId, order) => {
+    const normalized = normalizeWorkflowV2DisplayName(candidate);
+    if (normalized.length < 2 || normalized.length > 24) {
+      return;
+    }
+    scored.set(normalized, (scored.get(normalized) ?? 0) + 1);
+    if (!firstSeen.has(normalized)) {
+      firstSeen.set(normalized, order);
+    }
+    if (chunkId) {
+      const currentChunkIds = evidenceChunkIds.get(normalized) ?? new Set();
+      currentChunkIds.add(chunkId);
+      evidenceChunkIds.set(normalized, currentChunkIds);
+    }
+  };
+
+  const scopePatterns = [
+    /^(.{1,24}?)(?:主要)?(?:包含|包括|含有|拥有)/,
+    /^(.{1,24}?)(?:主要)?由.+?(?:组成|构成)/,
+    /^(.{1,24}?)(?:主要)?分为/,
+  ];
+
+  chunkList.forEach((chunk, index) => {
+    const chunkId = asText(chunk?.chunk_id);
+    for (const sentence of splitWorkflowV2Sentences(chunk?.text)) {
+      for (const pattern of scopePatterns) {
+        const match = sentence.match(pattern);
+        if (match?.[1]) {
+          rememberCandidate(match[1], chunkId, index);
+          break;
+        }
+      }
+    }
+  });
+
+  if (scored.size === 0) {
+    const fallbackSentence = splitWorkflowV2Sentences(rawText)[0] || "";
+    rememberCandidate(fallbackSentence.slice(0, 24), chunkList[0]?.chunk_id, 0);
+  }
+
+  return [...scored.entries()]
+    .sort((left, right) => {
+      if (left[1] !== right[1]) {
+        return right[1] - left[1];
+      }
+      const leftOrder = firstSeen.get(left[0]) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = firstSeen.get(right[0]) ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return left[0].localeCompare(right[0], "zh-Hans-CN");
+    })
+    .slice(0, 5)
+    .map(([name, count]) => ({
+      name,
+      count,
+      evidence_chunk_ids: [...(evidenceChunkIds.get(name) ?? new Set())],
+    }));
+}
+
+function inferWorkflowV2AbstractionLevel(chunks, rawText, scopeCandidates) {
+  const chunkList = Array.isArray(chunks) ? chunks : [];
+  const averageChunkLength = chunkList.length > 0
+    ? chunkList.reduce((sum, chunk) => sum + asText(chunk?.text).length, 0) / chunkList.length
+    : 0;
+  const structureSignalCount = (asText(rawText).match(/包含|包括|组成|构成|分为|模块|系统|子系统/g) ?? []).length;
+  if (chunkList.length >= 5 || (scopeCandidates.length >= 2 && structureSignalCount >= 3)) {
+    return "mixed_depth";
+  }
+  if (averageChunkLength >= 120 || structureSignalCount >= 2) {
+    return "system_overview";
+  }
+  return "component_detail";
+}
+
+function inferWorkflowV2ObjectLevel(object) {
+  const name = asText(object?.object_name);
+  const normalized = `${name} ${asText(object?.normalized_name)}`.toLowerCase();
+  const citationsText = uniqueStrings(object?.citations).join(" ");
+
+  if (/(功能|流程|机制|协议|算法|逻辑|策略|服务|能力|规则)$/.test(name) || /(workflow|logic|service|algorithm|protocol|function)/.test(normalized)) {
+    return {
+      level: "function_unit",
+      confidence: 0.82,
+      reason: "名称更像功能、机制或规则单元，适合归到 function_unit。",
+    };
+  }
+  if (/(子系统|模块|单元|总成|机构|组件组|控制器|集群)$/.test(name) || /(subsystem|module|controller|cluster)/.test(normalized)) {
+    return {
+      level: "subsystem",
+      confidence: 0.8,
+      reason: "名称带有模块化或中层结构特征，更接近 subsystem。",
+    };
+  }
+  if (/(系统|平台|架构|网络|整车|电脑|主机|设备|装置)$/.test(name) || /(system|platform|network|computer|device)/.test(normalized)) {
+    return {
+      level: "system",
+      confidence: 0.84,
+      reason: "名称本身呈现总体系统或设备级对象，更适合标为 system。",
+    };
+  }
+  if (/(cpu|gpu|alu|reg|core|sensor|cache|engine|motor|valve|pump|chip|board|register|module)/.test(normalized)
+    || /芯片|传感器|寄存器|核心|电机|阀|泵|电路|板|部件|组件/.test(name)
+    || citationsText.includes("作为")
+  ) {
+    return {
+      level: "component",
+      confidence: 0.78,
+      reason: "对象名称更像可被进一步组合的实体部件，优先归到 component。",
+    };
+  }
+  return {
+    level: "component",
+    confidence: 0.62,
+    reason: "当前缺少更强的层级信号，先按 component 兜底，后续可结合结构边继续修正。",
+  };
 }
 
 function buildV2EntityFilename(object, usedSlugs) {
@@ -668,7 +1127,6 @@ function summarizeV2Ablation(parentSummary, objectName, objectId) {
     observation: importantChildren.length > 0
       ? `child_importance=${importantChildren.join(", ")}`
       : asText(parentSummary.reason),
-    small_reason: asText(parentSummary.reason) || `${objectName} 的消融分析摘要来自 V2 工作流。`,
     evidence: importantChildren,
   };
 }
@@ -704,8 +1162,13 @@ function buildWorkflowV2EntityFile({
       core_function: coreFunction,
       function_confidence: clampConfidence(object?.function_confidence, 0.5),
       function_reason: asText(object?.function_reason),
+      object_level: asText(object?.object_level),
+      granularity_confidence: clampConfidence(object?.granularity_confidence, 0.5),
+      granularity_reason: asText(object?.granularity_reason),
       structure_status: asText(object?.structure_status),
       structure_reason: asText(object?.structure_reason),
+      structure_depth: asInteger(object?.structure_depth, 0, 0),
+      structural_role: asText(object?.structural_role),
       v2_ablation_summary: ablation,
     },
     abilities: coreFunction ? [coreFunction] : [],
@@ -844,12 +1307,33 @@ function buildWindowExtractPrompt(window) {
       "如果一个短语还能自然拆成多个独立实体词，则不要把该短语整体当成 object_name 返回，而应分别返回更小的实体。",
       "只有当一个词组在原文中作为固定概念、专有名词或不可再分的整体出现时，才允许把它作为单个 object_name。",
       "优先抽取名词性实体、组成项、部件名、概念名、对象名，不要把完整句子、描述性短语或关系短语当成实体。",
+      "如果文本出现“A 由 XXX 组成”“A 包含 XXX”“A 包括 XXX”这类结构表达，必须同时提取整体对象 A 和其中出现的组成项 XXX，不能只提取其中一侧。",
+      "当一句话同时给出整体与组成关系时，整体对象、各个直接组成项都要分别列入 objects。",
       "每个 object 必须包含 object_name、normalized_name、citation、confidence、reason。",
       "citation 必须直接来自窗口原文，并尽量完整包含与该对象有关的全部原文内容。",
       "不要只截取对象名称本身或过短片段；如果同一窗口中有多处原文共同描述该对象，请尽量都收录到 citation 数组。",
       "citation 应优先保留完整句子、完整分句或必要的相邻上下文，避免截断导致语义缺失。",
       "confidence 必须是 0 到 1 之间的小数。",
       "如果没有合适对象，返回空数组。",
+      buildWorkflowV2OutputExampleText({
+        objects: [
+          {
+            object_name: "机械狗",
+            normalized_name: "机械狗",
+            citation: ["机械狗由外壳、芯片、电源构成。"],
+            confidence: 0.98,
+            reason: "原文明确提到整体对象机械狗，并给出了它的组成关系。",
+          },
+          {
+            object_name: "外壳",
+            normalized_name: "外壳",
+            citation: ["机械狗由外壳、芯片、电源构成。"],
+            confidence: 0.96,
+            reason: "原文明确提到外壳是机械狗的直接组成项。",
+          },
+        ],
+        reason: "已提取该窗口中的整体对象及其直接组成项。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_window_extract",
@@ -892,6 +1376,13 @@ function buildFusionJudgePrompt(existingObject, candidate) {
       "只根据给定名称、别名和 citations 判断两个候选对象是否应视为同一对象。",
       "如果语义一致则 should_merge=true，否则 false。",
       "不要引入外部知识。",
+      buildWorkflowV2OutputExampleText({
+        should_merge: true,
+        object_name: "机械狗",
+        normalized_name: "机械狗",
+        aliases: ["机械狗系统", "机器狗"],
+        reason: "两个候选在 citations 中指向同一设备对象，只是称呼略有差异。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_fusion_judge",
@@ -925,6 +1416,12 @@ function buildObjectFunctionPrompt(object) {
       "允许结合 citation 上下文做必要归纳，但不要脱离 citation 任意发挥。",
       "citation 必须包含支撑该核心功能的原文，尽量保留完整句子、完整分句或必要上下文。",
       "如果核心功能不清晰，也要给出最稳妥的单一核心功能判断，并在 reason 中说明依据。",
+      buildWorkflowV2OutputExampleText({
+        core_function: "执行环境感知与运动控制",
+        citation: ["机械狗通过芯片处理信号，并由电源供能驱动整机运行。"],
+        confidence: 0.88,
+        reason: "引用内容同时支撑其感知处理与整机运行能力，因此归纳为环境感知与运动控制。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_object_function",
@@ -961,6 +1458,27 @@ function buildObjectDecomposePrompt(object) {
       "如果 citation 主要描述的是功能、用途、流程、依赖、因果、时序或交互关系，不要提取为 contains。",
       "relation 只能写 contains。",
       "可以使用必要知识辅助判断，但不要脱离 citation 主题随意补充无依据的子对象。",
+      buildWorkflowV2OutputExampleText({
+        decompositions: [
+          {
+            parent_object_name: "机械狗",
+            child_object_name: "外壳",
+            relation: "contains",
+            citation: "机械狗由外壳、芯片、电源构成。",
+            confidence: 0.95,
+            reason: "citation 明确说明外壳是机械狗的直接组成部分。",
+          },
+          {
+            parent_object_name: "机械狗",
+            child_object_name: "芯片",
+            relation: "contains",
+            citation: "机械狗由外壳、芯片、电源构成。",
+            confidence: 0.95,
+            reason: "citation 明确说明芯片是机械狗的直接组成部分。",
+          },
+        ],
+        reason: "已提取对象的直接组成关系；若没有直接组成关系则返回空数组。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_object_decompose",
@@ -1016,6 +1534,10 @@ function buildCycleResolvePrompt(cycleEdges) {
       "你是一个有向无环图裁决器。",
       "请在构成环的边中删除最弱的一条。",
       "优先保留证据更强、citation 更明确、confidence 更高的边。",
+      buildWorkflowV2OutputExampleText({
+        remove_edge_id: "edge-cpu-to-computer",
+        reason: "这条边的证据更弱，删除后可打破环且保留主要结构关系。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_cycle_resolve",
@@ -1042,6 +1564,17 @@ function buildSiblingAblationPrompt(parent, ablatedChild, siblings, localEdges) 
       "请分析去除某个子节点后，对其兄弟节点的影响。",
       "只能基于输入对象、edges 和 citations 判断。",
       "impact_level 只能是 none、low、medium、high。",
+      buildWorkflowV2OutputExampleText({
+        sibling_impacts: [
+          {
+            target_sibling_object_id: "obj-power",
+            impact_level: "medium",
+            judgement: "外壳缺失会削弱对电源模块的保护与集成稳定性。",
+            reason: "citation 表明外壳承担封装和承载作用，因此去除后会中度影响同级模块工作环境。",
+          },
+        ],
+        reason: "已分析被消融子节点对各兄弟节点的影响程度。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_sibling_ablation",
@@ -1087,6 +1620,15 @@ function buildParentAblationPrompt(parent, ablatedChild, children, localEdges) {
       "如果去掉该子节点后父节点仍可完成核心功能，则 importance_level 倾向 none 或 low；若明显削弱但仍可部分完成，则倾向 medium；若无法完成或基本失去核心功能，则倾向 high 或 critical。",
       "只能基于输入数据判断。",
       "importance_level 只能是 none、low、medium、high、critical。",
+      buildWorkflowV2OutputExampleText({
+        impact_on_parent: {
+          parent_object_id: "obj-dog",
+          importance_level: "high",
+          judgement: "去掉电源后，父系统将难以维持核心运行能力。",
+          reason: "父对象的核心功能依赖持续供能，因此电源缺失会显著破坏其核心功能。",
+        },
+        reason: "已完成对子节点缺失时父节点核心功能保持情况的判断。",
+      }),
     ].join("\n"),
     responseSchema: {
       name: "workflow_v2_parent_ablation",
@@ -1454,6 +1996,16 @@ function buildWorkflowV2ConflictJudgePrompt({
       retryHint ? `补充要求：${retryHint}` : "",
       "原始任务要求如下：",
       instruction,
+      buildWorkflowV2OutputExampleText({
+        resolved_conflicts: [
+          {
+            item_key: "机械狗::外壳::contains",
+            selected_model: "model_b",
+            reason: "model_b 的字段更完整，且更符合当前阶段 schema。",
+          },
+        ],
+        reason: "已逐条选择更符合任务约束与字段要求的一侧结果。",
+      }),
     ].filter(Boolean).join("\n"),
     responseSchema: WORKFLOW_V2_PICK_CONFLICT_RESPONSE_SCHEMA,
     payload: {
@@ -1497,6 +2049,18 @@ function buildWorkflowV2ConflictReviewPrompt({
       retryHint ? `补充要求：${retryHint}` : "",
       "原始任务要求如下：",
       instruction,
+      buildWorkflowV2OutputExampleText({
+        conflict_reviews: [
+          {
+            item_key: "机械狗::外壳::contains",
+            preferred_model: "model_b",
+            confidence: 0.82,
+            reason: "model_b 的字段更完整，保留了当前阶段需要的关键结构字段。",
+            suggestion: "优先选 model_b，因为它更符合 schema 且证据表达更完整。",
+          },
+        ],
+        round_summary: "本轮主要建议优先保留字段完整、结构更稳定的一侧输出。",
+      }),
     ].filter(Boolean).join("\n"),
     responseSchema: WORKFLOW_V2_CONFLICT_REVIEW_RESPONSE_SCHEMA,
     payload: {
@@ -1712,7 +2276,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
     this.windowSize = asInteger(options.windowSize, DEFAULT_WINDOW_SIZE, 2);
     this.windowStep = asInteger(options.windowStep, DEFAULT_WINDOW_STEP, 1);
     this.parallelWindows = asInteger(options.parallelWindows, DEFAULT_PARALLEL_WINDOWS, 1);
-    this.workflowLlmTimeoutMs = asInteger(options.workflowLlmTimeoutMs, DEFAULT_WORKFLOW_LLM_TIMEOUT_MS, 1000);
+    this.workflowLlmTimeoutMs = asNumber(options.workflowLlmTimeoutMs, DEFAULT_WORKFLOW_LLM_TIMEOUT_MS, 0);
     this.ablationParentConcurrency = asInteger(options.ablationParentConcurrency, DEFAULT_ABLATION_PARENT_CONCURRENCY, 1);
     this.ablationChildConcurrency = asInteger(options.ablationChildConcurrency, DEFAULT_ABLATION_CHILD_CONCURRENCY, 1);
     this.workflowJudgeModel = asText(options.workflowJudgeModel) || this.workflowModelA;
@@ -1877,7 +2441,9 @@ export class WorkflowV2Service extends LinearWorkflowService {
     responseSchema = null,
     retryHint = "",
     modelOverride = "",
-    temperature = 0,
+    temperature = DEFAULT_WORKFLOW_LLM_TEMPERATURE,
+    responseFormatMode = "none",
+    signal,
   }) {
     if (!this.workflowLlmApiKey || !this.workflowLlmBaseUrl) {
       await this.refreshWorkflowConfigFromResolver();
@@ -1885,6 +2451,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
     if (!this.workflowLlmApiKey || !this.workflowLlmBaseUrl) {
       throw new Error("workflow LLM is not configured");
     }
+    throwIfWorkflowV2Aborted(signal);
 
     const requestBody = {
       model: asText(modelOverride) || this.workflowModelA,
@@ -1911,13 +2478,16 @@ export class WorkflowV2Service extends LinearWorkflowService {
         },
       ],
     };
-    const responseFormat = buildResponseFormat(responseSchema);
+    const responseFormat = buildResponseFormat(responseSchema, responseFormatMode);
     if (responseFormat) {
       requestBody.response_format = responseFormat;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error(`workflow V2 LLM request timed out after ${this.workflowLlmTimeoutMs}ms`)), this.workflowLlmTimeoutMs);
+    const timeoutController = this.workflowLlmTimeoutMs > 0 ? new AbortController() : null;
+    const { signal: requestSignal, cleanup: cleanupRequestSignal } = createCombinedAbortSignal([signal, timeoutController?.signal]);
+    const timeoutId = this.workflowLlmTimeoutMs > 0
+      ? setTimeout(() => timeoutController?.abort(new Error(`workflow V2 LLM request timed out after ${this.workflowLlmTimeoutMs}ms`)), this.workflowLlmTimeoutMs)
+      : null;
     let response;
     try {
       response = await fetch(`${this.workflowLlmBaseUrl.replace(/\/$/, "")}/chat/completions`, {
@@ -1927,19 +2497,36 @@ export class WorkflowV2Service extends LinearWorkflowService {
           Authorization: `Bearer ${this.workflowLlmApiKey}`,
         },
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
+        signal: requestSignal,
       });
     } catch (error) {
-      if (error?.name === "AbortError") {
+      if (timeoutController?.signal?.aborted) {
         throw new Error(`workflow V2 LLM request timed out after ${this.workflowLlmTimeoutMs}ms`);
       }
-      throw error;
+      if (signal?.aborted) {
+        throw getWorkflowV2AbortReason(signal);
+      }
+      if (error?.name === "AbortError" && requestSignal?.aborted) {
+        throw getWorkflowV2AbortReason(requestSignal);
+      }
+      throw attachV2StageDebug(error, {
+        ...getErrorDiagnostics(error),
+      });
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      cleanupRequestSignal();
     }
+    throwIfWorkflowV2Aborted(signal);
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`workflow V2 LLM request failed: ${response.status} ${text}`);
+      throw attachV2StageDebug(new Error(`workflow V2 LLM request failed: ${response.status} ${text}`), {
+        error_name: "HttpError",
+        error_code: String(response.status),
+        error_http_status: String(response.status),
+        llm_raw_text: text,
+      });
     }
 
     const responseText = await response.text();
@@ -1960,6 +2547,15 @@ export class WorkflowV2Service extends LinearWorkflowService {
         debug_error: "workflow V2 LLM returned invalid JSON",
       });
     }
+    const validationError = validateWorkflowV2StructuredPayload(parsed, responseSchema);
+    if (validationError) {
+      throw buildWorkflowV2StructuredPayloadError({
+        llm_raw: parsed,
+        llm_raw_text: content,
+        llm_response: json,
+        data: parsed,
+      }, responseSchema, validationError);
+    }
     return {
       llm_raw: parsed,
       llm_raw_text: content,
@@ -1968,12 +2564,89 @@ export class WorkflowV2Service extends LinearWorkflowService {
     };
   }
 
+  async invokeWorkflowV2JsonSingleWithRetry({
+    stage,
+    instruction,
+    payload,
+    responseSchema = null,
+    retryHint = "",
+    modelOverride = "",
+    temperature = DEFAULT_WORKFLOW_LLM_TEMPERATURE,
+    ensembleRole = "dual_run",
+    ensembleModelKey = "",
+    signal,
+  }) {
+    const responseFormatModes = ["none", "none", "none"];
+    const retryTemperatures = [
+      temperature,
+      0.3,
+      0.7,
+    ].filter((value, index, list) => list.indexOf(value) === index);
+    let lastError = null;
+
+    for (let index = 0; index < retryTemperatures.length; index += 1) {
+      const nextTemperature = retryTemperatures[index];
+      const nextResponseFormatMode = responseFormatModes[Math.min(index, responseFormatModes.length - 1)];
+      const nextRetryHint = index === 0
+        ? retryHint
+        : [
+          retryHint,
+          "上一次返回内容无法解析为合法 JSON。请这次只输出一个完整、闭合、可直接 JSON.parse 的 JSON 对象，不要省略括号、不要重复引号，也不要输出任何解释文本。",
+        ].filter(Boolean).join("\n");
+      try {
+        const result = normalizeWorkflowV2InvokerResult(await this.llmJsonInvokerBase({
+          stage,
+          instruction,
+          payload,
+          responseSchema,
+          retryHint: nextRetryHint,
+          temperature: nextTemperature,
+          modelOverride,
+          ensembleRole,
+          ensembleModelKey,
+          responseFormatMode: nextResponseFormatMode,
+          signal,
+        }));
+        const validationError = validateWorkflowV2StructuredPayload(result.data, responseSchema);
+        if (validationError) {
+          throw buildWorkflowV2StructuredPayloadError(result, responseSchema, validationError);
+        }
+        return result;
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isWorkflowV2RetriableStructureError(message)) {
+          throw error;
+        }
+        if (index < retryTemperatures.length - 1) {
+          continue;
+        }
+      }
+    }
+
+    const fallbackMessage = lastError instanceof Error ? lastError.message : "workflow V2 LLM returned invalid JSON";
+    const finalError = attachV2StageDebug(
+      new Error(`${fallbackMessage} after ${retryTemperatures.length} attempts`),
+      {
+        ...(lastError && typeof lastError === "object" && lastError.stageOutput && typeof lastError.stageOutput === "object"
+          ? lastError.stageOutput
+          : {}),
+        llm_raw_text: getErrorRawText(lastError),
+      },
+    );
+    if (getErrorRawText(lastError)) {
+      finalError.llm_raw_text = getErrorRawText(lastError);
+    }
+    throw finalError;
+  }
+
   async invokeStageJson(input) {
     const stage = asText(input?.stage) || "unknown";
     const instruction = asText(input?.instruction);
     const payload = input?.payload;
     const responseSchema = input?.responseSchema ?? null;
     const retryHint = asText(input?.retryHint);
+    const signal = input?.signal;
     const modelRuns = [
       { key: "model_a", model: this.workflowModelA || this.workflowModel },
       { key: "model_b", model: this.workflowModelB || this.workflowModelA || this.workflowModel },
@@ -2003,31 +2676,26 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
     const modelResults = await Promise.all(modelRuns.map(async (modelRun) => {
       try {
-        const result = await this.llmJsonInvokerBase({
+        const result = await this.invokeWorkflowV2JsonSingleWithRetry({
           stage,
           instruction,
           payload,
           responseSchema,
           retryHint,
-          temperature: 0,
+          temperature: DEFAULT_WORKFLOW_LLM_TEMPERATURE,
           modelOverride: modelRun.model,
           ensembleRole: "dual_run",
           ensembleModelKey: modelRun.key,
+          signal,
         });
-        const normalizedResult = {
-          llm_raw: result?.llm_raw ?? result?.data ?? result,
-          llm_raw_text: asText(result?.llm_raw_text),
-          llm_response: result?.llm_response,
-          data: result?.data ?? result?.llm_raw ?? result,
-        };
-        llmEnsemble.models[modelRun.key].single_result = compactV2EnsembleEntry(normalizedResult, {
+        llmEnsemble.models[modelRun.key].single_result = compactV2EnsembleEntry(result, {
           model: modelRun.model,
           status: "completed",
         });
         return {
           ok: true,
           modelRun,
-          result: normalizedResult,
+          result,
         };
       } catch (error) {
         llmEnsemble.models[modelRun.key].single_result = {
@@ -2036,6 +2704,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           raw_text: getErrorRawText(error),
           status: "failed",
           error: getErrorMessage(error, "workflow V2 LLM request failed"),
+          ...getErrorDiagnostics(error),
         };
         return {
           ok: false,
@@ -2103,27 +2772,22 @@ export class WorkflowV2Service extends LinearWorkflowService {
         });
 
         try {
-          const reviewResult = await this.llmJsonInvokerBase({
+          const reviewResult = await this.invokeWorkflowV2JsonSingleWithRetry({
             stage,
             instruction: reviewPrompt.instruction,
             payload: reviewPrompt.payload,
             responseSchema: reviewPrompt.responseSchema,
             retryHint: "",
-            temperature: 0,
+            temperature: DEFAULT_WORKFLOW_LLM_TEMPERATURE,
             modelOverride: reviewer.model,
             ensembleRole: "cross_round",
             ensembleModelKey: reviewer.key,
+            signal,
           });
-          const normalizedReviewResult = {
-            llm_raw: reviewResult?.llm_raw ?? reviewResult?.data ?? reviewResult,
-            llm_raw_text: asText(reviewResult?.llm_raw_text),
-            llm_response: reviewResult?.llm_response,
-            data: reviewResult?.data ?? reviewResult?.llm_raw ?? reviewResult,
-          };
-          const normalizedReview = normalizeWorkflowV2ReviewResult(normalizedReviewResult.data, comparison.conflicts);
+          const normalizedReview = normalizeWorkflowV2ReviewResult(reviewResult.data, comparison.conflicts);
           const roundData = buildWorkflowV2ReviewRoundData(comparison.conflicts, normalizedReview, reviewer);
           const roundEntry = compactV2EnsembleEntry({
-            ...normalizedReviewResult,
+            ...reviewResult,
             data: roundData,
           }, {
             round: index + 1,
@@ -2170,26 +2834,21 @@ export class WorkflowV2Service extends LinearWorkflowService {
         reviewRounds: completedReviews,
       });
       try {
-        judgeResult = await this.llmJsonInvokerBase({
+        judgeResult = await this.invokeWorkflowV2JsonSingleWithRetry({
           stage,
           instruction: judgePrompt.instruction,
           payload: judgePrompt.payload,
           responseSchema: judgePrompt.responseSchema,
           retryHint: "",
-          temperature: 0,
+          temperature: DEFAULT_WORKFLOW_LLM_TEMPERATURE,
           modelOverride: this.workflowJudgeModel || this.workflowModelA,
           ensembleRole: "judge_pick",
           ensembleModelKey: "judge",
+          signal,
         });
-        const normalizedJudgeResult = {
-          llm_raw: judgeResult?.llm_raw ?? judgeResult?.data ?? judgeResult,
-          llm_raw_text: asText(judgeResult?.llm_raw_text),
-          llm_response: judgeResult?.llm_response,
-          data: judgeResult?.data ?? judgeResult?.llm_raw ?? judgeResult,
-        };
-        const normalizedSelections = normalizeWorkflowV2JudgeResult(normalizedJudgeResult.data, comparison.conflicts);
+        const normalizedSelections = normalizeWorkflowV2JudgeResult(judgeResult.data, comparison.conflicts);
         llmEnsemble.judge_result = compactV2EnsembleEntry({
-          ...normalizedJudgeResult,
+          ...judgeResult,
           data: normalizedSelections,
         }, {
           model: this.workflowJudgeModel || this.workflowModelA,
@@ -2295,6 +2954,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       mimeType: asText(snapshot?.input_file?.mimeType) || "text/plain",
       resumeFromStageIndex: retryValidation.stageIndex,
       resumeSnapshot: snapshot,
+      signal: input?.signal,
       handlers: input?.handlers,
     });
   }
@@ -2609,6 +3269,27 @@ export class WorkflowV2Service extends LinearWorkflowService {
     };
   }
 
+  async systemScopeIdentifyStage(document, chunks, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
+    const rawText = asText(document?.raw_text);
+    const scopeCandidates = deriveWorkflowV2ScopeCandidates(chunks, rawText);
+    const primarySystemCandidates = scopeCandidates.map((item) => item.name);
+    const evidenceChunkIds = uniqueStrings(scopeCandidates.flatMap((item) => item.evidence_chunk_ids));
+    const documentFocus = primarySystemCandidates[0] || asText(document?.file_name) || "未识别主系统";
+    const documentAbstractionLevel = inferWorkflowV2AbstractionLevel(chunks, rawText, scopeCandidates);
+
+    return {
+      primary_system_candidates: primarySystemCandidates,
+      document_focus: documentFocus,
+      document_abstraction_level: documentAbstractionLevel,
+      evidence_chunk_ids: evidenceChunkIds,
+      scope_reason: primarySystemCandidates.length > 0
+        ? `已根据分块文本中的“包含/组成/构成”等结构信号，锁定 ${documentFocus} 作为当前文档的主系统候选。`
+        : "当前文本的系统边界信号较弱，因此只保留了保守的主系统候选。",
+      reason: "已完成文档范围识别，用于给后续对象抽取和系统拆解建立统一叙事视角。",
+    };
+  }
+
   buildWindows(chunks) {
     if (!Array.isArray(chunks) || chunks.length === 0) {
       return [];
@@ -2638,70 +3319,125 @@ export class WorkflowV2Service extends LinearWorkflowService {
   }
 
   async windowExtractStage(document, chunks, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
     const windows = this.buildWindows(chunks);
-    let completedWindows = 0;
+    let processedWindows = 0;
+    let failedWindowsCount = 0;
     options?.onProgress?.({
       stage: "window_extract",
       completed: 0,
       total: windows.length,
+      failed: 0,
       parallel: this.parallelWindows,
       message: windows.length > 0
-        ? `第二阶段窗口抽取进行中：已完成 0 / ${windows.length} 个窗口。`
-        : "第二阶段没有可执行的滑动窗口。",
+        ? `第三阶段窗口抽取进行中：已完成 0 / ${windows.length} 个窗口。`
+        : "第三阶段没有可执行的滑动窗口。",
     });
     const windowResults = await mapWithConcurrency(
       windows,
       this.parallelWindows,
       async (window) => {
+        throwIfWorkflowV2Aborted(options?.signal);
         const prompt = buildWindowExtractPrompt(window);
-        const llmResult = await this.invokeStageJson({
-          stage: "window_extract",
-          instruction: prompt.instruction,
-          payload: prompt.payload,
-          responseSchema: prompt.responseSchema,
-        });
-        const payload = asRecord(llmResult.data);
-        const objects = Array.isArray(payload.objects) ? payload.objects.map((item) => {
-          const record = asRecord(item);
-          const objectName = asText(record.object_name);
-          const normalizedName = normalizeObjectName(record.normalized_name || objectName);
+        try {
+          const llmResult = await this.invokeStageJson({
+            stage: "window_extract",
+            instruction: prompt.instruction,
+            payload: prompt.payload,
+            responseSchema: prompt.responseSchema,
+            signal: options?.signal,
+          });
+          const payload = asRecord(llmResult.data);
+          const objects = Array.isArray(payload.objects) ? payload.objects.map((item) => {
+            const record = asRecord(item);
+            const objectName = asText(record.object_name);
+            const normalizedName = normalizeObjectName(record.normalized_name || objectName);
+            return {
+              object_name: objectName,
+              normalized_name: normalizedName,
+              citation: uniqueStrings(record.citation),
+              confidence: clampConfidence(record.confidence, 0.5),
+              reason: asText(record.reason) || `${objectName || "该对象"} 在窗口文本中被识别为独立对象。`,
+            };
+          }).filter((item) => item.object_name && item.normalized_name) : [];
+          processedWindows += 1;
+          options?.onProgress?.({
+            stage: "window_extract",
+            completed: processedWindows,
+            total: windows.length,
+            failed: failedWindowsCount,
+            parallel: this.parallelWindows,
+            window_id: window.window_id,
+            message: `第三阶段窗口抽取进行中：已完成 ${processedWindows} / ${windows.length} 个窗口，失败 ${failedWindowsCount} 个。`,
+          });
           return {
-            object_name: objectName,
-            normalized_name: normalizedName,
-            citation: uniqueStrings(record.citation),
-            confidence: clampConfidence(record.confidence, 0.5),
-            reason: asText(record.reason) || `${objectName || "该对象"} 在窗口文本中被识别为独立对象。`,
+            window_id: window.window_id,
+            objects,
+            reason: asText(payload.reason) || "该窗口已完成对象抽取。",
+            llm_ensemble: llmResult.llm_ensemble ?? null,
+            failed_window: null,
           };
-        }).filter((item) => item.object_name && item.normalized_name) : [];
-        completedWindows += 1;
-        options?.onProgress?.({
-          stage: "window_extract",
-          completed: completedWindows,
-          total: windows.length,
-          parallel: this.parallelWindows,
-          window_id: window.window_id,
-          message: `第二阶段窗口抽取进行中：已完成 ${completedWindows} / ${windows.length} 个窗口。`,
-        });
-        return {
-          window_id: window.window_id,
-          objects,
-          reason: asText(payload.reason) || "该窗口已完成对象抽取。",
-          llm_ensemble: llmResult.llm_ensemble ?? null,
-        };
+        } catch (error) {
+          throwIfWorkflowV2Aborted(options?.signal);
+          processedWindows += 1;
+          failedWindowsCount += 1;
+          const failedWindow = {
+            window_id: window.window_id,
+            chunk_ids: window.chunk_ids,
+            error: getErrorMessage(error, "window_extract failed"),
+            raw_text: getErrorRawText(error),
+            llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+            ...getErrorDiagnostics(error),
+            reason: `窗口 ${window.window_id} 抽取失败，已跳过该窗口并保留其余窗口成果。`,
+          };
+          options?.onProgress?.({
+            stage: "window_extract",
+            completed: processedWindows,
+            total: windows.length,
+            failed: failedWindowsCount,
+            parallel: this.parallelWindows,
+            window_id: window.window_id,
+            skipped: true,
+            message: `第三阶段窗口抽取进行中：已完成 ${processedWindows} / ${windows.length} 个窗口，失败 ${failedWindowsCount} 个。`,
+          });
+          return {
+            window_id: window.window_id,
+            objects: [],
+            reason: `窗口 ${window.window_id} 抽取失败，已跳过该窗口。`,
+            llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+            failed_window: failedWindow,
+          };
+        }
       },
     );
+
+    const successfulWindowResults = windowResults
+      .filter((item) => !item.failed_window)
+      .map((item) => ({
+        window_id: item.window_id,
+        objects: item.objects,
+        reason: item.reason,
+        llm_ensemble: item.llm_ensemble ?? null,
+      }));
+    const failedWindows = windowResults
+      .map((item) => item.failed_window)
+      .filter(Boolean);
 
     return {
       windows,
       total_windows: windows.length,
-      window_results: windowResults,
+      window_results: successfulWindowResults,
+      failed_windows: failedWindows,
       progress: {
         completed: windowResults.length,
         total: windows.length,
+        failed: failedWindows.length,
         parallel: this.parallelWindows,
       },
       reason: document.raw_text
-        ? "已按滑动窗口并行完成对象抽取。"
+        ? (failedWindows.length > 0
+          ? "已按滑动窗口并行完成对象抽取；失败窗口已跳过并保留其余成果。"
+          : "已按滑动窗口并行完成对象抽取。")
         : "原始文本为空，因此窗口抽取结果为空。",
     };
   }
@@ -2721,7 +3457,8 @@ export class WorkflowV2Service extends LinearWorkflowService {
     return overlap > 0 && overlap >= Math.min(existingTokens.size, nextTokens.size);
   }
 
-  async objectFusionStage(windowResults) {
+  async objectFusionStage(windowResults, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
     const candidates = [];
     for (const windowResult of windowResults) {
       for (const object of Array.isArray(windowResult.objects) ? windowResult.objects : []) {
@@ -2737,6 +3474,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
     const judgeResults = [];
 
     for (const candidate of candidates) {
+      throwIfWorkflowV2Aborted(options?.signal);
       const directMatch = fused.find((item) => item.normalized_name === candidate.normalized_name || item.aliases.includes(candidate.object_name));
       if (directMatch) {
         directMatch.aliases = uniqueStrings([...directMatch.aliases, candidate.object_name]);
@@ -2751,38 +3489,52 @@ export class WorkflowV2Service extends LinearWorkflowService {
       const ambiguous = fused.find((item) => this.shouldSendFusionJudge(item, candidate));
       if (ambiguous) {
         const prompt = buildFusionJudgePrompt(ambiguous, candidate);
-        const judgeResult = await this.invokeStageJson({
-          stage: "object_fusion",
-          instruction: prompt.instruction,
-          payload: prompt.payload,
-          responseSchema: prompt.responseSchema,
-        });
-        const judge = asRecord(judgeResult.data);
-        if (judge.should_merge === true) {
+        try {
+          const judgeResult = await this.invokeStageJson({
+            stage: "object_fusion",
+            instruction: prompt.instruction,
+            payload: prompt.payload,
+            responseSchema: prompt.responseSchema,
+            signal: options?.signal,
+          });
+          const judge = asRecord(judgeResult.data);
+          if (judge.should_merge === true) {
+            judgeResults.push({
+              existing_object_name: ambiguous.object_name,
+              candidate_object_name: candidate.object_name,
+              selected_action: "merge",
+              reason: asText(judge.reason) || "判决模型认为两个候选应合并。",
+              llm_ensemble: judgeResult.llm_ensemble ?? null,
+            });
+            ambiguous.object_name = asText(judge.object_name) || ambiguous.object_name;
+            ambiguous.normalized_name = normalizeObjectName(judge.normalized_name || ambiguous.normalized_name);
+            ambiguous.aliases = uniqueStrings([...ambiguous.aliases, ...uniqueStrings(judge.aliases), candidate.object_name]);
+            ambiguous.citations = uniqueStrings([...ambiguous.citations, ...candidate.citation]);
+            ambiguous.source_window_ids = uniqueStrings([...ambiguous.source_window_ids, candidate.source_window_id]);
+            ambiguous.merge_reasons = uniqueStrings([...ambiguous.merge_reasons, asText(judge.reason), candidate.reason]);
+            ambiguous.confidence = averageConfidence([ambiguous.confidence, candidate.confidence]);
+            ambiguous.reason = "该对象由同义或近义候选经裁决后融合而成。";
+            continue;
+          }
           judgeResults.push({
             existing_object_name: ambiguous.object_name,
             candidate_object_name: candidate.object_name,
-            selected_action: "merge",
-            reason: asText(judge.reason) || "判决模型认为两个候选应合并。",
+            selected_action: "keep_separate",
+            reason: asText(judge.reason) || "判决模型认为两个候选应保持分离。",
             llm_ensemble: judgeResult.llm_ensemble ?? null,
           });
-          ambiguous.object_name = asText(judge.object_name) || ambiguous.object_name;
-          ambiguous.normalized_name = normalizeObjectName(judge.normalized_name || ambiguous.normalized_name);
-          ambiguous.aliases = uniqueStrings([...ambiguous.aliases, ...uniqueStrings(judge.aliases), candidate.object_name]);
-          ambiguous.citations = uniqueStrings([...ambiguous.citations, ...candidate.citation]);
-          ambiguous.source_window_ids = uniqueStrings([...ambiguous.source_window_ids, candidate.source_window_id]);
-          ambiguous.merge_reasons = uniqueStrings([...ambiguous.merge_reasons, asText(judge.reason), candidate.reason]);
-          ambiguous.confidence = averageConfidence([ambiguous.confidence, candidate.confidence]);
-          ambiguous.reason = "该对象由同义或近义候选经裁决后融合而成。";
-          continue;
+        } catch (error) {
+          throwIfWorkflowV2Aborted(options?.signal);
+          judgeResults.push({
+            existing_object_name: ambiguous.object_name,
+            candidate_object_name: candidate.object_name,
+            selected_action: "keep_separate_on_error",
+            reason: `融合裁决失败，已保守保留分离。${getErrorMessage(error, "object_fusion failed")}`,
+            llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+            raw_text: getErrorRawText(error),
+            ...getErrorDiagnostics(error),
+          });
         }
-        judgeResults.push({
-          existing_object_name: ambiguous.object_name,
-          candidate_object_name: candidate.object_name,
-          selected_action: "keep_separate",
-          reason: asText(judge.reason) || "判决模型认为两个候选应保持分离。",
-          llm_ensemble: judgeResult.llm_ensemble ?? null,
-        });
       }
 
       fused.push({
@@ -2807,55 +3559,137 @@ export class WorkflowV2Service extends LinearWorkflowService {
     };
   }
 
+  async granularityAlignStage(objects, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
+    const alignedObjects = (Array.isArray(objects) ? objects : []).map((object) => {
+      const granularity = inferWorkflowV2ObjectLevel(object);
+      return {
+        ...object,
+        object_level: granularity.level,
+        granularity_confidence: granularity.confidence,
+        granularity_reason: granularity.reason,
+      };
+    });
+    const levelSummary = countWorkflowV2Values(alignedObjects.map((item) => item.object_level));
+
+    return {
+      aligned_objects: alignedObjects,
+      total_aligned_objects: alignedObjects.length,
+      level_summary: levelSummary,
+      reason: "已为融合对象补齐统一粒度标签，减少系统、子系统、组件在同一层混写的问题。",
+    };
+  }
+
   async functionAnalysisStage(objects, options = {}) {
-    let completedObjects = 0;
+    throwIfWorkflowV2Aborted(options?.signal);
+    let processedObjects = 0;
+    let failedObjectsCount = 0;
     options?.onProgress?.({
       stage: "function_analysis",
       completed: 0,
       total: objects.length,
+      failed: 0,
       message: objects.length > 0
-        ? `第四阶段功能分析进行中：已完成 0 / ${objects.length} 个对象。`
-        : "第四阶段没有可分析核心功能的对象。",
+        ? `第六阶段功能分析进行中：已完成 0 / ${objects.length} 个对象。`
+        : "第六阶段没有可分析核心功能的对象。",
     });
 
     const functionObjects = await mapWithConcurrency(
       objects,
       Math.min(4, Math.max(1, objects.length || 1)),
       async (object) => {
-        const prompt = buildObjectFunctionPrompt(object);
-        const llmResult = await this.invokeStageJson({
-          stage: "function_analysis",
-          instruction: prompt.instruction,
-          payload: prompt.payload,
-          responseSchema: prompt.responseSchema,
-        });
-        const payload = asRecord(llmResult.data);
-        const nextObject = {
-          ...object,
-          core_function: asText(payload.core_function),
-          function_citations: uniqueStrings(payload.citation),
-          function_confidence: clampConfidence(payload.confidence, 0.5),
-          function_reason: asText(payload.reason) || `${object.object_name} 的核心功能已基于 citations 归纳。`,
-          function_llm_ensemble: llmResult.llm_ensemble ?? null,
-        };
-        completedObjects += 1;
-        options?.onProgress?.({
-          stage: "function_analysis",
-          completed: completedObjects,
-          total: objects.length,
-          object_id: object.object_id,
-          object_name: object.object_name,
-          message: `第四阶段功能分析进行中：已完成 ${completedObjects} / ${objects.length} 个对象。`,
-        });
-        return nextObject;
+        throwIfWorkflowV2Aborted(options?.signal);
+        try {
+          const prompt = buildObjectFunctionPrompt(object);
+          const llmResult = await this.invokeStageJson({
+            stage: "function_analysis",
+            instruction: prompt.instruction,
+            payload: prompt.payload,
+            responseSchema: prompt.responseSchema,
+            signal: options?.signal,
+          });
+          const payload = asRecord(llmResult.data);
+          const nextObject = {
+            ...object,
+            core_function: asText(payload.core_function),
+            function_citations: uniqueStrings(payload.citation),
+            function_confidence: clampConfidence(payload.confidence, 0.5),
+            function_reason: asText(payload.reason) || `${object.object_name} 的核心功能已基于 citations 归纳。`,
+            function_llm_ensemble: llmResult.llm_ensemble ?? null,
+            function_error: "",
+            function_error_name: "",
+            function_error_code: "",
+            function_error_cause_name: "",
+            function_error_cause_code: "",
+            function_error_http_status: "",
+          };
+          processedObjects += 1;
+          options?.onProgress?.({
+            stage: "function_analysis",
+            completed: processedObjects,
+            total: objects.length,
+            failed: failedObjectsCount,
+            object_id: object.object_id,
+            object_name: object.object_name,
+            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+          });
+          return nextObject;
+        } catch (error) {
+          throwIfWorkflowV2Aborted(options?.signal);
+          const diagnostics = getErrorDiagnostics(error);
+          processedObjects += 1;
+          failedObjectsCount += 1;
+          options?.onProgress?.({
+            stage: "function_analysis",
+            completed: processedObjects,
+            total: objects.length,
+            failed: failedObjectsCount,
+            object_id: object.object_id,
+            object_name: object.object_name,
+            skipped: true,
+            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+          });
+          return {
+            ...object,
+            core_function: asText(object.core_function),
+            function_citations: uniqueStrings(object.function_citations),
+            function_confidence: clampConfidence(object.function_confidence, 0.5),
+            function_reason: `对象 ${object.object_name} 的功能分析失败，已保留对象并继续后续流程。`,
+            function_llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+            function_error: getErrorMessage(error, "function_analysis failed"),
+            function_raw_text: getErrorRawText(error),
+            function_error_name: diagnostics.error_name || "",
+            function_error_code: diagnostics.error_code || "",
+            function_error_cause_name: diagnostics.error_cause_name || "",
+            function_error_cause_code: diagnostics.error_cause_code || "",
+            function_error_http_status: diagnostics.error_http_status || "",
+          };
+        }
       },
     );
+
+    const failedFunctionObjects = functionObjects
+      .filter((object) => asText(object.function_error))
+      .map((object) => ({
+        object_id: object.object_id,
+        object_name: object.object_name,
+        error: asText(object.function_error),
+        raw_text: asText(object.function_raw_text),
+        llm_ensemble: object.function_llm_ensemble ?? null,
+        error_name: asText(object.function_error_name),
+        error_code: asText(object.function_error_code),
+        error_cause_name: asText(object.function_error_cause_name),
+        error_cause_code: asText(object.function_error_cause_code),
+        error_http_status: asText(object.function_error_http_status),
+        reason: `对象 ${object.object_name} 的功能分析失败，已跳过本次功能归纳。`,
+      }));
 
     return {
       function_objects: functionObjects.map((object) => ({
         object_id: object.object_id,
         object_name: object.object_name,
         normalized_name: object.normalized_name,
+        object_level: object.object_level,
         aliases: object.aliases,
         citations: object.citations,
         core_function: object.core_function,
@@ -2863,18 +3697,29 @@ export class WorkflowV2Service extends LinearWorkflowService {
         confidence: object.function_confidence,
         reason: object.function_reason,
         llm_ensemble: object.function_llm_ensemble ?? null,
+        error: asText(object.function_error),
+        error_name: asText(object.function_error_name),
+        error_code: asText(object.function_error_code),
+        error_cause_name: asText(object.function_error_cause_name),
+        error_cause_code: asText(object.function_error_cause_code),
+        error_http_status: asText(object.function_error_http_status),
       })),
       updated_objects: functionObjects,
+      failed_function_objects: failedFunctionObjects,
       total_function_objects: functionObjects.length,
       progress: {
         completed: functionObjects.length,
         total: objects.length,
+        failed: failedFunctionObjects.length,
       },
-      reason: "已基于每个融合对象的 citations 提取其核心功能。",
+      reason: failedFunctionObjects.length > 0
+        ? "已尽量基于每个融合对象的 citations 提取其核心功能；失败对象已跳过并保留后续流程。"
+        : "已基于每个融合对象的 citations 提取其核心功能。",
     };
   }
 
   async objectDecomposeStage(objects, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
     let completedObjects = 0;
     let failedObjectsCount = 0;
     options?.onProgress?.({
@@ -2883,19 +3728,21 @@ export class WorkflowV2Service extends LinearWorkflowService {
       total: objects.length,
       failed: 0,
       message: objects.length > 0
-        ? `第五阶段对象拆解进行中：已完成 0 / ${objects.length} 个对象。`
-        : "第五阶段没有可拆解的对象。",
+        ? `第七阶段对象拆解进行中：已完成 0 / ${objects.length} 个对象。`
+        : "第七阶段没有可拆解的对象。",
     });
 
     const decompositionResults = await mapWithConcurrency(
       objects,
       Math.min(4, Math.max(1, objects.length || 1)),
       async (object) => {
+        throwIfWorkflowV2Aborted(options?.signal);
         const prompt = buildObjectDecomposePrompt(object);
         const attemptOutputs = [];
         let successPayload = null;
 
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          throwIfWorkflowV2Aborted(options?.signal);
           try {
             const llmResult = await this.invokeStageJson({
               stage: "object_decompose",
@@ -2903,6 +3750,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
               payload: prompt.payload,
               responseSchema: prompt.responseSchema,
               retryHint: buildObjectDecomposeRetryHint(attempt),
+              signal: options?.signal,
             });
             successPayload = {
               data: asRecord(llmResult.data),
@@ -2910,11 +3758,13 @@ export class WorkflowV2Service extends LinearWorkflowService {
             };
             break;
           } catch (error) {
+            throwIfWorkflowV2Aborted(options?.signal);
             attemptOutputs.push({
               attempt,
               error: getErrorMessage(error, "object_decompose failed"),
               model_output: getErrorRawText(error),
               llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+              ...getErrorDiagnostics(error),
               reason: getErrorRawText(error)
                 ? "该次调用返回了不可解析的模型输出，因此未能通过 JSON 校验。"
                 : "该次调用未返回可用的结构化结果，因此无法完成对象拆解。",
@@ -2939,7 +3789,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
             object_id: object.object_id,
             object_name: object.object_name,
             skipped: true,
-            message: `第五阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+            message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
           });
           return {
             object_id: object.object_id,
@@ -2971,7 +3821,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           object_id: object.object_id,
           object_name: object.object_name,
           skipped: false,
-          message: `第五阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+          message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
         });
         return {
           object_id: object.object_id,
@@ -3020,7 +3870,8 @@ export class WorkflowV2Service extends LinearWorkflowService {
     return map;
   }
 
-  async graphBuildStage(objects, decompositionResults) {
+  async graphBuildStage(objects, decompositionResults, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
     const objectIdMap = this.mapObjectNameToId(objects);
     const edgeMap = new Map();
 
@@ -3056,6 +3907,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
     const removedCycleEdges = [];
 
     while (true) {
+      throwIfWorkflowV2Aborted(options?.signal);
       const topo = computeTopologicalOrder(edges, nodeIds);
       if (topo.cyclicNodeIds.length === 0) {
         break;
@@ -3084,6 +3936,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           instruction: prompt.instruction,
           payload: prompt.payload,
           responseSchema: prompt.responseSchema,
+          signal: options?.signal,
         });
         const judge = asRecord(cycleJudgeResult.data);
         if (asText(judge.remove_edge_id) === weakest.edge_id) {
@@ -3091,6 +3944,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
         }
         weakest.llm_ensemble = cycleJudgeResult.llm_ensemble ?? null;
       } catch {
+        throwIfWorkflowV2Aborted(options?.signal);
         // 环裁决失败时保留程序化兜底。
       }
 
@@ -3120,7 +3974,144 @@ export class WorkflowV2Service extends LinearWorkflowService {
     };
   }
 
+  async structureQualityGateStage(objects, edges, removedCycleEdges = [], options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
+    const safeObjects = Array.isArray(objects) ? objects : [];
+    const safeEdges = Array.isArray(edges) ? edges : [];
+    const connectedObjectIds = new Set();
+    const indegree = new Map();
+    const outdegree = new Map();
+    const objectById = new Map();
+
+    for (const object of safeObjects) {
+      const objectId = asText(object?.object_id);
+      if (!objectId) {
+        continue;
+      }
+      objectById.set(objectId, object);
+      indegree.set(objectId, 0);
+      outdegree.set(objectId, 0);
+    }
+
+    for (const edge of safeEdges) {
+      const sourceId = asText(edge?.source_object_id);
+      const targetId = asText(edge?.target_object_id);
+      if (!objectById.has(sourceId) || !objectById.has(targetId)) {
+        continue;
+      }
+      connectedObjectIds.add(sourceId);
+      connectedObjectIds.add(targetId);
+      indegree.set(targetId, (indegree.get(targetId) ?? 0) + 1);
+      outdegree.set(sourceId, (outdegree.get(sourceId) ?? 0) + 1);
+    }
+
+    const depthMap = computeObjectDepthMap(safeObjects, safeEdges);
+    const rootObjectIds = safeObjects
+      .map((object) => asText(object?.object_id))
+      .filter((objectId) => objectId && connectedObjectIds.has(objectId) && (indegree.get(objectId) ?? 0) === 0);
+    const orphanObjects = safeObjects.filter((object) => {
+      const objectId = asText(object?.object_id);
+      return objectId && !connectedObjectIds.has(objectId);
+    });
+    const depthDistribution = {};
+    const granularityByDepth = new Map();
+    let maxDepth = 0;
+
+    for (const object of safeObjects) {
+      const objectId = asText(object?.object_id);
+      if (!objectId || !connectedObjectIds.has(objectId)) {
+        continue;
+      }
+      const depth = depthMap.get(objectId) ?? 1;
+      const objectLevel = asText(object?.object_level) || "component";
+      depthDistribution[String(depth)] = (depthDistribution[String(depth)] ?? 0) + 1;
+      maxDepth = Math.max(maxDepth, depth);
+      const levelSet = granularityByDepth.get(depth) ?? new Set();
+      levelSet.add(objectLevel);
+      granularityByDepth.set(depth, levelSet);
+    }
+
+    const levelSummary = countWorkflowV2Values(safeObjects.map((object) => object?.object_level));
+    const mixedGranularityDepths = [...granularityByDepth.entries()]
+      .filter(([, levelSet]) => levelSet.size > 1)
+      .map(([depth, levelSet]) => `第 ${depth} 层(${[...levelSet].join("/")})`);
+    const tooFlatWarning = safeEdges.length === 0
+      ? (safeObjects.length > 1 ? "当前还没有形成稳定结构边，暂时无法验证系统拆解质量。" : "")
+      : (safeEdges.length >= Math.max(3, Math.floor(safeObjects.length / 2)) && maxDepth <= 2
+        ? "结构边数量不少，但最大深度仍然偏浅，说明系统拆解可能过于扁平。"
+        : "");
+    const mixedGranularityWarning = mixedGranularityDepths.length > 0
+      ? `同层存在粒度混写：${mixedGranularityDepths.join("，")}。`
+      : "";
+    const fragmentedRootWarning = rootObjectIds.length > 2
+      ? `当前检测到 ${rootObjectIds.length} 个根系统，结构可能仍然偏碎。`
+      : "";
+    const qualityScore = Math.max(
+      0,
+      Math.min(
+        100,
+        100
+          - (safeEdges.length === 0 && safeObjects.length > 0 ? 30 : 0)
+          - (Array.isArray(removedCycleEdges) ? removedCycleEdges.length : 0) * 12
+          - orphanObjects.length * 8
+          - (tooFlatWarning ? 12 : 0)
+          - (mixedGranularityWarning ? 10 : 0)
+          - Math.max(0, rootObjectIds.length - 1) * 5,
+      ),
+    );
+    const isStructurallySound = safeEdges.length > 0
+      && qualityScore >= 70
+      && orphanObjects.length <= Math.max(2, Math.floor(safeObjects.length / 3))
+      && !tooFlatWarning;
+    const updatedObjects = safeObjects.map((object) => {
+      const objectId = asText(object?.object_id);
+      const hasChildren = (outdegree.get(objectId) ?? 0) > 0;
+      const hasParent = (indegree.get(objectId) ?? 0) > 0;
+      const isConnected = connectedObjectIds.has(objectId);
+      let structuralRole = "isolated";
+      if (isConnected && !hasParent) {
+        structuralRole = "root";
+      } else if (isConnected && hasChildren) {
+        structuralRole = "branch";
+      } else if (isConnected) {
+        structuralRole = "leaf";
+      }
+      return {
+        ...object,
+        structure_depth: isConnected ? (depthMap.get(objectId) ?? 1) : 0,
+        structural_role: structuralRole,
+      };
+    });
+
+    return {
+      updated_objects: updatedObjects,
+      quality_score: qualityScore,
+      is_structurally_sound: isStructurallySound,
+      cycle_count: Array.isArray(removedCycleEdges) ? removedCycleEdges.length : 0,
+      orphan_count: orphanObjects.length,
+      root_count: rootObjectIds.length,
+      max_depth: maxDepth,
+      root_object_ids: rootObjectIds,
+      root_object_names: rootObjectIds.map((objectId) => asText(objectById.get(objectId)?.object_name) || objectId),
+      depth_distribution: depthDistribution,
+      level_summary: levelSummary,
+      too_flat_warning: tooFlatWarning,
+      mixed_granularity_warning: mixedGranularityWarning,
+      fragmented_root_warning: fragmentedRootWarning,
+      reason: [
+        `质量分 ${qualityScore}`,
+        `孤立节点 ${orphanObjects.length}`,
+        `根节点 ${rootObjectIds.length}`,
+        `最大深度 ${maxDepth || 0}`,
+        tooFlatWarning,
+        mixedGranularityWarning,
+        fragmentedRootWarning,
+      ].filter(Boolean).join("；"),
+    };
+  }
+
   async ablationAnalysisStage(objects, edges, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
     const objectById = new Map(objects.map((object) => [object.object_id, object]));
     const childrenByParent = new Map();
     for (const edge of edges) {
@@ -3146,143 +4137,236 @@ export class WorkflowV2Service extends LinearWorkflowService {
     });
 
     let completedParents = 0;
+    let failedParentsCount = 0;
     const parentConcurrency = Math.max(1, Math.min(parentEntries.length || 1, this.ablationParentConcurrency));
     const parentSummaries = await mapWithConcurrency(
       parentEntries,
       parentConcurrency,
       async ([parentObjectId, childIds]) => {
+        throwIfWorkflowV2Aborted(options?.signal);
         const parent = objectById.get(parentObjectId);
         if (!parent || childIds.length === 0) {
           return null;
         }
-        const children = childIds.map((childId) => objectById.get(childId)).filter(Boolean);
-        const localEdges = edges.filter((edge) => edge.source_object_id === parentObjectId || childIds.includes(edge.source_object_id) || childIds.includes(edge.target_object_id));
-        let processedChildren = 0;
-        onProgress?.({
-          stage: "ablation_analysis",
-          completed: completedParents,
-          total,
-          current_parent_object_id: parent.object_id,
-          current_parent_object_name: parent.object_name,
-          processed_child_count: 0,
-          total_child_count: children.length,
-          message: `最终阶段正在分析父节点 ${parent.object_name}，已完成 0 / ${children.length} 个子节点。`,
-        });
-        const childConcurrency = Math.max(1, Math.min(children.length || 1, this.ablationChildConcurrency));
-        const childAnalyses = await mapWithConcurrency(
-          children,
-          childConcurrency,
-          async (child) => {
-            onProgress?.({
-              stage: "ablation_analysis",
-              completed: completedParents,
-              total,
-              current_parent_object_id: parent.object_id,
-              current_parent_object_name: parent.object_name,
-              current_child_object_id: child.object_id,
-              current_child_object_name: child.object_name,
-              processed_child_count: processedChildren,
-              total_child_count: children.length,
-              message: `最终阶段正在分析父节点 ${parent.object_name} 的子节点 ${child.object_name}，当前已完成 ${processedChildren} / ${children.length} 个子节点。`,
-            });
-            const siblings = children.filter((item) => item.object_id !== child.object_id);
-            const siblingImpacts = [];
-            if (siblings.length > 0) {
-              const siblingPrompt = buildSiblingAblationPrompt(parent, child, siblings, localEdges);
-              const siblingResult = await this.invokeStageJson({
+        try {
+          const children = childIds.map((childId) => objectById.get(childId)).filter(Boolean);
+          const localEdges = edges.filter((edge) => edge.source_object_id === parentObjectId || childIds.includes(edge.source_object_id) || childIds.includes(edge.target_object_id));
+          let processedChildren = 0;
+          let failedChildrenCount = 0;
+          onProgress?.({
+            stage: "ablation_analysis",
+            completed: completedParents,
+            total,
+            failed: failedParentsCount,
+            current_parent_object_id: parent.object_id,
+            current_parent_object_name: parent.object_name,
+            processed_child_count: 0,
+            total_child_count: children.length,
+            message: `最终阶段正在分析父节点 ${parent.object_name}，已完成 0 / ${children.length} 个子节点。`,
+          });
+          const childConcurrency = Math.max(1, Math.min(children.length || 1, this.ablationChildConcurrency));
+          const childAnalyses = await mapWithConcurrency(
+            children,
+            childConcurrency,
+            async (child) => {
+              throwIfWorkflowV2Aborted(options?.signal);
+              onProgress?.({
                 stage: "ablation_analysis",
-                instruction: siblingPrompt.instruction,
-                payload: siblingPrompt.payload,
-                responseSchema: siblingPrompt.responseSchema,
+                completed: completedParents,
+                total,
+                failed: failedParentsCount,
+                current_parent_object_id: parent.object_id,
+                current_parent_object_name: parent.object_name,
+                current_child_object_id: child.object_id,
+                current_child_object_name: child.object_name,
+                processed_child_count: processedChildren,
+                total_child_count: children.length,
+                message: `最终阶段正在分析父节点 ${parent.object_name} 的子节点 ${child.object_name}，当前已完成 ${processedChildren} / ${children.length} 个子节点。`,
               });
-              const siblingPayload = asRecord(siblingResult.data);
-              const impacts = Array.isArray(siblingPayload.sibling_impacts) ? siblingPayload.sibling_impacts : [];
-              for (const impact of impacts) {
-                const record = asRecord(impact);
-                siblingImpacts.push({
+              const siblings = children.filter((item) => item.object_id !== child.object_id);
+              const siblingImpacts = [];
+              const childFailures = [];
+              if (siblings.length > 0) {
+                try {
+                  const siblingPrompt = buildSiblingAblationPrompt(parent, child, siblings, localEdges);
+                  const siblingResult = await this.invokeStageJson({
+                    stage: "ablation_analysis",
+                    instruction: siblingPrompt.instruction,
+                    payload: siblingPrompt.payload,
+                    responseSchema: siblingPrompt.responseSchema,
+                    signal: options?.signal,
+                  });
+                  const siblingPayload = asRecord(siblingResult.data);
+                  const impacts = Array.isArray(siblingPayload.sibling_impacts) ? siblingPayload.sibling_impacts : [];
+                  for (const impact of impacts) {
+                    const record = asRecord(impact);
+                    siblingImpacts.push({
+                      ablated_child_object_id: child.object_id,
+                      target_sibling_object_id: asText(record.target_sibling_object_id),
+                      impact_level: ["none", "low", "medium", "high"].includes(asText(record.impact_level)) ? asText(record.impact_level) : "low",
+                      judgement: asText(record.judgement),
+                      reason: asText(record.reason) || "该兄弟影响判断来自局部消融分析。",
+                      llm_ensemble: siblingResult.llm_ensemble ?? null,
+                    });
+                  }
+                } catch (error) {
+                  throwIfWorkflowV2Aborted(options?.signal);
+                  childFailures.push({
+                    parent_object_id: parent.object_id,
+                    parent_object_name: parent.object_name,
+                    child_object_id: child.object_id,
+                    child_object_name: child.object_name,
+                    step: "sibling_ablation",
+                    error: getErrorMessage(error, "sibling ablation failed"),
+                    raw_text: getErrorRawText(error),
+                    llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+                    ...getErrorDiagnostics(error),
+                  });
+                }
+              }
+
+              let parentImpact = null;
+              try {
+                const parentPrompt = buildParentAblationPrompt(parent, child, children, localEdges);
+                const parentResult = await this.invokeStageJson({
+                  stage: "ablation_analysis",
+                  instruction: parentPrompt.instruction,
+                  payload: parentPrompt.payload,
+                  responseSchema: parentPrompt.responseSchema,
+                  signal: options?.signal,
+                });
+                const parentPayload = asRecord(parentResult.data);
+                const impact = asRecord(parentPayload.impact_on_parent);
+                parentImpact = {
                   ablated_child_object_id: child.object_id,
-                  target_sibling_object_id: asText(record.target_sibling_object_id),
-                  impact_level: ["none", "low", "medium", "high"].includes(asText(record.impact_level)) ? asText(record.impact_level) : "low",
-                  judgement: asText(record.judgement),
-                  reason: asText(record.reason) || "该兄弟影响判断来自局部消融分析。",
-                  llm_ensemble: siblingResult.llm_ensemble ?? null,
+                  parent_object_id: asText(impact.parent_object_id) || parent.object_id,
+                  importance_level: ["none", "low", "medium", "high", "critical"].includes(asText(impact.importance_level))
+                    ? asText(impact.importance_level)
+                    : "medium",
+                  judgement: asText(impact.judgement),
+                  reason: asText(impact.reason) || "该子节点重要性判断来自父节点消融分析。",
+                  llm_ensemble: parentResult.llm_ensemble ?? null,
+                };
+              } catch (error) {
+                throwIfWorkflowV2Aborted(options?.signal);
+                childFailures.push({
+                  parent_object_id: parent.object_id,
+                  parent_object_name: parent.object_name,
+                  child_object_id: child.object_id,
+                  child_object_name: child.object_name,
+                  step: "parent_ablation",
+                  error: getErrorMessage(error, "parent ablation failed"),
+                  raw_text: getErrorRawText(error),
+                  llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+                  ...getErrorDiagnostics(error),
                 });
               }
-            }
 
-            const parentPrompt = buildParentAblationPrompt(parent, child, children, localEdges);
-            const parentResult = await this.invokeStageJson({
-              stage: "ablation_analysis",
-              instruction: parentPrompt.instruction,
-              payload: parentPrompt.payload,
-              responseSchema: parentPrompt.responseSchema,
-            });
-            const parentPayload = asRecord(parentResult.data);
-            const impact = asRecord(parentPayload.impact_on_parent);
-            const parentImpact = {
-              ablated_child_object_id: child.object_id,
-              parent_object_id: asText(impact.parent_object_id) || parent.object_id,
-              importance_level: ["none", "low", "medium", "high", "critical"].includes(asText(impact.importance_level))
-                ? asText(impact.importance_level)
-                : "medium",
-              judgement: asText(impact.judgement),
-              reason: asText(impact.reason) || "该子节点重要性判断来自父节点消融分析。",
-              llm_ensemble: parentResult.llm_ensemble ?? null,
-            };
+              processedChildren += 1;
+              if (childFailures.length > 0) {
+                failedChildrenCount += 1;
+              }
+              onProgress?.({
+                stage: "ablation_analysis",
+                completed: completedParents,
+                total,
+                failed: failedParentsCount,
+                current_parent_object_id: parent.object_id,
+                current_parent_object_name: parent.object_name,
+                current_child_object_id: child.object_id,
+                current_child_object_name: child.object_name,
+                processed_child_count: processedChildren,
+                total_child_count: children.length,
+                child_failed: childFailures.length > 0,
+                message: `最终阶段正在分析父节点 ${parent.object_name}，已完成 ${processedChildren} / ${children.length} 个子节点，失败 ${failedChildrenCount} 个。`,
+              });
+              return {
+                sibling_impacts: siblingImpacts,
+                parent_impact: parentImpact,
+                child_failures: childFailures,
+              };
+            },
+          );
 
-            processedChildren += 1;
-            onProgress?.({
-              stage: "ablation_analysis",
-              completed: completedParents,
-              total,
-              current_parent_object_id: parent.object_id,
-              current_parent_object_name: parent.object_name,
-              current_child_object_id: child.object_id,
-              current_child_object_name: child.object_name,
-              processed_child_count: processedChildren,
-              total_child_count: children.length,
-              message: `最终阶段正在分析父节点 ${parent.object_name}，已完成 ${processedChildren} / ${children.length} 个子节点。`,
-            });
-            return {
-              sibling_impacts: siblingImpacts,
-              parent_impact: parentImpact,
-            };
-          },
-        );
+          const siblingDependencyTable = childAnalyses.flatMap((item) => item?.sibling_impacts ?? []);
+          const childImportanceList = childAnalyses
+            .map((item) => item?.parent_impact ?? null)
+            .filter(Boolean);
+          const failedChildAnalyses = childAnalyses.flatMap((item) => item?.child_failures ?? []);
 
-        const siblingDependencyTable = childAnalyses.flatMap((item) => item?.sibling_impacts ?? []);
-        const childImportanceList = childAnalyses
-          .map((item) => item?.parent_impact ?? null)
-          .filter(Boolean);
+          const summary = {
+            parent_object_id: parent.object_id,
+            parent_object_name: parent.object_name,
+            sibling_dependency_table: siblingDependencyTable,
+            child_importance_list: childImportanceList,
+            failed_child_analyses: failedChildAnalyses,
+            reason: failedChildAnalyses.length > 0
+              ? "该摘要聚合了该父对象全部直接子节点的兄弟影响分析与父级重要性分析；失败子任务已跳过。"
+              : "该摘要聚合了该父对象全部直接子节点的兄弟影响分析与父级重要性分析。",
+          };
 
-        const summary = {
-          parent_object_id: parent.object_id,
-          sibling_dependency_table: siblingDependencyTable,
-          child_importance_list: childImportanceList,
-          reason: "该摘要聚合了该父对象全部直接子节点的兄弟影响分析与父级重要性分析。",
-        };
-
-        completedParents += 1;
-        onProgress?.({
-          stage: "ablation_analysis",
-          completed: completedParents,
-          total,
-          parent_object_id: parent.object_id,
-          parent_object_name: parent.object_name,
-          message: `最终阶段已完成 ${completedParents} / ${total} 个父节点的消融分析。`,
-        });
-        return summary;
+          completedParents += 1;
+          onProgress?.({
+            stage: "ablation_analysis",
+            completed: completedParents,
+            total,
+            failed: failedParentsCount,
+            parent_object_id: parent.object_id,
+            parent_object_name: parent.object_name,
+            message: `最终阶段已完成 ${completedParents} / ${total} 个父节点的消融分析。`,
+          });
+          return {
+            summary,
+            failed_parent: null,
+          };
+        } catch (error) {
+          throwIfWorkflowV2Aborted(options?.signal);
+          completedParents += 1;
+          failedParentsCount += 1;
+          onProgress?.({
+            stage: "ablation_analysis",
+            completed: completedParents,
+            total,
+            failed: failedParentsCount,
+            parent_object_id: parent.object_id,
+            parent_object_name: parent.object_name,
+            skipped: true,
+            message: `最终阶段已完成 ${completedParents} / ${total} 个父节点的消融分析，失败 ${failedParentsCount} 个。`,
+          });
+          return {
+            summary: null,
+            failed_parent: {
+              parent_object_id: parent.object_id,
+              parent_object_name: parent.object_name,
+              error: getErrorMessage(error, "ablation parent analysis failed"),
+              raw_text: getErrorRawText(error),
+              llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+              ...getErrorDiagnostics(error),
+            },
+          };
+        }
       },
     );
 
+    const successfulParentSummaries = parentSummaries
+      .map((item) => item?.summary ?? null)
+      .filter(Boolean);
+    const failedParentAnalyses = parentSummaries
+      .map((item) => item?.failed_parent ?? null)
+      .filter(Boolean);
+
     return {
-      parent_summaries: parentSummaries.filter(Boolean),
-      total_parent_summaries: parentSummaries.filter(Boolean).length,
+      parent_summaries: successfulParentSummaries,
+      failed_parent_analyses: failedParentAnalyses,
+      total_parent_summaries: successfulParentSummaries.length,
       progress: {
-        completed: parentSummaries.filter(Boolean).length,
+        completed: successfulParentSummaries.length + failedParentAnalyses.length,
         total,
+        failed: failedParentAnalyses.length,
       },
-      reason: "已对所有有直接子节点的父对象完成消融分析。",
+      reason: failedParentAnalyses.length > 0
+        ? "已尽量对所有有直接子节点的父对象完成消融分析；失败父节点已跳过并保留其余成果。"
+        : "已对所有有直接子节点的父对象完成消融分析。",
     };
   }
 
@@ -3360,9 +4444,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       const stageStartIndex = asInteger(input.resumeFromStageIndex, 0, 0);
 
       const runStage = async (stageKey, executor, applyOutput = () => {}) => {
-        if (input?.signal?.aborted) {
-          throw new Error("workflow V2 aborted");
-        }
+        throwIfWorkflowV2Aborted(input?.signal);
         const stageIndex = WORKFLOW_V2_STAGE_KEYS.indexOf(stageKey);
         const previous = stageResults[stageIndex];
         stageResults[stageIndex] = makeStageResult(stageKey, stageIndex + 1, "running", previous?.output ?? null, null, previous);
@@ -3373,9 +4455,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
         handlers.onStageUpdate?.(stageResults[stageIndex]);
         try {
           const output = await executor();
-          if (input?.signal?.aborted) {
-            throw new Error("workflow V2 aborted");
-          }
+          throwIfWorkflowV2Aborted(input?.signal);
           applyOutput(output);
           stageResults[stageIndex] = makeStageResult(stageKey, stageIndex + 1, "success", output, null, stageResults[stageIndex]);
           handlers.onStageUpdate?.(stageResults[stageIndex]);
@@ -3389,7 +4469,14 @@ export class WorkflowV2Service extends LinearWorkflowService {
           const message = error instanceof Error ? error.message : "workflow V2 stage failed";
           const currentStage = stageResults[stageIndex];
           if (currentStage?.status === "running") {
-            stageResults[stageIndex] = makeStageResult(stageKey, stageIndex + 1, "failed", currentStage.output, message, currentStage);
+            stageResults[stageIndex] = makeStageResult(
+              stageKey,
+              stageIndex + 1,
+              "failed",
+              mergeFailedStageOutput(currentStage.output, error),
+              message,
+              currentStage,
+            );
             handlers.onStageUpdate?.(stageResults[stageIndex]);
           }
           try {
@@ -3412,6 +4499,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       }
       if (stageStartIndex <= 1) {
         await runStage("window_extract", async () => this.windowExtractStage(state.document, state.chunks, {
+          signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
         }), (output) => {
           state.windows = output.windows;
@@ -3419,12 +4507,15 @@ export class WorkflowV2Service extends LinearWorkflowService {
         });
       }
       if (stageStartIndex <= 2) {
-        await runStage("object_fusion", async () => this.objectFusionStage(state.window_results), (output) => {
+        await runStage("object_fusion", async () => this.objectFusionStage(state.window_results, {
+          signal: input?.signal,
+        }), (output) => {
           state.fused_objects = output.fused_objects;
         });
       }
       if (stageStartIndex <= 3) {
         await runStage("function_analysis", async () => this.functionAnalysisStage(state.fused_objects, {
+          signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
         }), (output) => {
           state.function_objects = output.function_objects;
@@ -3433,13 +4524,16 @@ export class WorkflowV2Service extends LinearWorkflowService {
       }
       if (stageStartIndex <= 4) {
         await runStage("object_decompose", async () => this.objectDecomposeStage(state.fused_objects, {
+          signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
         }), (output) => {
           state.decomposition_results = output.decomposition_results;
         });
       }
       if (stageStartIndex <= 5) {
-        await runStage("graph_build", async () => this.graphBuildStage(state.fused_objects, state.decomposition_results), (output) => {
+        await runStage("graph_build", async () => this.graphBuildStage(state.fused_objects, state.decomposition_results, {
+          signal: input?.signal,
+        }), (output) => {
           state.fused_objects = Array.isArray(output.objects) ? output.objects : state.fused_objects;
           state.edges = output.edges;
           state.removed_cycle_edges = output.removed_cycle_edges;
@@ -3447,6 +4541,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       }
       if (stageStartIndex <= 6) {
         await runStage("ablation_analysis", async () => this.ablationAnalysisStage(state.fused_objects, state.edges, {
+          signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
         }), (output) => {
           state.parent_summaries = output.parent_summaries;
@@ -3479,7 +4574,14 @@ export class WorkflowV2Service extends LinearWorkflowService {
       const failedStageIndex = stageResults.findIndex((item) => item.status === "running");
       if (failedStageIndex !== -1) {
         const current = stageResults[failedStageIndex];
-        stageResults[failedStageIndex] = makeStageResult(current.stage, current.order, "failed", current.output, message, current);
+        stageResults[failedStageIndex] = makeStageResult(
+          current.stage,
+          current.order,
+          "failed",
+          mergeFailedStageOutput(current.output, error),
+          message,
+          current,
+        );
         handlers.onStageUpdate?.(stageResults[failedStageIndex]);
         errors.push({
           stage: current.stage,

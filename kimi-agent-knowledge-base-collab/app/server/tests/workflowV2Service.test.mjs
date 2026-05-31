@@ -68,6 +68,48 @@ test("WorkflowV2Service 在上游返回 HTML 页面时会给出可定位错误",
   }
 });
 
+test("WorkflowV2Service 会把 fetch 失败的错误码写入调试输出", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-fetch-failed-"));
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => {
+    const error = new Error("fetch failed");
+    error.cause = {
+      name: "Error",
+      code: "ECONNRESET",
+      message: "socket hang up",
+    };
+    throw error;
+  };
+
+  try {
+    const service = new WorkflowV2Service({
+      runtimeRoot,
+      workflowModelA: "test-model",
+      workflowModelB: "test-model",
+      workflowJudgeModel: "judge-model",
+      workflowLlmApiKey: "test-key",
+      workflowLlmBaseUrl: "https://example.com",
+    });
+
+    await assert.rejects(
+      () => service.invokeWorkflowV2Json({
+        stage: "window_extract",
+        instruction: "提取对象",
+        payload: { window_id: "w1", text: "电脑包含 CPU。" },
+      }),
+      (error) => {
+        assert.equal(error.message, "fetch failed");
+        assert.equal(error.stageOutput?.error_cause_code, "ECONNRESET");
+        assert.equal(error.stageOutput?.error_name, "Error");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("WorkflowV2Service 手动设置的 V2 参数不会在刷新配置时被环境值覆盖", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-config-override-"));
   const service = new WorkflowV2Service({
@@ -117,7 +159,7 @@ test("WorkflowV2Service 手动设置的 V2 参数不会在刷新配置时被环�
   });
 });
 
-test("WorkflowV2Service 能跑通 7 阶段并在 graph_build 移除弱环边", async () => {
+test("WorkflowV2Service 能跑通 7 阶段并完成 graph_build 与 ablation_analysis", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-success-"));
   const service = createService({
     runtimeRoot,
@@ -356,6 +398,9 @@ test("WorkflowV2Service 能跑通 7 阶段并在 graph_build 移除弱环边", a
   assert.equal(result.result.edges.some((edge) => edge.source_object_id === edge.target_object_id), false);
   assert.equal(result.result.meta.is_dag, true);
   assert.equal(result.stage_results[0].stage, "chunk_parse");
+  assert.equal(result.stage_results[1].stage, "window_extract");
+  assert.equal(result.stage_results[2].stage, "object_fusion");
+  assert.equal(result.stage_results[5].stage, "graph_build");
   assert.equal(result.stage_results[6].stage, "ablation_analysis");
   assert.equal(result.stage_results[2].output.fused_objects.length, 6);
   assert.equal(result.stage_results[3].output.function_objects.length, 6);
@@ -452,6 +497,7 @@ test("WorkflowV2Service 可将快照结果转换为标准实体 JSON 并写入 O
   assert.equal(writes[0].payload.data.source, "linear-workflow-v2");
   assert.equal(writes[0].payload.data.ontology.workflow_version, "v2-linear-object-workflow");
   assert.equal(validateWorkflowEntityFileData(writes[0].payload.data).ok, true);
+  assert.equal(typeof writes[0].payload.data.ablation?.small_reason, "undefined");
 });
 
 test("WorkflowV2Service graph_build 会把未进入结构边的对象标记为孤立节点", async () => {
@@ -491,6 +537,49 @@ test("WorkflowV2Service graph_build 会把未进入结构边的对象标记为�
   assert.equal(output.objects.find((item) => item.object_id === "obj-note")?.structure_status, "isolated");
   assert.match(output.objects.find((item) => item.object_id === "obj-note")?.structure_reason ?? "", /没有任何入边或出边/);
   assert.equal(output.objects.find((item) => item.object_id === "obj-computer")?.is_isolated, false);
+});
+
+test("WorkflowV2Service granularity_align 会为对象补齐统一粒度标签", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-granularity-"));
+  const service = createService({ runtimeRoot });
+
+  const output = await service.granularityAlignStage([
+    { object_id: "obj-vehicle", object_name: "整车系统", normalized_name: "vehicle-system", citations: ["整车系统包含动力系统。"] },
+    { object_id: "obj-power", object_name: "动力模块", normalized_name: "power-module", citations: ["动力模块负责驱动。"] },
+    { object_id: "obj-sensor", object_name: "传感器", normalized_name: "sensor", citations: ["传感器负责采集数据。"] },
+  ]);
+
+  assert.equal(output.total_aligned_objects, 3);
+  assert.equal(output.level_summary.system, 1);
+  assert.equal(output.level_summary.subsystem, 1);
+  assert.equal(output.level_summary.component, 1);
+  assert.equal(output.aligned_objects.find((item) => item.object_id === "obj-vehicle")?.object_level, "system");
+});
+
+test("WorkflowV2Service structure_quality_gate 会输出结构质量评分与告警", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-quality-gate-"));
+  const service = createService({ runtimeRoot });
+
+  const output = await service.structureQualityGateStage(
+    [
+      { object_id: "obj-root", object_name: "整车系统", object_level: "system" },
+      { object_id: "obj-power", object_name: "动力模块", object_level: "subsystem" },
+      { object_id: "obj-sensor", object_name: "传感器", object_level: "component" },
+      { object_id: "obj-note", object_name: "孤立说明", object_level: "function_unit" },
+    ],
+    [
+      { source_object_id: "obj-root", target_object_id: "obj-power" },
+      { source_object_id: "obj-power", target_object_id: "obj-sensor" },
+    ],
+    [],
+  );
+
+  assert.equal(output.orphan_count, 1);
+  assert.equal(output.root_count, 1);
+  assert.equal(output.max_depth, 3);
+  assert.equal(typeof output.quality_score, "number");
+  assert.equal(output.updated_objects.find((item) => item.object_id === "obj-root")?.structural_role, "root");
+  assert.equal(output.updated_objects.find((item) => item.object_id === "obj-note")?.structural_role, "isolated");
 });
 
 test("WorkflowV2Service object_fusion 会对模糊候选发起裁决并合并", async () => {
@@ -588,7 +677,7 @@ test("WorkflowV2Service window_extract 会上报滑动窗口执行进度", async
             {
               object_name: payload.window_id,
               normalized_name: payload.window_id,
-              citation: [payload.text],
+              citation: [payload.window_text],
               confidence: 0.8,
               reason: "测试用对象。",
             },
@@ -623,16 +712,66 @@ test("WorkflowV2Service window_extract 会上报滑动窗口执行进度", async
   assert.equal(typeof progressEvents.at(-1).window_id, "string");
   assert.match(seenInstructions[0], /尽量详细地提取/);
   assert.match(seenInstructions[0], /不可再拆分的最小实体词/);
+  assert.match(seenInstructions[0], /必须同时提取整体对象 A 和其中出现的组成项 XXX/);
+  assert.match(seenInstructions[0], /合法 JSON 输出样例/);
+  assert.match(seenInstructions[0], /"reason": "已提取该窗口中的整体对象及其直接组成项。"/);
+});
+
+test("WorkflowV2Service window_extract 会跳过失败窗口并保留其余窗口结果", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-window-partial-"));
+  const service = createService({
+    runtimeRoot,
+    windowSize: 2,
+    windowStep: 1,
+    parallelWindows: 2,
+    llmJsonInvoker: async ({ payload }) => {
+      if (payload.window_id === "w1") {
+        return {
+          data: {
+            objects: [
+              {
+                object_name: "电脑",
+                normalized_name: "电脑",
+                citation: [payload.window_text],
+                confidence: 0.8,
+                reason: "测试用对象。",
+              },
+            ],
+            reason: "窗口已完成对象抽取。",
+          },
+        };
+      }
+      const error = new Error("fetch failed");
+      error.cause = { name: "Error", code: "ECONNRESET", message: "socket hang up" };
+      throw error;
+    },
+  });
+
+  const output = await service.windowExtractStage(
+    { raw_text: "示例文本" },
+    [
+      { chunk_id: "c1", order: 1, text: "第一段", reason: "", start_offset: 0, end_offset: 3, paragraph_index: 0 },
+      { chunk_id: "c2", order: 2, text: "第二段", reason: "", start_offset: 4, end_offset: 7, paragraph_index: 1 },
+      { chunk_id: "c3", order: 3, text: "第三段", reason: "", start_offset: 8, end_offset: 11, paragraph_index: 2 },
+    ],
+  );
+
+  assert.equal(output.window_results.length, 1);
+  assert.equal(output.failed_windows.length, 1);
+  assert.equal(output.progress.failed, 1);
+  assert.equal(output.failed_windows[0].error_cause_code, "ECONNRESET");
 });
 
 test("WorkflowV2Service object_decompose 会对失败对象重试三次并跳过继续执行", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-decompose-retry-"));
   const attemptCounter = new Map();
   const progressEvents = [];
+  const seenInstructions = [];
   const service = createService({
     runtimeRoot,
-    llmJsonInvoker: async ({ stage, payload }) => {
+    llmJsonInvoker: async ({ stage, payload, instruction }) => {
       assert.equal(stage, "object_decompose");
+      seenInstructions.push(instruction);
       const objectName = payload.object.object_name;
       const count = (attemptCounter.get(objectName) ?? 0) + 1;
       attemptCounter.set(objectName, count);
@@ -680,18 +819,65 @@ test("WorkflowV2Service object_decompose 会对失败对象重试三次并跳过
   );
 
   assert.equal(attemptCounter.get("好对象"), 2);
-  assert.equal(attemptCounter.get("坏对象"), 6);
+  assert.equal(attemptCounter.get("坏对象"), 18);
   assert.equal(output.decomposition_results.length, 2);
   assert.equal(output.failed_objects.length, 1);
   assert.equal(output.failed_objects[0].object_name, "坏对象");
   assert.equal(output.failed_objects[0].attempts.length, 3);
-  assert.equal(output.failed_objects[0].attempts[2].model_output, "attempt-5: not-json");
+  assert.match(output.failed_objects[0].attempts[2].model_output, /attempt-\d+: not-json/);
   assert.equal(output.progress.completed, 2);
   assert.equal(output.progress.failed, 1);
   assert.deepEqual(
     progressEvents.map((item) => item.completed),
     [0, 1, 2],
   );
+  assert.match(seenInstructions[0], /合法 JSON 输出样例/);
+  assert.match(seenInstructions[0], /"decompositions": \[/);
+});
+
+test("WorkflowV2Service function_analysis 会跳过失败对象并保留其余结果", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-function-partial-"));
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ payload }) => {
+      if (payload.object.object_name === "坏对象") {
+        const error = new Error("fetch failed");
+        error.cause = { name: "Error", code: "ECONNRESET", message: "socket hang up" };
+        throw error;
+      }
+      return {
+        data: {
+          core_function: "执行核心计算",
+          citation: ["好对象负责执行核心计算。"],
+          confidence: 0.88,
+          reason: "测试用核心功能结果。",
+        },
+      };
+    },
+  });
+
+  const output = await service.functionAnalysisStage([
+    {
+      object_id: "obj-good",
+      object_name: "好对象",
+      normalized_name: "好对象",
+      aliases: [],
+      citations: ["好对象负责执行核心计算。"],
+    },
+    {
+      object_id: "obj-bad",
+      object_name: "坏对象",
+      normalized_name: "坏对象",
+      aliases: [],
+      citations: ["坏对象也要分析。"],
+    },
+  ]);
+
+  assert.equal(output.function_objects.length, 2);
+  assert.equal(output.failed_function_objects.length, 1);
+  assert.equal(output.progress.failed, 1);
+  assert.equal(output.failed_function_objects[0].object_name, "坏对象");
+  assert.equal(output.failed_function_objects[0].error_cause_code, "ECONNRESET");
 });
 
 test("WorkflowV2Service ablation_analysis 会上报父节点级进度", async () => {
@@ -748,7 +934,7 @@ test("WorkflowV2Service ablation_analysis 会上报父节点级进度", async ()
   );
 
   assert.equal(output.parent_summaries.length, 2);
-  assert.deepEqual(output.progress, { completed: 2, total: 2 });
+  assert.deepEqual(output.progress, { completed: 2, total: 2, failed: 0 });
   const completionEvents = progressEvents.filter((item) => typeof item.parent_object_name === "string" && item.parent_object_name);
   assert.deepEqual(
     completionEvents.map((item) => item.completed),
@@ -824,7 +1010,7 @@ test("WorkflowV2Service ablation_analysis 会并行执行多个父节点的消�
   assert.equal(maxInFlight > 1, true);
 });
 
-test("WorkflowV2Service 能从失败阶段重试，并复用真实快照状态", async () => {
+test("WorkflowV2Service 能从成功阶段重试，并复用真实快照状态", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-retry-success-"));
   let ablationAttempt = 0;
   const service = createService({
@@ -890,7 +1076,7 @@ test("WorkflowV2Service 能从失败阶段重试，并复用真实快照状态",
       }
       if (stage === "ablation_analysis") {
         ablationAttempt += 1;
-        if (ablationAttempt <= 2) {
+        if (ablationAttempt <= 1) {
           throw new Error("ablation failed on first run");
         }
         if (Array.isArray(payload.siblings)) {
@@ -938,14 +1124,16 @@ test("WorkflowV2Service 能从失败阶段重试，并复用真实快照状态",
     conversationId: "workflow-v2-retry-success",
   });
 
-  assert.equal(firstRun.ok, false);
+  assert.equal(firstRun.ok, true);
   assert.equal(firstRun.stage_results.find((item) => item.stage === "graph_build")?.status, "success");
-  assert.equal(firstRun.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "failed");
+  assert.equal(firstRun.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "success");
+  assert.equal(firstRun.result.ablation.length, 1);
+  assert.equal(Array.isArray(firstRun.result.ablation[0]?.failed_child_analyses), true);
 
   const snapshot = JSON.parse(await readFile(service.getWorkflowSnapshotPath("workflow-v2-retry-success"), "utf8"));
   assert.equal(snapshot.state.edges.length, 1);
   assert.equal(snapshot.stage_results.find((item) => item.stage === "graph_build")?.status, "success");
-  assert.equal(snapshot.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "failed");
+  assert.equal(snapshot.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "success");
 
   const retried = await service.retryFileWorkflowFromStage({
     projectId: "demo",
@@ -964,48 +1152,39 @@ test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功�
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-retry-invalid-"));
   const service = createService({
     runtimeRoot,
-    llmJsonInvoker: async ({ stage }) => {
-      if (stage === "window_extract") {
-        return {
-          data: {
-            objects: [
-              {
-                object_name: "电脑",
-                normalized_name: "电脑",
-                citation: ["电脑系统负责计算。"],
-                confidence: 0.91,
-                reason: "窗口抽取到了对象。",
-              },
-              {
-                object_name: "电脑系统",
-                normalized_name: "电脑系统",
-                citation: ["电脑系统负责计算。"],
-                confidence: 0.9,
-                reason: "窗口抽取到了近义候选。",
-              },
-            ],
-            reason: "窗口抽取完成。",
-          },
-        };
-      }
-      if (stage === "object_fusion") {
-        throw new Error("fusion failed");
-      }
-      throw new Error(`unexpected stage: ${stage}`);
+  });
+  await service.writeWorkflowSnapshot("workflow-v2-retry-invalid", {
+    input_file: {
+      originalName: "retry-invalid.txt",
+      storedName: "retry-invalid.txt",
+      size: 0,
+      path: runtimeRoot,
+      mimeType: "text/plain",
     },
+    state: {
+      document: {
+        raw_text: "电脑系统负责计算。",
+      },
+      chunks: [{ chunk_id: "c1", order: 1, text: "电脑系统负责计算。" }],
+      windows: [{ window_id: "w1", order: 1, chunk_ids: ["c1"], text: "电脑系统负责计算。" }],
+      window_results: [{ window_id: "w1", objects: [] }],
+      fused_objects: [],
+      function_objects: [],
+      decomposition_results: [],
+      edges: [],
+      removed_cycle_edges: [],
+      parent_summaries: [],
+    },
+    stage_results: [
+      { stage: "chunk_parse", order: 1, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "window_extract", order: 2, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "object_fusion", order: 3, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "function_analysis", order: 4, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "object_decompose", order: 5, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "graph_build", order: 6, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "ablation_analysis", order: 7, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+    ],
   });
-
-  const firstRun = await service.runFileWorkflow({
-    projectId: "demo",
-    fileName: "retry-invalid.txt",
-    mimeType: "text/plain",
-    content: Buffer.from("电脑系统负责计算。", "utf8"),
-    conversationId: "workflow-v2-retry-invalid",
-  });
-
-  assert.equal(firstRun.ok, false);
-  assert.equal(firstRun.stage_results[2].status, "failed");
-  assert.equal(firstRun.stage_results.find((item) => item.stage === "function_analysis")?.status, "pending");
 
   const retried = await service.retryFileWorkflowFromStage({
     projectId: "demo",
@@ -1015,8 +1194,168 @@ test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功�
 
   assert.equal(retried.ok, false);
   assert.match(retried.errors[0].message, /not retryable|previous stage/);
-  assert.equal(retried.stage_results[2].status, "failed");
+  assert.equal(retried.stage_results[2].status, "success");
   assert.equal(retried.stage_results.find((item) => item.stage === "function_analysis")?.status, "pending");
+});
+
+test("WorkflowV2Service 会在局部失败的阶段结果里保留 llm_raw_text 调试信息", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-failed-stage-debug-"));
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ stage }) => {
+      if (stage === "window_extract") {
+        const error = new Error("workflow V2 LLM returned invalid JSON after 3 attempts");
+        error.stageOutput = {
+          llm_raw_text: "```json\n{broken:true}\n``` trailing",
+          debug_error: "workflow V2 LLM returned invalid JSON",
+          llm_ensemble: {
+            models: {
+              model_a: { single_result: { raw_text: "{broken:true}" } },
+            },
+          },
+        };
+        throw error;
+      }
+      throw new Error(`unexpected stage: ${stage}`);
+    },
+  });
+
+  const result = await service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "failed-debug.txt",
+    mimeType: "text/plain",
+    content: Buffer.from("电脑系统负责计算。", "utf8"),
+    conversationId: "workflow-v2-failed-stage-debug",
+  });
+
+  assert.equal(result.ok, true);
+  const stage = result.stage_results.find((item) => item.stage === "window_extract");
+  assert.equal(stage?.status, "success");
+  assert.equal(Array.isArray(stage?.output?.failed_windows), true);
+  assert.match(stage?.output?.failed_windows?.[0]?.raw_text ?? "", /broken:true/);
+  assert.match(stage?.output?.failed_windows?.[0]?.llm_ensemble?.models?.model_a?.single_result?.raw_text ?? "", /broken:true/);
+});
+
+test("WorkflowV2Service 终止运行中的 LLM 调用后会释放项目锁", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-abort-release-lock-"));
+  let firstRunSignal = null;
+  let resolveFirstWindowStarted = null;
+  const firstWindowStarted = new Promise((resolve) => {
+    resolveFirstWindowStarted = resolve;
+  });
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ stage, payload, signal }) => {
+      if (stage === "window_extract") {
+        if (!firstRunSignal) {
+          firstRunSignal = signal;
+          resolveFirstWindowStarted?.();
+        }
+        if (signal === firstRunSignal) {
+          return await new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+              reject(signal.reason instanceof Error ? signal.reason : new Error("workflow V2 已被用户终止"));
+              return;
+            }
+            signal?.addEventListener("abort", () => {
+              reject(signal.reason instanceof Error ? signal.reason : new Error("workflow V2 已被用户终止"));
+            }, { once: true });
+          });
+        }
+        return {
+          data: {
+            objects: [
+              {
+                object_name: "CPU",
+                normalized_name: "cpu",
+                citation: ["CPU 是核心处理单元。"],
+                confidence: 0.95,
+                reason: "窗口里只出现了 CPU。",
+              },
+            ],
+            reason: "窗口抽取完成。",
+          },
+        };
+      }
+      if (stage === "function_analysis") {
+        return {
+          data: {
+            core_function: "执行核心计算与指令处理",
+            citation: ["CPU 是核心处理单元。"],
+            confidence: 0.92,
+            reason: "可直接从原文归纳。",
+          },
+        };
+      }
+      if (stage === "object_decompose") {
+        return {
+          data: {
+            decompositions: [],
+            reason: "没有更细的组成关系。",
+          },
+        };
+      }
+      if (stage === "ablation_analysis" && Array.isArray(payload.siblings)) {
+        return {
+          data: {
+            sibling_impacts: [],
+            reason: "无兄弟节点影响。",
+          },
+        };
+      }
+      if (stage === "ablation_analysis") {
+        return {
+          data: {
+            impact_on_parent: {
+              parent_object_id: payload.parent.object_id,
+              importance_level: "medium",
+              judgement: "该子节点对父系统有一定重要性。",
+              reason: "父节点定义部分依赖它。",
+            },
+            reason: "父级消融完成。",
+          },
+        };
+      }
+      throw new Error(`unexpected stage: ${stage}`);
+    },
+  });
+
+  const abortController = new AbortController();
+  const firstRunPromise = service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "abort-first.txt",
+    mimeType: "text/plain",
+    content: Buffer.from("CPU 是核心处理单元。", "utf8"),
+    conversationId: "workflow-v2-abort-first",
+    signal: abortController.signal,
+  });
+
+  await firstWindowStarted;
+
+  let secondFinished = false;
+  const secondRunPromise = service.runFileWorkflow({
+    projectId: "demo",
+    fileName: "abort-second.txt",
+    mimeType: "text/plain",
+    content: Buffer.from("CPU 是核心处理单元。", "utf8"),
+    conversationId: "workflow-v2-abort-second",
+  }).then((result) => {
+    secondFinished = true;
+    return result;
+  });
+
+  await Promise.resolve();
+  assert.equal(secondFinished, false);
+
+  abortController.abort(new Error("workflow V2 已被用户终止"));
+
+  const firstResult = await firstRunPromise;
+  assert.equal(firstResult.ok, false);
+  assert.match(firstResult.errors[0]?.message ?? "", /已被用户终止/);
+
+  const secondResult = await secondRunPromise;
+  assert.equal(secondFinished, true);
+  assert.equal(secondResult.ok, true);
 });
 
 test("WorkflowV2Service getFileWorkflowSession 会从 snapshot 返回完整对象和运行状态", async () => {
@@ -1156,6 +1495,165 @@ test("WorkflowV2Service invokeStageJson 会放宽 shared 判别并合并 functio
   assert.equal(result.llm_ensemble?.cross_rounds?.length, 0);
   assert.equal(calls.some((item) => item.ensembleRole === "cross_round"), false);
   assert.equal(calls.some((item) => item.ensembleRole === "judge_pick"), false);
+});
+
+test("WorkflowV2Service invokeStageJson 会在模型返回坏 JSON 时自动重试", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-invalid-json-retry-"));
+  const attemptCounter = new Map();
+  const service = createService({
+    runtimeRoot,
+    workflowModelA: "model-a",
+    workflowModelB: "model-b",
+    llmJsonInvoker: async ({ modelOverride, ensembleRole, ensembleModelKey, retryHint, responseFormatMode }) => {
+      assert.equal(ensembleRole, "dual_run");
+      const key = `${modelOverride}:${ensembleModelKey}`;
+      const count = (attemptCounter.get(key) ?? 0) + 1;
+      attemptCounter.set(key, count);
+      if (count === 1) {
+        assert.equal(responseFormatMode, "none");
+      }
+      if (count < 2) {
+        const error = new Error("workflow V2 LLM returned invalid JSON");
+        error.llm_raw_text = `${key}-bad-json-${count}`;
+        error.stageOutput = {
+          llm_raw_text: `${key}-bad-json-${count}`,
+          debug_error: "workflow V2 LLM returned invalid JSON",
+        };
+        throw error;
+      }
+      if (count === 2) {
+        assert.equal(responseFormatMode, "none");
+        assert.match(retryHint, /完整 JSON 对象|合法 JSON/);
+      }
+      return {
+        data: {
+          core_function: `${modelOverride} 功能摘要`,
+          citation: ["系统依靠该对象完成关键功能。"],
+          confidence: 0.8,
+          reason: `${modelOverride} 已返回合法 JSON。`,
+        },
+      };
+    },
+  });
+
+  const result = await service.invokeStageJson({
+    stage: "function_analysis",
+    instruction: "测试无效 JSON 重试。",
+    payload: {
+      object: {
+        object_name: "核心模块",
+        citations: ["系统依靠该对象完成关键功能。"],
+      },
+    },
+    responseSchema: {
+      name: "workflow_v2_object_function",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          core_function: { type: "string" },
+          citation: { type: "array", items: { type: "string" } },
+          confidence: { type: "number" },
+          reason: { type: "string" },
+        },
+        required: ["core_function", "citation", "confidence", "reason"],
+      },
+    },
+  });
+
+  assert.equal(attemptCounter.get("model-a:model_a"), 2);
+  assert.equal(attemptCounter.get("model-b:model_b"), 2);
+  assert.equal(result.data.core_function.includes("功能摘要"), true);
+  assert.equal(result.llm_ensemble?.models?.model_a?.single_result?.status, "completed");
+  assert.equal(result.llm_ensemble?.models?.model_b?.single_result?.status, "completed");
+});
+
+test("WorkflowV2Service invokeStageJson 会把 object_decompose 的错形 relations 输出视为 schema 不匹配并重试", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-object-decompose-schema-retry-"));
+  const attemptCounter = new Map();
+  const service = createService({
+    runtimeRoot,
+    workflowModelA: "model-a",
+    workflowModelB: "model-b",
+    llmJsonInvoker: async ({ modelOverride, ensembleModelKey, retryHint }) => {
+      const key = `${modelOverride}:${ensembleModelKey}`;
+      const count = (attemptCounter.get(key) ?? 0) + 1;
+      attemptCounter.set(key, count);
+      if (count === 1) {
+        return {
+          data: {
+            object_id: "obj-object-1",
+            relations: [
+              {
+                relation: "contains",
+                target_object_name: "外壳",
+              },
+            ],
+          },
+        };
+      }
+      assert.match(retryHint, /完整、闭合、可直接 JSON\.parse|schema-mismatched/i);
+      return {
+        data: {
+          decompositions: [
+            {
+              parent_object_name: "机械狗",
+              child_object_name: "外壳",
+              relation: "contains",
+              citation: "机械狗由外壳、芯片、电源组成。",
+              confidence: 0.95,
+              reason: "citation 明确说明机械狗由外壳构成。",
+            },
+          ],
+          reason: "已提取直接组成关系。",
+        },
+      };
+    },
+  });
+
+  const result = await service.invokeStageJson({
+    stage: "object_decompose",
+    instruction: "测试对象拆解 schema 重试。",
+    payload: {
+      object: {
+        object_id: "obj-object-1",
+        object_name: "机械狗",
+        citations: ["机械狗由外壳、芯片、电源组成。"],
+      },
+    },
+    responseSchema: {
+      name: "workflow_v2_object_decompose",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          decompositions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                parent_object_name: { type: "string" },
+                child_object_name: { type: "string" },
+                relation: { type: "string" },
+                citation: { type: "string" },
+                confidence: { type: "number" },
+                reason: { type: "string" },
+              },
+              required: ["parent_object_name", "child_object_name", "relation", "citation", "confidence", "reason"],
+            },
+          },
+          reason: { type: "string" },
+        },
+        required: ["decompositions", "reason"],
+      },
+    },
+  });
+
+  assert.equal(attemptCounter.get("model-a:model_a"), 2);
+  assert.equal(attemptCounter.get("model-b:model_b"), 2);
+  assert.equal(Array.isArray(result.data.decompositions), true);
+  assert.equal(result.data.decompositions[0]?.child_object_name, "外壳");
 });
 
 test("WorkflowV2Service invokeStageJson 会先让 A/B 互评 conflict 再交给 judge 二选一", async () => {

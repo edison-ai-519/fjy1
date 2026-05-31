@@ -211,6 +211,16 @@ function compactStageOutput(stage: string, output: Record<string, unknown> | nul
     };
   }
 
+  if (stage === 'system_scope_identify') {
+    return {
+      document_focus: trimText(output.document_focus, 120),
+      document_abstraction_level: trimText(output.document_abstraction_level, 80),
+      scope_reason: trimText(output.scope_reason, 240),
+      primary_system_candidates: compactArray(output.primary_system_candidates, 6, (item) => trimText(item, 60)),
+      evidence_chunk_ids: compactArray(output.evidence_chunk_ids, 6, (item) => trimText(item, 32)),
+    };
+  }
+
   if (stage === 'window_extract') {
     const windows = Array.isArray(output.windows) ? output.windows : [];
     const windowResults = Array.isArray(output.window_results) ? output.window_results : [];
@@ -256,11 +266,32 @@ function compactStageOutput(stage: string, output: Record<string, unknown> | nul
           object_id: record.object_id,
           object_name: trimText(record.object_name, 100),
           normalized_name: trimText(record.normalized_name, 100),
+          object_level: trimText(record.object_level, 40),
           aliases: compactArray(record.aliases, 6, (alias) => trimText(alias, 60)),
           citations: compactArray(record.citations, 4, (citation) => trimText(citation, 140)),
           citation_count: Array.isArray(record.citations) ? record.citations.length : 0,
           confidence: record.confidence,
           reason: trimText(record.reason, 120),
+        };
+      }),
+    };
+  }
+
+  if (stage === 'granularity_align') {
+    const alignedObjects = Array.isArray(output.aligned_objects) ? output.aligned_objects : [];
+    return {
+      total_aligned_objects: Number(output.total_aligned_objects ?? alignedObjects.length) || alignedObjects.length,
+      reason: trimText(output.reason, 300),
+      level_summary: asRecord(output.level_summary),
+      aligned_objects: compactArray(alignedObjects, 30, (item) => {
+        const record = asRecord(item);
+        return {
+          object_id: record.object_id,
+          object_name: trimText(record.object_name, 100),
+          normalized_name: trimText(record.normalized_name, 100),
+          object_level: trimText(record.object_level, 40),
+          granularity_confidence: record.granularity_confidence,
+          granularity_reason: trimText(record.granularity_reason, 140),
         };
       }),
     };
@@ -278,6 +309,7 @@ function compactStageOutput(stage: string, output: Record<string, unknown> | nul
           object_id: record.object_id,
           object_name: trimText(record.object_name, 100),
           normalized_name: trimText(record.normalized_name, 100),
+          object_level: trimText(record.object_level, 40),
           aliases: compactArray(record.aliases, 6, (alias) => trimText(alias, 60)),
           citations: compactArray(record.citations, 4, (citation) => trimText(citation, 140)),
           citation_count: Array.isArray(record.citations) ? record.citations.length : 0,
@@ -368,6 +400,23 @@ function compactStageOutput(stage: string, output: Record<string, unknown> | nul
     };
   }
 
+  if (stage === 'structure_quality_gate') {
+    return {
+      quality_score: output.quality_score,
+      is_structurally_sound: output.is_structurally_sound,
+      cycle_count: output.cycle_count,
+      orphan_count: output.orphan_count,
+      root_count: output.root_count,
+      max_depth: output.max_depth,
+      too_flat_warning: trimText(output.too_flat_warning, 180),
+      mixed_granularity_warning: trimText(output.mixed_granularity_warning, 180),
+      fragmented_root_warning: trimText(output.fragmented_root_warning, 180),
+      reason: trimText(output.reason, 300),
+      depth_distribution: asRecord(output.depth_distribution),
+      level_summary: asRecord(output.level_summary),
+    };
+  }
+
   if (stage === 'ablation_analysis') {
     const parentSummaries = Array.isArray(output.parent_summaries) ? output.parent_summaries : [];
     return {
@@ -448,10 +497,13 @@ function compactRunResultForStorage(runResult: WorkflowV2RunResponse | null, mod
           object_id: record.object_id,
           object_name: trimText(record.object_name, 100),
           normalized_name: trimText(record.normalized_name, 100),
+          object_level: trimText(record.object_level, 40),
           core_function: trimText(record.core_function, 140),
           is_isolated: record.is_isolated === true,
           structure_status: trimText(record.structure_status, 32),
           structure_reason: trimText(record.structure_reason, 120),
+          structure_depth: record.structure_depth,
+          structural_role: trimText(record.structural_role, 32),
         };
       }),
       edges: mode === 'minimal' ? [] : compactArray(runResult.result?.edges, 30, (item) => {

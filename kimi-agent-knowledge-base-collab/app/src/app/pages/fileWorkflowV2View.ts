@@ -50,6 +50,8 @@ export interface WorkflowV2SystemStructureNode {
   name: string;
   normalizedName: string;
   coreFunction: string;
+  objectLevel: string;
+  structureDepth: number;
   childCount: number;
   isLeaf: boolean;
   hiddenDescendantCount: number;
@@ -59,13 +61,14 @@ export interface WorkflowV2SystemStructureNode {
 
 export interface WorkflowV2StructureSummary {
   containmentCount: number;
+  clusterCount: number;
   leafCount: number;
   maxDepth: number;
   hiddenDescendantCount: number;
 }
 
 export interface WorkflowV2SystemDecompositionView {
-  root: WorkflowV2SystemStructureNode | null;
+  roots: WorkflowV2SystemStructureNode[];
   summary: WorkflowV2StructureSummary;
   emptyReason: string;
 }
@@ -75,6 +78,8 @@ interface WorkflowV2SystemObject {
   name: string;
   normalizedName: string;
   coreFunction: string;
+  objectLevel: string;
+  structureDepth: number;
 }
 
 interface WorkflowV2SystemEdge {
@@ -103,6 +108,26 @@ function asArray<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
 }
 
+function inferWorkflowV2ObjectLevel(record: Record<string, unknown>): string {
+  const name = asText(record.object_name);
+  const normalized = `${name} ${asText(record.normalized_name)}`.toLowerCase();
+  const coreFunction = asText(record.core_function);
+
+  if (/(功能|流程|机制|协议|算法|逻辑|策略|服务|能力|规则)$/.test(name) || /(workflow|logic|service|algorithm|protocol|function)/.test(normalized)) {
+    return 'function_unit';
+  }
+  if (/(子系统|模块|单元|总成|机构|组件组|控制器|集群)$/.test(name) || /(subsystem|module|controller|cluster)/.test(normalized)) {
+    return 'subsystem';
+  }
+  if (/(系统|平台|架构|网络|整车|电脑|主机|设备|装置)$/.test(name) || /(system|platform|network|computer|device)/.test(normalized)) {
+    return 'system';
+  }
+  if (coreFunction && /(执行|控制|协调|处理|采集|输出)/.test(coreFunction) && /(单元|器|机|芯片|模块|组件|传感器|寄存器|核心)/.test(name)) {
+    return 'component';
+  }
+  return 'component';
+}
+
 function normalizeWorkflowV2SystemObjects(objects: unknown): WorkflowV2SystemObject[] {
   return asArray(objects)
     .map((item) => asRecord(item))
@@ -111,6 +136,8 @@ function normalizeWorkflowV2SystemObjects(objects: unknown): WorkflowV2SystemObj
       name: asText(item.object_name) || asText(item.object_id),
       normalizedName: asText(item.normalized_name),
       coreFunction: asText(item.core_function),
+      objectLevel: asText(item.object_level) || inferWorkflowV2ObjectLevel(item),
+      structureDepth: Number(item.structure_depth ?? 0) || 0,
     }))
     .filter((item) => item.id);
 }
@@ -156,6 +183,134 @@ function createWorkflowV2Adjacency(edges: WorkflowV2SystemEdge[], objectIds: Set
   }
 
   return { adjacency, indegree, degree };
+}
+
+function buildWorkflowV2DepthMap(objectIds: Set<string>, edges: WorkflowV2SystemEdge[]) {
+  const depthMap = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+
+  for (const objectId of objectIds) {
+    depthMap.set(objectId, 0);
+    adjacency.set(objectId, []);
+    indegree.set(objectId, 0);
+  }
+
+  for (const edge of edges) {
+    adjacency.get(edge.sourceId)?.push(edge.targetId);
+    indegree.set(edge.targetId, (indegree.get(edge.targetId) ?? 0) + 1);
+  }
+
+  const queue = [...indegree.entries()].filter(([, value]) => value === 0).map(([objectId]) => objectId);
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) continue;
+    const nextDepth = depthMap.get(current) ?? 0;
+    for (const childId of adjacency.get(current) ?? []) {
+      depthMap.set(childId, Math.max(depthMap.get(childId) ?? 0, nextDepth + 1));
+      indegree.set(childId, (indegree.get(childId) ?? 1) - 1);
+      if ((indegree.get(childId) ?? 0) === 0) {
+        queue.push(childId);
+      }
+    }
+  }
+
+  return depthMap;
+}
+
+function deriveWorkflowV2StructureMetrics(result: WorkflowV2Result | null) {
+  const objects = asArray(result?.objects).map((item) => asRecord(item));
+  const objectIds = new Set(objects.map((item) => asText(item.object_id)).filter(Boolean));
+  const edges = normalizeWorkflowV2SystemEdges(result?.edges, objectIds);
+  const { adjacency, indegree } = createWorkflowV2Adjacency(edges, objectIds);
+  const depthMap = buildWorkflowV2DepthMap(objectIds, edges);
+  const connectedIds = new Set<string>();
+
+  for (const edge of edges) {
+    connectedIds.add(edge.sourceId);
+    connectedIds.add(edge.targetId);
+  }
+
+  const rootIds = [...objectIds].filter((objectId) => connectedIds.has(objectId) && (indegree.get(objectId) ?? 0) === 0);
+  const orphanCount = [...objectIds].filter((objectId) => !connectedIds.has(objectId)).length;
+  const maxDepth = [...connectedIds].reduce((max, objectId) => Math.max(max, (depthMap.get(objectId) ?? 0) + 1), 0);
+  const primaryRootId = pickWorkflowV2PrimaryRoot(objects, result?.edges);
+  const primaryRootName = objects.find((item) => asText(item.object_id) === primaryRootId)?.object_name;
+  const tooFlatWarning = edges.length > 0 && edges.length >= Math.max(3, Math.floor(objects.length / 2)) && maxDepth <= 2
+    ? '结构边数量不少，但最大深度仍然偏浅，说明系统拆解可能过于扁平。'
+    : '';
+  const qualityScore = Math.max(
+    0,
+    Math.min(
+      100,
+      100
+        - (edges.length === 0 && objects.length > 1 ? 30 : 0)
+        - orphanCount * 8
+        - Math.max(0, rootIds.length - 1) * 5
+        - (tooFlatWarning ? 12 : 0),
+    ),
+  );
+
+  const visitedCount = new Set<string>();
+  const queue = [...rootIds];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || visitedCount.has(current)) continue;
+    visitedCount.add(current);
+    for (const childId of adjacency.get(current) ?? []) {
+      queue.push(childId);
+    }
+  }
+
+  return {
+    primaryRootName: asText(primaryRootName),
+    rootCount: rootIds.length,
+    orphanCount,
+    maxDepth,
+    qualityScore,
+    tooFlatWarning,
+    isStructurallySound: edges.length > 0 && qualityScore >= 70 && orphanCount <= Math.max(2, Math.floor(objects.length / 3)),
+    isDag: objects.length === visitedCount.size + orphanCount || edges.length === 0,
+  };
+}
+
+export function buildWorkflowV2DisplayObjects(objects: unknown, edges: unknown): Record<string, unknown>[] {
+  const objectRecords = asArray(objects).map((item) => asRecord(item));
+  const objectIds = new Set(objectRecords.map((item) => asText(item.object_id)).filter(Boolean));
+  const normalizedEdges = normalizeWorkflowV2SystemEdges(edges, objectIds);
+  const { indegree, degree } = createWorkflowV2Adjacency(normalizedEdges, objectIds);
+  const depthMap = buildWorkflowV2DepthMap(objectIds, normalizedEdges);
+  const connectedIds = new Set<string>();
+
+  for (const edge of normalizedEdges) {
+    connectedIds.add(edge.sourceId);
+    connectedIds.add(edge.targetId);
+  }
+
+  return objectRecords.map((record) => {
+    const objectId = asText(record.object_id);
+    const isConnected = objectId ? connectedIds.has(objectId) : false;
+    const hasChildren = objectId ? (degree.get(objectId) ?? 0) > (indegree.get(objectId) ?? 0) : false;
+    const hasParent = objectId ? (indegree.get(objectId) ?? 0) > 0 : false;
+    const structuralRole = asText(record.structural_role)
+      || (!isConnected
+        ? 'isolated'
+        : !hasParent
+          ? 'root'
+          : hasChildren
+            ? 'branch'
+            : 'leaf');
+    const structureStatus = asText(record.structure_status) || (isConnected ? 'structured' : 'isolated');
+    const structureDepth = Number(record.structure_depth ?? 0) || (isConnected ? (depthMap.get(objectId) ?? 0) + 1 : 0);
+
+    return {
+      ...record,
+      object_level: asText(record.object_level) || inferWorkflowV2ObjectLevel(record),
+      structure_status: structureStatus,
+      structural_role: structuralRole,
+      structure_depth: structureDepth,
+    };
+  });
 }
 
 function collectWorkflowV2ReachableDescendants(
@@ -231,12 +386,24 @@ export function getWorkflowV2StageOutput<T extends Record<string, unknown> = Rec
 
 export function extractWorkflowV2Summary(result: WorkflowV2Result | null) {
   const meta = asRecord(result?.meta);
+  const fallback = deriveWorkflowV2StructureMetrics(result);
+  const objectCount = Number(meta.total_objects ?? asArray(result?.objects).length) || 0;
+  const edgeCount = Number(meta.total_edges ?? asArray(result?.edges).length) || 0;
   return {
-    chunkCount: Number(meta.total_chunks ?? 0) || 0,
-    windowCount: Number(meta.total_windows ?? 0) || 0,
-    objectCount: Number(meta.total_objects ?? 0) || 0,
-    edgeCount: Number(meta.total_edges ?? 0) || 0,
-    isDag: Boolean(meta.is_dag),
+    chunkCount: Number(meta.total_chunks ?? asArray(result?.chunks).length) || 0,
+    windowCount: Number(meta.total_windows ?? asArray(result?.windows).length) || 0,
+    objectCount,
+    edgeCount,
+    isDag: meta.is_dag === true || (meta.is_dag === undefined && fallback.isDag),
+    primarySystem: asText(meta.system_scope_focus) || fallback.primaryRootName,
+    abstractionLevel: asText(meta.document_abstraction_level) || (edgeCount > 0 ? (fallback.maxDepth >= 3 ? 'mixed_depth' : 'system_overview') : ''),
+    qualityScore: Number(meta.structure_quality_score ?? fallback.qualityScore) || 0,
+    isStructurallySound: meta.structure_is_sound === true || (meta.structure_is_sound === undefined && fallback.isStructurallySound),
+    orphanCount: Number(meta.structure_orphan_count ?? fallback.orphanCount) || 0,
+    rootCount: Number(meta.structure_root_count ?? fallback.rootCount) || 0,
+    maxDepth: Number(meta.structure_max_depth ?? fallback.maxDepth) || 0,
+    tooFlatWarning: asText(meta.structure_too_flat_warning) || fallback.tooFlatWarning,
+    mixedGranularityWarning: asText(meta.structure_mixed_granularity_warning),
   };
 }
 
@@ -338,9 +505,10 @@ export function buildWorkflowV2SystemDecompositionView(input: {
 
   if (normalizedObjects.length === 0) {
     return {
-      root: null,
+      roots: [],
       summary: {
         containmentCount: 0,
+        clusterCount: 0,
         leafCount: 0,
         maxDepth: 0,
         hiddenDescendantCount: 0,
@@ -357,9 +525,10 @@ export function buildWorkflowV2SystemDecompositionView(input: {
 
   if (!rootId) {
     return {
-      root: null,
+      roots: [],
       summary: {
         containmentCount: 0,
+        clusterCount: 0,
         leafCount: 0,
         maxDepth: 0,
         hiddenDescendantCount: 0,
@@ -396,6 +565,8 @@ export function buildWorkflowV2SystemDecompositionView(input: {
           name: object.name,
           normalizedName: object.normalizedName,
           coreFunction: object.coreFunction,
+          objectLevel: object.objectLevel,
+          structureDepth: object.structureDepth > 0 ? object.structureDepth : depth + 1,
           childCount: directChildIds.length,
           isLeaf: directChildIds.length === 0,
           hiddenDescendantCount: totalDescendantIds.size,
@@ -426,6 +597,8 @@ export function buildWorkflowV2SystemDecompositionView(input: {
         name: object.name,
         normalizedName: object.normalizedName,
         coreFunction: object.coreFunction,
+        objectLevel: object.objectLevel,
+        structureDepth: object.structureDepth,
         childCount: directChildIds.length,
         isLeaf: directChildIds.length === 0,
         hiddenDescendantCount: Math.max(totalDescendantIds.size - visibleIds.size, 0),
@@ -436,23 +609,56 @@ export function buildWorkflowV2SystemDecompositionView(input: {
     };
   };
 
-  const builtRoot = buildNode(rootId, 0, new Set());
-  const reachableNodeIds = new Set<string>([rootId, ...collectWorkflowV2ReachableDescendants(rootId, adjacency, new Set())]);
+  const { indegree } = createWorkflowV2Adjacency(normalizedEdges, objectIds);
+  const connectedIds = new Set<string>();
+  for (const edge of normalizedEdges) {
+    connectedIds.add(edge.sourceId);
+    connectedIds.add(edge.targetId);
+  }
+
+  const rootIds = normalizedEdges.length > 0
+    ? normalizedObjects
+      .filter((item) => connectedIds.has(item.id) && (indegree.get(item.id) ?? 0) === 0)
+      .map((item) => item.id)
+    : [];
+
+  const sortedRootIds = rootIds.length > 0
+    ? [...rootIds].sort((leftId, rightId) => {
+      if (leftId === rootId) return -1;
+      if (rightId === rootId) return 1;
+      const left = objectById.get(leftId);
+      const right = objectById.get(rightId);
+      return (left?.name || leftId).localeCompare(right?.name || rightId, 'zh-Hans-CN');
+    })
+    : [rootId];
+
+  const roots = sortedRootIds
+    .map((nextRootId) => buildNode(nextRootId, 0, new Set())?.node ?? null)
+    .filter((item): item is WorkflowV2SystemStructureNode => Boolean(item));
+  const reachableNodeIds = new Set<string>();
+  for (const nextRootId of sortedRootIds) {
+    reachableNodeIds.add(nextRootId);
+    for (const descendantId of collectWorkflowV2ReachableDescendants(nextRootId, adjacency, new Set())) {
+      reachableNodeIds.add(descendantId);
+    }
+  }
   const containmentCount = normalizedEdges.filter((edge) => (
     reachableNodeIds.has(edge.sourceId) && reachableNodeIds.has(edge.targetId)
   )).length;
-  const leafCount = countWorkflowV2LeafNodes(rootId, adjacency);
+  const leafCount = sortedRootIds.reduce((sum, nextRootId) => sum + countWorkflowV2LeafNodes(nextRootId, adjacency), 0);
+  const hiddenDescendantCount = roots.reduce((sum, node) => sum + node.hiddenDescendantCount, 0);
   const emptyReason = normalizedEdges.length === 0
     ? '当前还没有形成可展示的系统拆解结构，待图构建阶段产出包含关系后会在这里显示。'
     : '';
 
   return {
-    root: builtRoot?.node ?? null,
+    roots,
     summary: {
       containmentCount,
+      clusterCount: roots.length,
       leafCount,
       maxDepth: deepestVisibleDepth + 1,
-      hiddenDescendantCount: builtRoot?.node.hiddenDescendantCount ?? 0,
+      hiddenDescendantCount,
     },
     emptyReason,
   };
