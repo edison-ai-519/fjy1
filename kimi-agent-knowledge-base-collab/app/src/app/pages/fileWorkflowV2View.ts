@@ -1,4 +1,4 @@
-import type { WorkflowV2Result, WorkflowV2StageResult } from '@/features/workflow/runtimeV2';
+import type { WorkflowV2Result, WorkflowV2RunSession, WorkflowV2StageResult } from '@/features/workflow/runtimeV2';
 
 export interface WorkflowV2GraphNode {
   id: string;
@@ -31,6 +31,16 @@ export interface WorkflowV2ImpactEdgeStyle {
   strokeDasharray?: string;
 }
 
+export interface WorkflowV2WritebackSummary {
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  lastCommitId: string;
+  lastVersionId: number | null;
+  inferenceProbability: number | null;
+  inferenceReason: string;
+}
+
 export interface WorkflowV2GraphViewOptions {
   hideIsolatedNodes?: boolean;
 }
@@ -45,6 +55,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function asNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function asArray<T = Record<string, unknown>>(value: unknown): T[] {
@@ -82,6 +97,41 @@ export function extractWorkflowV2Summary(result: WorkflowV2Result | null) {
     objectCount: Number(meta.total_objects ?? 0) || 0,
     edgeCount: Number(meta.total_edges ?? 0) || 0,
     isDag: Boolean(meta.is_dag),
+  };
+}
+
+export function canWriteWorkflowV2Session(session: WorkflowV2RunSession | null): boolean {
+  if (!session || session.isRunning || !session.runResult) {
+    return false;
+  }
+
+  const runResult = session.runResult;
+  const objects = Array.isArray(runResult.result?.objects) ? runResult.result.objects : [];
+  if (objects.length > 0) {
+    return true;
+  }
+
+  return Array.isArray(runResult.stage_results) && runResult.stage_results.some((item) => item.status === 'success');
+}
+
+export function extractWorkflowV2WritebackSummary(payload: unknown): WorkflowV2WritebackSummary {
+  const root = asRecord(payload);
+  const ingestResults = asArray(root.ingest_results).map((item) => asRecord(item));
+  const successItems = ingestResults.filter((item) => asText(item.status) !== 'failed');
+  const failedCount = ingestResults.length - successItems.length;
+  const latestSuccess = successItems.at(-1) ?? null;
+  const inferenceSource = latestSuccess
+    ? asRecord(asRecord(latestSuccess.raw).inference_result || asRecord(latestSuccess.raw).inference)
+    : {};
+
+  return {
+    totalCount: ingestResults.length,
+    successCount: successItems.length,
+    failedCount,
+    lastCommitId: asText(latestSuccess?.commit_id),
+    lastVersionId: asNumber(latestSuccess?.version_id),
+    inferenceProbability: asNumber(inferenceSource.probability),
+    inferenceReason: asText(inferenceSource.reason),
   };
 }
 

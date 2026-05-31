@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildWorkflowV2GraphLayout, extractWorkflowV2SiblingImpactEdges, extractWorkflowV2Summary, getWorkflowV2ImpactEdgeStyle } from './fileWorkflowV2View';
+import {
+  buildWorkflowV2GraphLayout,
+  canWriteWorkflowV2Session,
+  extractWorkflowV2SiblingImpactEdges,
+  extractWorkflowV2Summary,
+  extractWorkflowV2WritebackSummary,
+  getWorkflowV2ImpactEdgeStyle,
+} from './fileWorkflowV2View';
 
 test('extractWorkflowV2Summary 会读取 meta 统计信息', () => {
   const summary = extractWorkflowV2Summary({
@@ -26,6 +33,133 @@ test('extractWorkflowV2Summary 会读取 meta 统计信息', () => {
     objectCount: 5,
     edgeCount: 4,
     isDag: true,
+  });
+});
+
+test('canWriteWorkflowV2Session 只有在会话已有结果且未运行时才允许写回', () => {
+  assert.equal(canWriteWorkflowV2Session(null), false);
+  assert.equal(canWriteWorkflowV2Session({
+    conversationId: 'running',
+    projectId: 'demo',
+    statusMessage: 'running',
+    isRunning: true,
+    runResult: null,
+    windowExtractProgress: null,
+    objectDecomposeProgress: null,
+    ablationAnalysisProgress: null,
+    logs: [],
+    lastRunAt: null,
+    updatedAt: '2026-05-31T00:00:00.000Z',
+  }), false);
+
+  assert.equal(canWriteWorkflowV2Session({
+    conversationId: 'done-with-objects',
+    projectId: 'demo',
+    statusMessage: 'done',
+    isRunning: false,
+    runResult: {
+      ok: true,
+      workflow: { mode: 'file', status: 'completed', steps: [] },
+      stage_results: [],
+      errors: [],
+      runtime_root: '/tmp/demo',
+      result: {
+        document: null,
+        chunks: [],
+        windows: [],
+        objects: [{ object_id: 'obj-1', object_name: '发动机' }],
+        edges: [],
+        ablation: [],
+        meta: {},
+      },
+    },
+    windowExtractProgress: null,
+    objectDecomposeProgress: null,
+    ablationAnalysisProgress: null,
+    logs: [],
+    lastRunAt: '2026-05-31T00:01:00.000Z',
+    updatedAt: '2026-05-31T00:01:00.000Z',
+  }), true);
+
+  assert.equal(canWriteWorkflowV2Session({
+    conversationId: 'done-with-stage',
+    projectId: 'demo',
+    statusMessage: 'done',
+    isRunning: false,
+    runResult: {
+      ok: true,
+      workflow: { mode: 'file', status: 'completed', steps: [] },
+      stage_results: [
+        {
+          stage: 'chunk_parse',
+          order: 1,
+          status: 'success',
+          output: { total_chunks: 2 },
+          error: null,
+        },
+      ],
+      errors: [],
+      runtime_root: '/tmp/demo',
+      result: {
+        document: null,
+        chunks: [],
+        windows: [],
+        objects: [],
+        edges: [],
+        ablation: [],
+        meta: {},
+      },
+    },
+    windowExtractProgress: null,
+    objectDecomposeProgress: null,
+    ablationAnalysisProgress: null,
+    logs: [],
+    lastRunAt: '2026-05-31T00:02:00.000Z',
+    updatedAt: '2026-05-31T00:02:00.000Z',
+  }), true);
+});
+
+test('extractWorkflowV2WritebackSummary 会提取最近成功写回的 commit、version 和推理摘要', () => {
+  const summary = extractWorkflowV2WritebackSummary({
+    ingest_results: [
+      {
+        status: 'success',
+        commit_id: 'commit-1',
+        version_id: 7,
+        raw: {
+          inference_result: {
+            probability: 0.61,
+            reason: '第一轮推理',
+          },
+        },
+      },
+      {
+        status: 'failed',
+        commit_id: '',
+        version_id: null,
+      },
+      {
+        status: 'success',
+        commit_id: 'commit-2',
+        version_id: 8,
+        raw: {
+          inference: {
+            probability: 0.87,
+            reason: '最新推理',
+          },
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(summary, {
+    totalCount: 3,
+    successCount: 2,
+    failedCount: 1,
+    lastCommitId: 'commit-2',
+    lastVersionId: 8,
+    inferenceProbability: 0.87,
+    inferenceReason: '最新推理',
   });
 });
 

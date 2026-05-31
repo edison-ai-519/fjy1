@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 
+import { validateWorkflowEntityFileData } from "../workflowEntityFormat.mjs";
 import { WorkflowV2Service, parseWorkflowV2JsonResponseText } from "../services/workflowV2Service.mjs";
 
 function createService(overrides = {}) {
@@ -20,6 +21,8 @@ function createService(overrides = {}) {
     windowSize: overrides.windowSize ?? 2,
     windowStep: overrides.windowStep ?? 1,
     parallelWindows: overrides.parallelWindows ?? 2,
+    baseVersionLoader: overrides.baseVersionLoader,
+    ingestInvoker: overrides.ingestInvoker,
   });
 }
 
@@ -361,6 +364,94 @@ test("WorkflowV2Service 能跑通 7 阶段并在 graph_build 移除弱环边", a
   assert.equal(result.result.objects.every((item) => typeof item.core_function === "string" && item.core_function.length > 0), true);
   assert.equal(result.result.objects.some((item) => item.object_name === "电脑" && item.is_isolated === false), true);
   assert.equal(result.result.objects.some((item) => item.object_name === "ALU" && item.is_isolated === false), true);
+});
+
+test("WorkflowV2Service 可将快照结果转换为标准实体 JSON 并写入 OntoGit", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-writeback-"));
+  const writes = [];
+  const service = createService({
+    runtimeRoot,
+    baseVersionLoader: async () => new Map([["graph-source/domain/cpu.json", 8]]),
+    llmJsonInvoker: async ({ stage }) => {
+      if (stage === "window_extract") {
+        return {
+          data: {
+            objects: [
+              {
+                object_name: "CPU",
+                normalized_name: "cpu",
+                citation: ["CPU 是核心处理单元。"],
+                confidence: 0.96,
+                reason: "窗口明确提到了 CPU。",
+              },
+            ],
+            reason: "已识别核心对象。",
+          },
+        };
+      }
+      if (stage === "function_analysis") {
+        return {
+          data: {
+            core_function: "执行核心计算与指令处理",
+            citation: ["CPU 是核心处理单元。"],
+            confidence: 0.95,
+            reason: "原文直接描述了 CPU 的核心功能。",
+          },
+        };
+      }
+      if (stage === "object_decompose") {
+        return {
+          data: {
+            decompositions: [],
+            reason: "当前文本未提供更细的组成关系。",
+          },
+        };
+      }
+      throw new Error(`unexpected stage: ${stage}`);
+    },
+  });
+  service.invokeWriteAndInfer = async (payload) => {
+    writes.push({
+      pathname: "/xg/write-and-infer",
+      payload,
+    });
+    return {
+      status: "success",
+      write_result: {
+        commit_id: "commit-v2-1",
+        version_id: 9,
+      },
+      inference_result: {
+        probability: 0.91,
+        reason: "结构完整，推理已触发。",
+      },
+    };
+  };
+
+  const runResult = await service.runFileWorkflow({
+    projectId: "demo",
+    conversationId: "workflow-v2-writeback",
+    fileName: "demo.md",
+    mimeType: "text/markdown",
+    content: Buffer.from("CPU 是核心处理单元。", "utf8"),
+  });
+  assert.equal(runResult.ok, true);
+
+  const writeResult = await service.writeWorkflowSessionToOntoGit({
+    conversationId: "workflow-v2-writeback",
+  });
+
+  assert.equal(writeResult.ok, true);
+  assert.equal(writeResult.entity_files.length, 1);
+  assert.equal(writeResult.ingest_results.length, 1);
+  assert.equal(writeResult.ingest_results[0].commit_id, "commit-v2-1");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].pathname, "/xg/write-and-infer");
+  assert.equal(writes[0].payload.filename, "graph-source/domain/cpu.json");
+  assert.equal(writes[0].payload.basevision, 8);
+  assert.equal(writes[0].payload.data.source, "linear-workflow-v2");
+  assert.equal(writes[0].payload.data.ontology.workflow_version, "v2-linear-object-workflow");
+  assert.equal(validateWorkflowEntityFileData(writes[0].payload.data).ok, true);
 });
 
 test("WorkflowV2Service graph_build 会把未进入结构边的对象标记为孤立节点", async () => {

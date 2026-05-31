@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { validateWorkflowEntityFileData } from "../workflowEntityFormat.mjs";
 import { LinearWorkflowService } from "./linearWorkflowService.mjs";
 import { WORKFLOW_V2_STAGE_KEYS } from "../../src/shared/workflowV2Stages.js";
 
@@ -13,6 +14,9 @@ const DEFAULT_PARALLEL_WINDOWS = 4;
 const DEFAULT_WORKFLOW_LLM_TIMEOUT_MS = 120000;
 const DEFAULT_ABLATION_PARENT_CONCURRENCY = 2;
 const DEFAULT_ABLATION_CHILD_CONCURRENCY = 1;
+const WORKFLOW_V2_SOURCE = "linear-workflow-v2";
+const WORKFLOW_V2_VERSION = "v2-linear-object-workflow";
+const WORKFLOW_V2_FILE_MESSAGE = "Workflow V2 ingest";
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -595,6 +599,148 @@ function buildWorkflowV2ResultFromState(state) {
       total_isolated_objects: objects.filter((item) => item?.is_isolated === true).length,
       is_dag: computeTopologicalOrder(edges, nodeIds).cyclicNodeIds.length === 0,
     },
+  };
+}
+
+function computeObjectDepthMap(objects, edges) {
+  const nodeIds = objects.map((item) => asText(item?.object_id)).filter(Boolean);
+  const topo = computeTopologicalOrder(edges, nodeIds);
+  const depthMap = new Map(nodeIds.map((nodeId) => [nodeId, 1]));
+  const adjacency = new Map(nodeIds.map((nodeId) => [nodeId, []]));
+
+  for (const edge of edges) {
+    const sourceId = asText(edge?.source_object_id);
+    const targetId = asText(edge?.target_object_id);
+    if (!adjacency.has(sourceId) || !depthMap.has(targetId)) {
+      continue;
+    }
+    adjacency.get(sourceId).push(targetId);
+  }
+
+  for (const nodeId of topo.orderedNodeIds) {
+    const currentDepth = depthMap.get(nodeId) ?? 1;
+    for (const targetId of adjacency.get(nodeId) ?? []) {
+      depthMap.set(targetId, Math.max(depthMap.get(targetId) ?? 1, currentDepth + 1));
+    }
+  }
+
+  return depthMap;
+}
+
+function buildV2EntityFilename(object, usedSlugs) {
+  const baseName = buildSlug(
+    object?.normalized_name || object?.object_name || object?.object_id,
+    buildSlug(object?.object_id, "object"),
+  );
+  let slug = baseName || "object";
+  let suffix = 2;
+  while (usedSlugs.has(slug)) {
+    slug = `${baseName}-${suffix}`;
+    suffix += 1;
+  }
+  usedSlugs.add(slug);
+  return `graph-source/domain/${slug}.json`;
+}
+
+function summarizeV2Ablation(parentSummary, objectName, objectId) {
+  if (!parentSummary || typeof parentSummary !== "object") {
+    return null;
+  }
+  const childImportanceList = Array.isArray(parentSummary.child_importance_list)
+    ? parentSummary.child_importance_list
+    : [];
+  const strongestImpact = childImportanceList
+    .map((item) => asRecord(item))
+    .sort((left, right) => {
+      const order = ["none", "low", "medium", "high", "critical"];
+      return order.indexOf(asText(right.importance_level)) - order.indexOf(asText(left.importance_level));
+    })[0];
+  const importantChildren = childImportanceList
+    .map((item) => asRecord(item))
+    .map((item) => `${asText(item.ablated_child_object_id)}:${asText(item.importance_level) || "unknown"}`)
+    .filter(Boolean);
+
+  return {
+    entity_id: objectId,
+    entity_name: objectName,
+    impact_level: asText(strongestImpact?.importance_level) || "unknown",
+    impact_reason: asText(strongestImpact?.reason) || asText(parentSummary.reason),
+    observation: importantChildren.length > 0
+      ? `child_importance=${importantChildren.join(", ")}`
+      : asText(parentSummary.reason),
+    small_reason: asText(parentSummary.reason) || `${objectName} 的消融分析摘要来自 V2 工作流。`,
+    evidence: importantChildren,
+  };
+}
+
+function buildWorkflowV2EntityFile({
+  object,
+  relatedEdges,
+  ablation,
+  summary,
+  projectId,
+  level,
+}) {
+  const objectId = asText(object?.object_id);
+  const objectName = asText(object?.object_name) || objectId;
+  const citations = uniqueStrings([
+    ...(Array.isArray(object?.citations) ? object.citations : []),
+    ...(Array.isArray(object?.function_citations) ? object.function_citations : []),
+  ]);
+  const coreFunction = asText(object?.core_function);
+  const entity = {
+    id: objectId,
+    name: objectName,
+    summary: coreFunction || asText(object?.reason) || `${objectName} 的结构化摘要`,
+    type: object?.is_isolated === true ? "isolated-object" : "structured-object",
+    level,
+    source: WORKFLOW_V2_SOURCE,
+    properties: {
+      normalized_name: asText(object?.normalized_name),
+      aliases: uniqueStrings(object?.aliases),
+      confidence: clampConfidence(object?.confidence, 0.5),
+      source_window_ids: uniqueStrings(object?.source_window_ids),
+      merge_reasons: uniqueStrings(object?.merge_reasons),
+      core_function: coreFunction,
+      function_confidence: clampConfidence(object?.function_confidence, 0.5),
+      function_reason: asText(object?.function_reason),
+      structure_status: asText(object?.structure_status),
+      structure_reason: asText(object?.structure_reason),
+      v2_ablation_summary: ablation,
+    },
+    abilities: coreFunction ? [coreFunction] : [],
+    citations,
+  };
+  const relations = relatedEdges.map((edge) => ({
+    source_entity_id: asText(edge?.source_object_id),
+    target_entity_id: asText(edge?.target_object_id),
+    source_name: asText(edge?.source_object_name),
+    target_name: asText(edge?.target_object_name),
+    relation_type: asText(edge?.relation) || "contains",
+    evidence: asText(edge?.citation),
+  }));
+  const ontology = {
+    workflow_version: WORKFLOW_V2_VERSION,
+    generated_at: new Date().toISOString(),
+    project_id: projectId,
+    scope: "entity",
+    entity_id: entity.id,
+    entity_name: entity.name,
+    system_summary: summary,
+    entity,
+    relations,
+    ablation: ablation ? [ablation] : [],
+  };
+
+  return {
+    source: WORKFLOW_V2_SOURCE,
+    ontology,
+    entity,
+    relations,
+    ablation,
+    precheck: null,
+    ontology_summary: summary,
+    probability: "V2-no-precheck",
   };
 }
 
@@ -2185,6 +2331,154 @@ export class WorkflowV2Service extends LinearWorkflowService {
       started_at: deriveWorkflowV2StartedAt(stageResults),
       finished_at: deriveWorkflowV2FinishedAt(stageResults, workflowStatus),
     };
+  }
+
+  buildEntityFilesFromState(state, projectId) {
+    const safeState = asRecord(state);
+    const objects = Array.isArray(safeState.fused_objects) ? safeState.fused_objects : [];
+    const edges = Array.isArray(safeState.edges) ? safeState.edges : [];
+    const parentSummaries = Array.isArray(safeState.parent_summaries) ? safeState.parent_summaries : [];
+
+    if (objects.length === 0) {
+      throw new Error("workflow V2 snapshot has no objects to write");
+    }
+
+    const objectById = new Map(objects.map((item) => [asText(item?.object_id), item]));
+    const namedEdges = edges.map((edge) => {
+      const sourceId = asText(edge?.source_object_id);
+      const targetId = asText(edge?.target_object_id);
+      return {
+        ...edge,
+        source_object_name: asText(objectById.get(sourceId)?.object_name) || sourceId,
+        target_object_name: asText(objectById.get(targetId)?.object_name) || targetId,
+      };
+    });
+    const depthMap = computeObjectDepthMap(objects, namedEdges);
+    const summary = {
+      entity_count: objects.length,
+      relation_count: namedEdges.length,
+      ablation_count: parentSummaries.length,
+    };
+    const ablationByParentId = new Map(
+      parentSummaries
+        .map((item) => asRecord(item))
+        .map((item) => [asText(item.parent_object_id), item])
+        .filter(([objectId]) => objectId),
+    );
+    const usedSlugs = new Set();
+
+    return objects.map((object) => {
+      const objectId = asText(object?.object_id);
+      const objectName = asText(object?.object_name) || objectId;
+      const relatedEdges = namedEdges.filter((edge) => (
+        asText(edge?.source_object_id) === objectId || asText(edge?.target_object_id) === objectId
+      ));
+      const ablation = summarizeV2Ablation(ablationByParentId.get(objectId), objectName, objectId);
+      const data = buildWorkflowV2EntityFile({
+        object,
+        relatedEdges,
+        ablation,
+        summary,
+        projectId,
+        level: depthMap.get(objectId) ?? 1,
+      });
+      return {
+        entity_id: objectId,
+        entity_name: objectName,
+        filename: buildV2EntityFilename(object, usedSlugs),
+        data,
+      };
+    });
+  }
+
+  async writeWorkflowSessionToOntoGit(input = {}) {
+    const conversationId = asText(input?.conversationId) || "file-workflow-v2";
+    const runtimeRoot = this.getConversationRuntimeRoot(conversationId);
+    const snapshot = await this.readWorkflowSnapshot(conversationId);
+    const safeState = asRecord(snapshot?.state);
+    const projectId = asText(input?.projectId)
+      || asText(safeState?.document?.project_id)
+      || asText(snapshot?.result?.document?.project_id)
+      || "demo";
+    const releaseLock = await this.acquireProjectWorkflowLock(projectId);
+
+    try {
+      const entityFiles = this.buildEntityFilesFromState(safeState, projectId);
+      const baseVersionMap = await this.baseVersionLoader(projectId);
+      const ingestResults = [];
+
+      for (const item of entityFiles) {
+        const validation = validateWorkflowEntityFileData(item.data);
+        if (!validation.ok) {
+          throw new Error(`workflow V2 entity file validation failed: ${validation.error}`);
+        }
+
+        const ingestPayload = {
+          project_id: projectId,
+          filename: item.filename,
+          data: item.data,
+          message: WORKFLOW_V2_FILE_MESSAGE,
+          agent_name: WORKFLOW_V2_SOURCE,
+          committer_name: WORKFLOW_V2_SOURCE,
+          basevision: Number(baseVersionMap.get(item.filename) || 0),
+          inference_message: "Workflow V2 inference update",
+          inference_agent_name: WORKFLOW_V2_SOURCE,
+          inference_committer_name: WORKFLOW_V2_SOURCE,
+        };
+
+        try {
+          const result = await this.invokeWriteAndInfer(ingestPayload);
+          ingestResults.push({
+            entity_id: item.entity_id,
+            entity_name: item.entity_name,
+            filename: item.filename,
+            status: asText(result?.status) || "success",
+            commit_id: asText(result?.write_result?.commit_id) || "",
+            version_id: result?.write_result?.version_id ?? null,
+            raw: result,
+          });
+        } catch (error) {
+          ingestResults.push({
+            entity_id: item.entity_id,
+            entity_name: item.entity_name,
+            filename: item.filename,
+            status: "failed",
+            commit_id: "",
+            version_id: null,
+            error: getErrorMessage(error, "workflow V2 ingest failed"),
+          });
+          throw error;
+        }
+      }
+
+      const writeback = {
+        project_id: projectId,
+        conversation_id: conversationId,
+        entity_files: entityFiles,
+        ingest_results: ingestResults,
+        wrote_at: new Date().toISOString(),
+      };
+      await this.writeWorkflowSnapshot(conversationId, {
+        ...snapshot,
+        writeback,
+      });
+
+      return {
+        ok: true,
+        project_id: projectId,
+        conversation_id: conversationId,
+        runtime_root: runtimeRoot,
+        entity_files: entityFiles,
+        ingest_results: ingestResults,
+        result: Object.keys(asRecord(snapshot?.result)).length > 0
+          ? snapshot.result
+          : buildWorkflowV2ResultFromState(safeState),
+        started_at: asText(snapshot?.started_at) || deriveWorkflowV2StartedAt(snapshot?.stage_results),
+        finished_at: asText(snapshot?.finished_at) || deriveWorkflowV2FinishedAt(snapshot?.stage_results, deriveWorkflowV2SnapshotStatus(snapshot?.stage_results)),
+      };
+    } finally {
+      await releaseLock();
+    }
   }
 
   async chunkParseStage(document) {

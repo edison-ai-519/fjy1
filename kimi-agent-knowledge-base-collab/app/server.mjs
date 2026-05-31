@@ -953,6 +953,32 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/workflow/v2/write") {
+      const projectId = typeof url.searchParams.get("projectId") === "string"
+        ? url.searchParams.get("projectId").trim()
+        : "";
+      const conversationId = typeof url.searchParams.get("conversationId") === "string"
+        ? url.searchParams.get("conversationId").trim()
+        : "";
+
+      if (!conversationId) {
+        sendJson(res, 400, { error: "conversationId is required" });
+        return;
+      }
+
+      const result = await workflowV2Service.writeWorkflowSessionToOntoGit({
+        projectId: projectId ? decodeURIComponent(projectId) : "",
+        conversationId,
+      });
+
+      if (typeof knowledgeBaseService.repository?.invalidateCache === "function") {
+        knowledgeBaseService.repository.invalidateCache(result.project_id || decodeURIComponent(projectId || ""));
+      }
+
+      sendJson(res, result.ok ? 200 : 502, result);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/workflow/v2/file/retry/stream") {
       const projectId = typeof url.searchParams.get("projectId") === "string"
         ? url.searchParams.get("projectId").trim()

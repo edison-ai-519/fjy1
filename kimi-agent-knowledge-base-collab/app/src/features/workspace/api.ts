@@ -117,6 +117,33 @@ export interface WorkflowV2Config {
   parallelWindows: number;
 }
 
+export interface WorkflowV2WritebackIngestResult {
+  entity_id?: string;
+  entity_name?: string;
+  filename?: string;
+  status?: string;
+  commit_id?: string;
+  version_id?: number | null;
+  error?: string;
+  raw?: {
+    inference?: ProbabilityResult;
+    inference_result?: ProbabilityResult;
+    [key: string]: unknown;
+  } | null;
+}
+
+export interface WorkflowV2WritebackResponse {
+  ok: boolean;
+  project_id: string;
+  conversation_id: string;
+  runtime_root?: string;
+  entity_files: unknown[];
+  ingest_results: WorkflowV2WritebackIngestResult[];
+  result?: unknown;
+  started_at?: string;
+  finished_at?: string;
+}
+
 export async function fetchXgProjects(): Promise<XgProject[]> {
   const response = await apiFetch('/api/xg/projects');
   return normalizeXgProjectsResponse(await parseJson<unknown>(response))
@@ -157,6 +184,28 @@ export async function writeXgAndInfer(input: {
   });
   const result = normalizeXgWriteResult(await parseJson<unknown>(response));
   notifyRepositorySync({ projectId: input.project_id, filename: input.filename, source: 'writeXgAndInfer' });
+  return result;
+}
+
+export async function writeWorkflowV2SessionToOntoGit(input: {
+  conversationId: string;
+  projectId?: string;
+}): Promise<WorkflowV2WritebackResponse> {
+  const params = new URLSearchParams({
+    conversationId: input.conversationId,
+  });
+  if (input.projectId?.trim()) {
+    params.set('projectId', input.projectId.trim());
+  }
+
+  const response = await apiFetch(`/api/workflow/v2/write?${params.toString()}`, {
+    method: 'POST',
+  });
+  const result = await parseJson<WorkflowV2WritebackResponse>(response);
+  notifyRepositorySync({
+    projectId: result.project_id || input.projectId?.trim() || '',
+    source: 'writeWorkflowV2SessionToOntoGit',
+  });
   return result;
 }
 
