@@ -98,6 +98,7 @@ import {
   buildWorkflowV2GraphLayoutFromStageData,
   buildWorkflowV2Mermaid,
   buildWorkflowV2MermaidFromStageData,
+  buildWorkflowV2SystemDecompositionView,
   canWriteWorkflowV2Session,
   extractWorkflowV2SiblingImpactEdges,
   extractWorkflowV2Summary,
@@ -105,6 +106,7 @@ import {
   getWorkflowV2ImpactEdgeStyle,
 } from './fileWorkflowV2View';
 import { extractWorkflowEnsembleView } from './fileWorkflowEnsemble';
+import { WorkflowV2SystemDecompositionPanel } from './WorkflowV2SystemDecompositionPanel';
 
 const STAGE_ICONS: Record<string, ReactNode> = {
   chunk_parse: <ScissorsLineDashed className="h-4 w-4" />,
@@ -612,36 +614,41 @@ export function FileWorkflowV2Page() {
     const record = asRecord(group);
     return sum + (Array.isArray(record.decompositions) ? record.decompositions.length : 0);
   }, 0);
+  const stageGraphObjects = Array.isArray(functionOutput.function_objects) && functionOutput.function_objects.length > 0
+    ? functionOutput.function_objects
+    : (Array.isArray(fusionOutput.fused_objects) ? fusionOutput.fused_objects : []);
+  const stageGraphEdges = Array.isArray(graphOutput.edges) ? graphOutput.edges : [];
+  const prefersStageGraphData = stageGraphObjects.length > 0
+    && (stageGraphEdges.length > 0 || stageResults.some((item) => item.stage === 'graph_build' && item.status === 'success'));
 
   const graphLayout = useMemo(() => {
-    const stageObjects = Array.isArray(functionOutput.function_objects) && functionOutput.function_objects.length > 0
-      ? functionOutput.function_objects
-      : (Array.isArray(fusionOutput.fused_objects) ? fusionOutput.fused_objects : []);
-    const stageEdges = Array.isArray(graphOutput.edges) ? graphOutput.edges : [];
-    if (stageObjects.length > 0 && (stageEdges.length > 0 || stageResults.some((item) => item.stage === 'graph_build' && item.status === 'success'))) {
+    if (prefersStageGraphData) {
       return buildWorkflowV2GraphLayoutFromStageData({
-        objects: stageObjects,
-        edges: stageEdges,
+        objects: stageGraphObjects,
+        edges: stageGraphEdges,
         options: { hideIsolatedNodes },
       });
     }
     return buildWorkflowV2GraphLayout(result, { hideIsolatedNodes });
-  }, [functionOutput.function_objects, fusionOutput.fused_objects, graphOutput.edges, hideIsolatedNodes, result, stageResults]);
+  }, [hideIsolatedNodes, prefersStageGraphData, result, stageGraphEdges, stageGraphObjects]);
 
   const mermaidCode = useMemo(() => {
-    const stageObjects = Array.isArray(functionOutput.function_objects) && functionOutput.function_objects.length > 0
-      ? functionOutput.function_objects
-      : (Array.isArray(fusionOutput.fused_objects) ? fusionOutput.fused_objects : []);
-    const stageEdges = Array.isArray(graphOutput.edges) ? graphOutput.edges : [];
-    if (stageObjects.length > 0 && (stageEdges.length > 0 || stageResults.some((item) => item.stage === 'graph_build' && item.status === 'success'))) {
+    if (prefersStageGraphData) {
       return buildWorkflowV2MermaidFromStageData({
-        objects: stageObjects,
-        edges: stageEdges,
+        objects: stageGraphObjects,
+        edges: stageGraphEdges,
         options: { hideIsolatedNodes },
       });
     }
     return buildWorkflowV2Mermaid(result, { hideIsolatedNodes });
-  }, [functionOutput.function_objects, fusionOutput.fused_objects, graphOutput.edges, hideIsolatedNodes, result, stageResults]);
+  }, [hideIsolatedNodes, prefersStageGraphData, result, stageGraphEdges, stageGraphObjects]);
+  const systemDecompositionView = useMemo(() => (
+    buildWorkflowV2SystemDecompositionView({
+      objects: prefersStageGraphData ? stageGraphObjects : result?.objects,
+      edges: prefersStageGraphData ? stageGraphEdges : result?.edges,
+      maxDepth: 2,
+    })
+  ), [prefersStageGraphData, result?.edges, result?.objects, stageGraphEdges, stageGraphObjects]);
 
   const windowProgressRecord = asRecord(windowOutput.progress);
   const decomposeProgressRecord = asRecord(decomposeOutput.progress);
@@ -1375,8 +1382,110 @@ export function FileWorkflowV2Page() {
               </SectionCard>
 
               <SectionCard
-                title="DAG 视图"
-                description="首屏保留结构视图和 Mermaid 导出。兄弟影响边会以不同颜色叠加在主 DAG 之上。"
+                title="系统拆解视图"
+                description="首屏先回答“这个系统由什么组成”。主系统、子系统和子部件按层级展开，DAG 连线图下沉到分析区做结构校验。"
+                action={(
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">主系统 {systemDecompositionView.root?.name || '待生成'}</Badge>
+                    <Badge variant="outline">包含边 {systemDecompositionView.summary.containmentCount}</Badge>
+                    <Badge variant="outline">叶子节点 {systemDecompositionView.summary.leafCount}</Badge>
+                  </div>
+                )}
+              >
+                <WorkflowV2SystemDecompositionPanel view={systemDecompositionView} />
+              </SectionCard>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="analysis" className="mt-0 space-y-6">
+            <Card className="rounded-[28px] border-primary/20 bg-primary/5 shadow-sm">
+              <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-primary/80">Expert Details</div>
+                  <div className="mt-2 text-sm leading-6 text-foreground/80">
+                    A/B/Judge 的深度推理没有消失，只是被折叠进各个卡片内部。看到“查看过程”按钮时，就可以按需展开完整专家过程。
+                  </div>
+                </div>
+                <Badge variant="secondary" className="rounded-full whitespace-nowrap">
+                  首屏先读摘要，细节按需展开
+                </Badge>
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+              <SectionCard title="Chunks / Windows" description="先看自然段分块，再看滑动窗口如何覆盖局部上下文。">
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <ScrollArea className="h-[420px] rounded-3xl border border-border/60 bg-muted/15 p-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-black">Chunks</div>
+                        <Badge variant="outline">总 {chunkTotalCount} / 展示 {chunkItems.length}</Badge>
+                      </div>
+                      {chunkItems.length > 0 ? (
+                        chunkItems.map((chunk) => {
+                          const record = asRecord(chunk);
+                          return (
+                            <div key={asText(record.chunk_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
+                              <div className="text-xs font-black uppercase tracking-widest text-muted-foreground">{asText(record.chunk_id)}</div>
+                              <div className="mt-2 text-sm leading-6">{asText(record.text)}</div>
+                              <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="text-sm text-muted-foreground">启动后会在这里显示 chunk 列表。</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+
+                  <ScrollArea className="h-[420px] rounded-3xl border border-border/60 bg-muted/15 p-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-black">Windows</div>
+                        <Badge variant="outline">总 {windowTotalCount} / 展示 {windowItems.length}</Badge>
+                      </div>
+                      {windowExtractProgress ? (
+                        <div className="text-xs text-muted-foreground">
+                          第二阶段已完成 {windowExtractProgress.completed} / {windowTotalCount} 个滑动窗口
+                          {windowExtractProgress.parallel ? `，当前并发上限 ${windowExtractProgress.parallel}` : ''}
+                          {windowExtractProgress.lastWindowId ? `，最近完成 ${windowExtractProgress.lastWindowId}` : ''}
+                        </div>
+                      ) : null}
+                      {windowItems.length > 0 ? (
+                        windowItems.map((windowResult) => {
+                          const record = asRecord(windowResult);
+                          const objects = Array.isArray(record.objects) ? record.objects : [];
+                          return (
+                            <div key={asText(record.window_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-xs font-black uppercase tracking-widest text-muted-foreground">{asText(record.window_id)}</div>
+                                <Badge variant="outline">{objects.length} objects</Badge>
+                              </div>
+                              <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {objects.slice(0, 8).map((object, index) => (
+                                  <Badge key={`${asText(record.window_id)}-${index}`} variant="secondary">{asText(asRecord(object).object_name)}</Badge>
+                                ))}
+                              </div>
+                              <WorkflowTrioPreview
+                                title={`窗口 ${asText(record.window_id) || '未命名'} 的对象抽取过程`}
+                                ensemble={record.llm_ensemble}
+                                summary="这里会同时展示模型 A、模型 B 和 judge 在该滑动窗口上的结构化输出。"
+                              />
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="text-sm text-muted-foreground">启动后会在这里显示窗口抽取结果。</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </SectionCard>
+
+              <SectionCard
+                title="结构验证图"
+                description="DAG 保留为技术校验视图。主结构树讲系统怎么拆，这里负责验证包含边、孤立节点和影响边。"
                 action={(
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline">节点 {graphNodeTotalCount}</Badge>
@@ -1591,241 +1700,157 @@ export function FileWorkflowV2Page() {
                     </div>
                   ) : (
                     <div className="flex h-[420px] items-center justify-center text-sm text-muted-foreground">
-                      第六阶段图构建完成后会在这里立即显示 DAG。
+                      图构建阶段完成后，会在这里显示 DAG 校验图。
                     </div>
                   )}
                 </div>
               </SectionCard>
             </div>
-          </TabsContent>
 
-          <TabsContent value="analysis" className="mt-0 space-y-6">
-            <Card className="rounded-[28px] border-primary/20 bg-primary/5 shadow-sm">
-              <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-primary/80">Expert Details</div>
-                  <div className="mt-2 text-sm leading-6 text-foreground/80">
-                    A/B/Judge 的深度推理没有消失，只是被折叠进各个卡片内部。看到“查看过程”按钮时，就可以按需展开完整专家过程。
+            <SectionCard title="拆解 / 被删环边" description="对象拆解的结构边候选单独展开，去环裁决也放在同一层做结构追踪。">
+              <div className="grid gap-4">
+                <ScrollArea className="h-[240px] rounded-3xl border border-border/60 bg-muted/15 p-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-black">Object Decompose</div>
+                      <Badge variant="outline">边候选总 {decompositionTotalCount} / 展示 {shownDecompositionCount}</Badge>
+                    </div>
+                    {objectDecomposeProgress ? (
+                      <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                          <div>已完成 {objectDecomposeProgress.completed} / {objectDecomposeProgress.total}，失败 {objectDecomposeProgress.failed}</div>
+                          <div>{objectDecomposeProgressValue}%</div>
+                        </div>
+                        <Progress value={objectDecomposeProgressValue} className="mt-2 h-2 bg-amber-500/15" />
+                      </div>
+                    ) : null}
+                    {decompositionGroups.length > 0 ? (
+                      decompositionGroups.map((group, groupIndex) => {
+                        const record = asRecord(group);
+                        const decompositions = Array.isArray(record.decompositions) ? record.decompositions : [];
+                        return (
+                          <div key={`${asText(record.object_id)}-${groupIndex}`} className="rounded-2xl border border-border/60 bg-background/80 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-black">Group {groupIndex + 1}</div>
+                              <Badge variant="outline">候选边 {decompositions.length}</Badge>
+                            </div>
+                            <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                              <div>object_id：{asText(record.object_id) || '未提供'}</div>
+                              <div>group reason：{asText(record.reason) || '未提供'}</div>
+                            </div>
+                            <div className="mt-3 space-y-3">
+                              {decompositions.length > 0 ? decompositions.map((edge, index) => {
+                                const edgeRecord = asRecord(edge);
+                                const confidenceValue = Number(edgeRecord.confidence);
+                                return (
+                                  <div key={`${asText(record.object_id)}-${index}`} className="rounded-2xl border border-border/60 bg-muted/20 p-3 text-sm">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="font-semibold">
+                                        {asText(edgeRecord.parent_object_name)} → {asText(edgeRecord.child_object_name)}
+                                      </div>
+                                      <Badge variant="secondary">{asText(edgeRecord.relation) || 'contains'}</Badge>
+                                    </div>
+                                    <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                                      <div>parent_object_name：{asText(edgeRecord.parent_object_name) || '未提供'}</div>
+                                      <div>child_object_name：{asText(edgeRecord.child_object_name) || '未提供'}</div>
+                                      <div>relation：{asText(edgeRecord.relation) || '未提供'}</div>
+                                      <div>
+                                        confidence：
+                                        {Number.isFinite(confidenceValue) ? confidenceValue.toFixed(2) : '未提供'}
+                                      </div>
+                                      <div>reason：{asText(edgeRecord.reason) || '未提供'}</div>
+                                    </div>
+                                    <CitationPreview citation={asText(edgeRecord.citation)} />
+                                  </div>
+                                );
+                              }) : (
+                                <div className="text-xs text-muted-foreground">该组没有拆解出具体边。</div>
+                              )}
+                            </div>
+                            <WorkflowTrioPreview
+                              title={`${asText(record.object_id) || `Group ${groupIndex + 1}`} 的对象拆解`}
+                              ensemble={record.llm_ensemble}
+                              summary="对象拆解阶段会在这里显示 A/B 提案与 judge 的冲突裁决。"
+                            />
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-sm text-muted-foreground">对象拆解结果会显示在这里。</div>
+                    )}
+
+                    {failedObjectItems.length > 0 ? (
+                      <div className="space-y-3 pt-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-black text-amber-700">Failed Objects</div>
+                          <Badge variant="outline">总 {failedObjectTotalCount} / 展示 {failedObjectItems.length}</Badge>
+                        </div>
+                        {failedObjectItems.map((item, index) => {
+                          const record = asRecord(item);
+                          const attempts = Array.isArray(record.attempts) ? record.attempts : [];
+                          return (
+                            <div key={`${asText(record.object_id)}-${index}`} className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3">
+                              <div className="text-sm font-black">{asText(record.object_name)}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{asText(record.reason)}</div>
+                              {attempts.map((attempt, attemptIndex) => {
+                                const attemptRecord = asRecord(attempt);
+                                return (
+                                  <div key={`${asText(record.object_id)}-attempt-${attemptIndex}`} className="mt-2 rounded-xl border border-border/60 bg-background/80 p-2 text-xs">
+                                    <div>第 {String(attemptRecord.attempt || attemptIndex + 1)} 次：{asText(attemptRecord.error)}</div>
+                                    <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+                                      {asText(attemptRecord.model_output) || '该次没有捕获到模型文本输出。'}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-                <Badge variant="secondary" className="rounded-full whitespace-nowrap">
-                  首屏先读摘要，细节按需展开
-                </Badge>
-              </CardContent>
-            </Card>
+                </ScrollArea>
 
-            <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-              <SectionCard title="Chunks / Windows" description="先看自然段分块，再看滑动窗口如何覆盖局部上下文。">
-                <div className="grid gap-5 lg:grid-cols-2">
-                  <ScrollArea className="h-[420px] rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-black">Chunks</div>
-                        <Badge variant="outline">总 {chunkTotalCount} / 展示 {chunkItems.length}</Badge>
-                      </div>
-                      {chunkItems.length > 0 ? (
-                        chunkItems.map((chunk) => {
-                          const record = asRecord(chunk);
-                          return (
-                            <div key={asText(record.chunk_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
-                              <div className="text-xs font-black uppercase tracking-widest text-muted-foreground">{asText(record.chunk_id)}</div>
-                              <div className="mt-2 text-sm leading-6">{asText(record.text)}</div>
-                              <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="text-sm text-muted-foreground">启动后会在这里显示 chunk 列表。</div>
-                      )}
+                <ScrollArea className="h-[240px] rounded-3xl border border-border/60 bg-muted/15 p-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-black">Removed Cycle Edges</div>
+                      <Badge variant="outline">总 {removedCycleEdgeTotalCount} / 展示 {removedCycleEdgeItems.length}</Badge>
                     </div>
-                  </ScrollArea>
-
-                  <ScrollArea className="h-[420px] rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-black">Windows</div>
-                        <Badge variant="outline">总 {windowTotalCount} / 展示 {windowItems.length}</Badge>
-                      </div>
-                      {windowExtractProgress ? (
-                        <div className="text-xs text-muted-foreground">
-                          第二阶段已完成 {windowExtractProgress.completed} / {windowTotalCount} 个滑动窗口
-                          {windowExtractProgress.parallel ? `，当前并发上限 ${windowExtractProgress.parallel}` : ''}
-                          {windowExtractProgress.lastWindowId ? `，最近完成 ${windowExtractProgress.lastWindowId}` : ''}
-                        </div>
-                      ) : null}
-                      {windowItems.length > 0 ? (
-                        windowItems.map((windowResult) => {
-                          const record = asRecord(windowResult);
-                          const objects = Array.isArray(record.objects) ? record.objects : [];
-                          return (
-                            <div key={asText(record.window_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-xs font-black uppercase tracking-widest text-muted-foreground">{asText(record.window_id)}</div>
-                                <Badge variant="outline">{objects.length} objects</Badge>
-                              </div>
-                              <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                {objects.slice(0, 8).map((object, index) => (
-                                  <Badge key={`${asText(record.window_id)}-${index}`} variant="secondary">{asText(asRecord(object).object_name)}</Badge>
-                                ))}
-                              </div>
-                              <WorkflowTrioPreview
-                                title={`窗口 ${asText(record.window_id) || '未命名'} 的对象抽取过程`}
-                                ensemble={record.llm_ensemble}
-                                summary="这里会同时展示模型 A、模型 B 和 judge 在该滑动窗口上的结构化输出。"
-                              />
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="text-sm text-muted-foreground">启动后会在这里显示窗口抽取结果。</div>
-                      )}
-                    </div>
-                  </ScrollArea>
-                </div>
-              </SectionCard>
-
-              <SectionCard title="拆解 / 被删环边" description="左侧保存对象拆解出的候选边，右侧列出为保持 DAG 被移除的弱边。">
-                <div className="grid gap-4">
-                  <ScrollArea className="h-[220px] rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-black">Object Decompose</div>
-                        <Badge variant="outline">边候选总 {decompositionTotalCount} / 展示 {shownDecompositionCount}</Badge>
-                      </div>
-                      {objectDecomposeProgress ? (
-                        <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
-                          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                            <div>已完成 {objectDecomposeProgress.completed} / {objectDecomposeProgress.total}，失败 {objectDecomposeProgress.failed}</div>
-                            <div>{objectDecomposeProgressValue}%</div>
+                    {removedCycleEdgeItems.length > 0 ? (
+                      removedCycleEdgeItems.map((edge) => {
+                        const record = asRecord(edge);
+                        return (
+                          <div key={asText(record.edge_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
+                            <div className="text-sm font-black">{asText(record.edge_id)}</div>
+                            <CitationPreview citation={asText(record.citation)} />
+                            <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
+                            <WorkflowTrioPreview
+                              title={`${asText(record.edge_id) || '边'} 的去环裁决`}
+                              ensemble={record.llm_ensemble}
+                              summary="如果环裁决经过 LLM，这里会并排展示 A/B 与 judge 对最弱边的选择。"
+                            />
                           </div>
-                          <Progress value={objectDecomposeProgressValue} className="mt-2 h-2 bg-amber-500/15" />
-                        </div>
-                      ) : null}
-                      {decompositionGroups.length > 0 ? (
-                        decompositionGroups.map((group, groupIndex) => {
-                          const record = asRecord(group);
-                          const decompositions = Array.isArray(record.decompositions) ? record.decompositions : [];
-                          return (
-                            <div key={`${asText(record.object_id)}-${groupIndex}`} className="rounded-2xl border border-border/60 bg-background/80 p-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-sm font-black">Group {groupIndex + 1}</div>
-                                <Badge variant="outline">候选边 {decompositions.length}</Badge>
-                              </div>
-                              <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
-                                <div>object_id：{asText(record.object_id) || '未提供'}</div>
-                                <div>group reason：{asText(record.reason) || '未提供'}</div>
-                              </div>
-                              <div className="mt-3 space-y-3">
-                                {decompositions.length > 0 ? decompositions.map((edge, index) => {
-                                  const edgeRecord = asRecord(edge);
-                                  const confidenceValue = Number(edgeRecord.confidence);
-                                  return (
-                                    <div key={`${asText(record.object_id)}-${index}`} className="rounded-2xl border border-border/60 bg-muted/20 p-3 text-sm">
-                                      <div className="flex items-center justify-between gap-3">
-                                        <div className="font-semibold">
-                                          {asText(edgeRecord.parent_object_name)} → {asText(edgeRecord.child_object_name)}
-                                        </div>
-                                        <Badge variant="secondary">{asText(edgeRecord.relation) || 'contains'}</Badge>
-                                      </div>
-                                      <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
-                                        <div>parent_object_name：{asText(edgeRecord.parent_object_name) || '未提供'}</div>
-                                        <div>child_object_name：{asText(edgeRecord.child_object_name) || '未提供'}</div>
-                                        <div>relation：{asText(edgeRecord.relation) || '未提供'}</div>
-                                        <div>
-                                          confidence：
-                                          {Number.isFinite(confidenceValue) ? confidenceValue.toFixed(2) : '未提供'}
-                                        </div>
-                                        <div>reason：{asText(edgeRecord.reason) || '未提供'}</div>
-                                      </div>
-                                      <CitationPreview citation={asText(edgeRecord.citation)} />
-                                    </div>
-                                  );
-                                }) : (
-                                  <div className="text-xs text-muted-foreground">该组没有拆解出具体边。</div>
-                                )}
-                              </div>
-                              <WorkflowTrioPreview
-                                title={`${asText(record.object_id) || `Group ${groupIndex + 1}`} 的对象拆解`}
-                                ensemble={record.llm_ensemble}
-                                summary="对象拆解阶段会在这里显示 A/B 提案与 judge 的冲突裁决。"
-                              />
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="text-sm text-muted-foreground">对象拆解结果会显示在这里。</div>
-                      )}
+                        );
+                      })
+                    ) : (
+                      <div className="text-sm text-muted-foreground">如果图里出现环，被删除的弱边会显示在这里。</div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+            </SectionCard>
 
-                      {failedObjectItems.length > 0 ? (
-                        <div className="space-y-3 pt-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="text-sm font-black text-amber-700">Failed Objects</div>
-                            <Badge variant="outline">总 {failedObjectTotalCount} / 展示 {failedObjectItems.length}</Badge>
-                          </div>
-                          {failedObjectItems.map((item, index) => {
-                            const record = asRecord(item);
-                            const attempts = Array.isArray(record.attempts) ? record.attempts : [];
-                            return (
-                              <div key={`${asText(record.object_id)}-${index}`} className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3">
-                                <div className="text-sm font-black">{asText(record.object_name)}</div>
-                                <div className="mt-1 text-xs text-muted-foreground">{asText(record.reason)}</div>
-                                {attempts.map((attempt, attemptIndex) => {
-                                  const attemptRecord = asRecord(attempt);
-                                  return (
-                                    <div key={`${asText(record.object_id)}-attempt-${attemptIndex}`} className="mt-2 rounded-xl border border-border/60 bg-background/80 p-2 text-xs">
-                                      <div>第 {String(attemptRecord.attempt || attemptIndex + 1)} 次：{asText(attemptRecord.error)}</div>
-                                      <div className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
-                                        {asText(attemptRecord.model_output) || '该次没有捕获到模型文本输出。'}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  </ScrollArea>
-
-                  <ScrollArea className="h-[220px] rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-black">Removed Cycle Edges</div>
-                        <Badge variant="outline">总 {removedCycleEdgeTotalCount} / 展示 {removedCycleEdgeItems.length}</Badge>
-                      </div>
-                      {removedCycleEdgeItems.length > 0 ? (
-                        removedCycleEdgeItems.map((edge) => {
-                          const record = asRecord(edge);
-                          return (
-                            <div key={asText(record.edge_id)} className="rounded-2xl border border-border/60 bg-background/80 p-3">
-                              <div className="text-sm font-black">{asText(record.edge_id)}</div>
-                              <CitationPreview citation={asText(record.citation)} />
-                              <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
-                              <WorkflowTrioPreview
-                                title={`${asText(record.edge_id) || '边'} 的去环裁决`}
-                                ensemble={record.llm_ensemble}
-                                summary="如果环裁决经过 LLM，这里会并排展示 A/B 与 judge 对最弱边的选择。"
-                              />
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="text-sm text-muted-foreground">如果图里出现环，被删除的弱边会显示在这里。</div>
-                      )}
-                    </div>
-                  </ScrollArea>
-                </div>
-              </SectionCard>
-            </div>
-
-            <SectionCard title="Ablation 面板" description="聚合每个父节点的兄弟影响表和子节点重要性表。">
+            <SectionCard title="结构作用关系 / Ablation" description="系统拆开以后，继续看“移除某子模块会影响谁”。兄弟影响和子节点重要性按父系统分组呈现。">
               <ScrollArea className="h-[500px] rounded-3xl border border-border/60 bg-muted/15 p-4">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-black">Ablation Analysis</div>
-                    <Badge variant="outline">总 {ablationTotalCount} / 展示 {ablationItems.length}</Badge>
+                    <div className="text-sm font-black">Structure Effects</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline">父系统 {ablationItems.length}</Badge>
+                      <Badge variant="outline">兄弟影响边 {siblingImpactEdges.length}</Badge>
+                      <Badge variant="outline">总 {ablationTotalCount}</Badge>
+                    </div>
                   </div>
                   {ablationAnalysisProgress ? (
                     <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
@@ -1853,18 +1878,33 @@ export function FileWorkflowV2Page() {
                   {ablationItems.length > 0 ? (
                     ablationItems.map((item) => {
                       const record = asRecord(item);
+                      const siblingDependencyTable = Array.isArray(record.sibling_dependency_table) ? record.sibling_dependency_table : [];
+                      const childImportanceList = Array.isArray(record.child_importance_list) ? record.child_importance_list : [];
                       return (
                         <div key={asText(record.parent_object_id)} className="rounded-3xl border border-border/60 bg-background/80 p-4">
-                          <div className="text-base font-black">{asText(record.parent_object_id)}</div>
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="text-base font-black">{asText(record.parent_object_name) || asText(record.parent_object_id)}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{asText(record.parent_object_id)}</div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant="outline">兄弟影响 {siblingDependencyTable.length}</Badge>
+                              <Badge variant="secondary">重要性 {childImportanceList.length}</Badge>
+                            </div>
+                          </div>
                           <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
                           <div className="mt-4 grid gap-4 lg:grid-cols-2">
                             <div className="space-y-2">
                               <div className="text-sm font-black">兄弟影响</div>
-                              {(Array.isArray(record.sibling_dependency_table) ? record.sibling_dependency_table : []).map((impact, index) => {
+                              {siblingDependencyTable.map((impact, index) => {
                                 const impactRecord = asRecord(impact);
                                 return (
                                   <div key={`${asText(record.parent_object_id)}-sibling-${index}`} className="rounded-2xl border border-border/60 p-3 text-sm">
-                                    {asText(impactRecord.ablated_child_object_id)} {'->'} {asText(impactRecord.target_sibling_object_id)}
+                                    <div className="font-semibold">
+                                      移除 {asText(impactRecord.ablated_child_object_name) || asText(impactRecord.ablated_child_object_id)}
+                                      {' -> '}
+                                      影响 {asText(impactRecord.target_sibling_object_name) || asText(impactRecord.target_sibling_object_id)}
+                                    </div>
                                     <div className="mt-1 text-xs text-muted-foreground">{asText(impactRecord.impact_level)} / {asText(impactRecord.reason)}</div>
                                     <WorkflowTrioPreview
                                       title={`${asText(impactRecord.ablated_child_object_id) || '子节点'} 对兄弟 ${asText(impactRecord.target_sibling_object_id) || '对象'} 的影响`}
@@ -1874,14 +1914,21 @@ export function FileWorkflowV2Page() {
                                   </div>
                                 );
                               })}
+                              {siblingDependencyTable.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-border/60 bg-background/60 p-3 text-xs text-muted-foreground">
+                                  当前父系统下没有检测到可展示的兄弟影响关系。
+                                </div>
+                              ) : null}
                             </div>
                             <div className="space-y-2">
                               <div className="text-sm font-black">子节点重要性</div>
-                              {(Array.isArray(record.child_importance_list) ? record.child_importance_list : []).map((impact, index) => {
+                              {childImportanceList.map((impact, index) => {
                                 const impactRecord = asRecord(impact);
                                 return (
                                   <div key={`${asText(record.parent_object_id)}-parent-${index}`} className="rounded-2xl border border-border/60 p-3 text-sm">
-                                    {asText(impactRecord.ablated_child_object_id)}
+                                    <div className="font-semibold">
+                                      {asText(impactRecord.ablated_child_object_name) || asText(impactRecord.ablated_child_object_id)}
+                                    </div>
                                     <div className="mt-1 text-xs text-muted-foreground">{asText(impactRecord.importance_level)} / {asText(impactRecord.reason)}</div>
                                     <WorkflowTrioPreview
                                       title={`${asText(impactRecord.ablated_child_object_id) || '子节点'} 对父节点的重要性`}
@@ -1891,6 +1938,11 @@ export function FileWorkflowV2Page() {
                                   </div>
                                 );
                               })}
+                              {childImportanceList.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-border/60 bg-background/60 p-3 text-xs text-muted-foreground">
+                                  当前父系统下没有可展示的子节点重要性记录。
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </div>

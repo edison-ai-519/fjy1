@@ -45,6 +45,43 @@ export interface WorkflowV2GraphViewOptions {
   hideIsolatedNodes?: boolean;
 }
 
+export interface WorkflowV2SystemStructureNode {
+  id: string;
+  name: string;
+  normalizedName: string;
+  coreFunction: string;
+  childCount: number;
+  isLeaf: boolean;
+  hiddenDescendantCount: number;
+  depth: number;
+  children: WorkflowV2SystemStructureNode[];
+}
+
+export interface WorkflowV2StructureSummary {
+  containmentCount: number;
+  leafCount: number;
+  maxDepth: number;
+  hiddenDescendantCount: number;
+}
+
+export interface WorkflowV2SystemDecompositionView {
+  root: WorkflowV2SystemStructureNode | null;
+  summary: WorkflowV2StructureSummary;
+  emptyReason: string;
+}
+
+interface WorkflowV2SystemObject {
+  id: string;
+  name: string;
+  normalizedName: string;
+  coreFunction: string;
+}
+
+interface WorkflowV2SystemEdge {
+  sourceId: string;
+  targetId: string;
+}
+
 function asBoolean(value: unknown): boolean {
   return value === true;
 }
@@ -64,6 +101,109 @@ function asNumber(value: unknown): number | null {
 
 function asArray<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
+}
+
+function normalizeWorkflowV2SystemObjects(objects: unknown): WorkflowV2SystemObject[] {
+  return asArray(objects)
+    .map((item) => asRecord(item))
+    .map((item) => ({
+      id: asText(item.object_id),
+      name: asText(item.object_name) || asText(item.object_id),
+      normalizedName: asText(item.normalized_name),
+      coreFunction: asText(item.core_function),
+    }))
+    .filter((item) => item.id);
+}
+
+function normalizeWorkflowV2SystemEdges(edges: unknown, objectIds: Set<string>): WorkflowV2SystemEdge[] {
+  const edgeMap = new Map<string, WorkflowV2SystemEdge>();
+
+  for (const item of asArray(edges)) {
+    const edge = asRecord(item);
+    const sourceId = asText(edge.source_object_id);
+    const targetId = asText(edge.target_object_id);
+    if (!sourceId || !targetId || sourceId === targetId) {
+      continue;
+    }
+    if (!objectIds.has(sourceId) || !objectIds.has(targetId)) {
+      continue;
+    }
+    const key = `${sourceId}->${targetId}`;
+    if (!edgeMap.has(key)) {
+      edgeMap.set(key, { sourceId, targetId });
+    }
+  }
+
+  return [...edgeMap.values()];
+}
+
+function createWorkflowV2Adjacency(edges: WorkflowV2SystemEdge[], objectIds: Set<string>) {
+  const adjacency = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+  const degree = new Map<string, number>();
+
+  for (const objectId of objectIds) {
+    adjacency.set(objectId, []);
+    indegree.set(objectId, 0);
+    degree.set(objectId, 0);
+  }
+
+  for (const edge of edges) {
+    adjacency.get(edge.sourceId)?.push(edge.targetId);
+    indegree.set(edge.targetId, (indegree.get(edge.targetId) ?? 0) + 1);
+    degree.set(edge.sourceId, (degree.get(edge.sourceId) ?? 0) + 1);
+    degree.set(edge.targetId, (degree.get(edge.targetId) ?? 0) + 1);
+  }
+
+  return { adjacency, indegree, degree };
+}
+
+function collectWorkflowV2ReachableDescendants(
+  nodeId: string,
+  adjacency: Map<string, string[]>,
+  path: Set<string>,
+): Set<string> {
+  const collected = new Set<string>();
+  const nextPath = new Set(path);
+  nextPath.add(nodeId);
+
+  for (const childId of adjacency.get(nodeId) ?? []) {
+    if (nextPath.has(childId)) {
+      continue;
+    }
+    collected.add(childId);
+    for (const descendantId of collectWorkflowV2ReachableDescendants(childId, adjacency, nextPath)) {
+      collected.add(descendantId);
+    }
+  }
+
+  return collected;
+}
+
+function countWorkflowV2LeafNodes(
+  rootId: string,
+  adjacency: Map<string, string[]>,
+): number {
+  const visited = new Set<string>();
+  let leafCount = 0;
+
+  const visit = (nodeId: string) => {
+    if (visited.has(nodeId)) {
+      return;
+    }
+    visited.add(nodeId);
+    const children = adjacency.get(nodeId) ?? [];
+    if (children.length === 0) {
+      leafCount += 1;
+      return;
+    }
+    for (const childId of children) {
+      visit(childId);
+    }
+  };
+
+  visit(rootId);
+  return leafCount;
 }
 
 function normalizeImpactLevel(value: unknown): WorkflowV2SiblingImpactEdge['impactLevel'] {
@@ -132,6 +272,189 @@ export function extractWorkflowV2WritebackSummary(payload: unknown): WorkflowV2W
     lastVersionId: asNumber(latestSuccess?.version_id),
     inferenceProbability: asNumber(inferenceSource.probability),
     inferenceReason: asText(inferenceSource.reason),
+  };
+}
+
+export function pickWorkflowV2PrimaryRoot(objects: unknown, edges: unknown): string {
+  const normalizedObjects = normalizeWorkflowV2SystemObjects(objects);
+  if (normalizedObjects.length === 0) {
+    return '';
+  }
+
+  const objectIds = new Set(normalizedObjects.map((item) => item.id));
+  const normalizedEdges = normalizeWorkflowV2SystemEdges(edges, objectIds);
+  const { adjacency, indegree, degree } = createWorkflowV2Adjacency(normalizedEdges, objectIds);
+  const objectById = new Map(normalizedObjects.map((item) => [item.id, item] as const));
+
+  const rootCandidates = normalizedEdges.length > 0
+    ? normalizedObjects.filter((item) => (indegree.get(item.id) ?? 0) === 0)
+    : [];
+
+  const descendantCountCache = new Map<string, number>();
+  const getDescendantCount = (nodeId: string) => {
+    if (descendantCountCache.has(nodeId)) {
+      return descendantCountCache.get(nodeId) ?? 0;
+    }
+    const count = collectWorkflowV2ReachableDescendants(nodeId, adjacency, new Set()).size;
+    descendantCountCache.set(nodeId, count);
+    return count;
+  };
+
+  const compareObjects = (leftId: string, rightId: string) => {
+    const left = objectById.get(leftId);
+    const right = objectById.get(rightId);
+    const descendantDiff = getDescendantCount(rightId) - getDescendantCount(leftId);
+    if (descendantDiff !== 0) {
+      return descendantDiff;
+    }
+
+    const childDiff = (adjacency.get(rightId)?.length ?? 0) - (adjacency.get(leftId)?.length ?? 0);
+    if (childDiff !== 0) {
+      return childDiff;
+    }
+
+    const degreeDiff = (degree.get(rightId) ?? 0) - (degree.get(leftId) ?? 0);
+    if (degreeDiff !== 0) {
+      return degreeDiff;
+    }
+
+    return (left?.name || leftId).localeCompare(right?.name || rightId, 'zh-Hans-CN');
+  };
+
+  if (rootCandidates.length > 0) {
+    return [...rootCandidates].sort((left, right) => compareObjects(left.id, right.id))[0]?.id ?? '';
+  }
+
+  return [...normalizedObjects].sort((left, right) => compareObjects(left.id, right.id))[0]?.id ?? '';
+}
+
+export function buildWorkflowV2SystemDecompositionView(input: {
+  objects: unknown;
+  edges: unknown;
+  maxDepth?: number;
+}): WorkflowV2SystemDecompositionView {
+  const normalizedObjects = normalizeWorkflowV2SystemObjects(input.objects);
+  const depthLimit = Number.isFinite(input.maxDepth) ? Math.max(0, Math.floor(input.maxDepth as number)) : 2;
+
+  if (normalizedObjects.length === 0) {
+    return {
+      root: null,
+      summary: {
+        containmentCount: 0,
+        leafCount: 0,
+        maxDepth: 0,
+        hiddenDescendantCount: 0,
+      },
+      emptyReason: '当前还没有可展示的对象，待前置阶段产出对象后会在这里生成系统拆解视图。',
+    };
+  }
+
+  const objectIds = new Set(normalizedObjects.map((item) => item.id));
+  const normalizedEdges = normalizeWorkflowV2SystemEdges(input.edges, objectIds);
+  const objectById = new Map(normalizedObjects.map((item) => [item.id, item] as const));
+  const { adjacency } = createWorkflowV2Adjacency(normalizedEdges, objectIds);
+  const rootId = pickWorkflowV2PrimaryRoot(input.objects, input.edges);
+
+  if (!rootId) {
+    return {
+      root: null,
+      summary: {
+        containmentCount: 0,
+        leafCount: 0,
+        maxDepth: 0,
+        hiddenDescendantCount: 0,
+      },
+      emptyReason: '当前还没有形成稳定的系统结构根节点，请等待图构建完成后再查看。',
+    };
+  }
+
+  let deepestVisibleDepth = 0;
+  const buildNode = (
+    nodeId: string,
+    depth: number,
+    path: Set<string>,
+  ): { node: WorkflowV2SystemStructureNode; visibleIds: Set<string> } | null => {
+    if (path.has(nodeId)) {
+      return null;
+    }
+
+    const object = objectById.get(nodeId);
+    if (!object) {
+      return null;
+    }
+
+    deepestVisibleDepth = Math.max(deepestVisibleDepth, depth);
+    const nextPath = new Set(path);
+    nextPath.add(nodeId);
+    const directChildIds = (adjacency.get(nodeId) ?? []).filter((childId) => !nextPath.has(childId));
+    const totalDescendantIds = collectWorkflowV2ReachableDescendants(nodeId, adjacency, path);
+
+    if (depth >= depthLimit || directChildIds.length === 0) {
+      return {
+        node: {
+          id: nodeId,
+          name: object.name,
+          normalizedName: object.normalizedName,
+          coreFunction: object.coreFunction,
+          childCount: directChildIds.length,
+          isLeaf: directChildIds.length === 0,
+          hiddenDescendantCount: totalDescendantIds.size,
+          depth,
+          children: [],
+        },
+        visibleIds: new Set<string>(),
+      };
+    }
+
+    const children: WorkflowV2SystemStructureNode[] = [];
+    const visibleIds = new Set<string>();
+    for (const childId of directChildIds) {
+      const builtChild = buildNode(childId, depth + 1, nextPath);
+      if (!builtChild) {
+        continue;
+      }
+      children.push(builtChild.node);
+      visibleIds.add(childId);
+      for (const visibleId of builtChild.visibleIds) {
+        visibleIds.add(visibleId);
+      }
+    }
+
+    return {
+      node: {
+        id: nodeId,
+        name: object.name,
+        normalizedName: object.normalizedName,
+        coreFunction: object.coreFunction,
+        childCount: directChildIds.length,
+        isLeaf: directChildIds.length === 0,
+        hiddenDescendantCount: Math.max(totalDescendantIds.size - visibleIds.size, 0),
+        depth,
+        children,
+      },
+      visibleIds,
+    };
+  };
+
+  const builtRoot = buildNode(rootId, 0, new Set());
+  const reachableNodeIds = new Set<string>([rootId, ...collectWorkflowV2ReachableDescendants(rootId, adjacency, new Set())]);
+  const containmentCount = normalizedEdges.filter((edge) => (
+    reachableNodeIds.has(edge.sourceId) && reachableNodeIds.has(edge.targetId)
+  )).length;
+  const leafCount = countWorkflowV2LeafNodes(rootId, adjacency);
+  const emptyReason = normalizedEdges.length === 0
+    ? '当前还没有形成可展示的系统拆解结构，待图构建阶段产出包含关系后会在这里显示。'
+    : '';
+
+  return {
+    root: builtRoot?.node ?? null,
+    summary: {
+      containmentCount,
+      leafCount,
+      maxDepth: deepestVisibleDepth + 1,
+      hiddenDescendantCount: builtRoot?.node.hiddenDescendantCount ?? 0,
+    },
+    emptyReason,
   };
 }
 

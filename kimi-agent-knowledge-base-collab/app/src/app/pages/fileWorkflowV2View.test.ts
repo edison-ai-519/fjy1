@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildWorkflowV2SystemDecompositionView,
   buildWorkflowV2GraphLayout,
   canWriteWorkflowV2Session,
   extractWorkflowV2SiblingImpactEdges,
   extractWorkflowV2Summary,
   extractWorkflowV2WritebackSummary,
   getWorkflowV2ImpactEdgeStyle,
+  pickWorkflowV2PrimaryRoot,
 } from './fileWorkflowV2View';
 
 test('extractWorkflowV2Summary 会读取 meta 统计信息', () => {
@@ -161,6 +163,99 @@ test('extractWorkflowV2WritebackSummary 会提取最近成功写回的 commit、
     inferenceProbability: 0.87,
     inferenceReason: '最新推理',
   });
+});
+
+test('pickWorkflowV2PrimaryRoot 会优先选择可达后代更多的主系统', () => {
+  const rootId = pickWorkflowV2PrimaryRoot(
+    [
+      { object_id: 'root-b', object_name: 'B系统' },
+      { object_id: 'root-a', object_name: 'A系统' },
+      { object_id: 'a-1', object_name: 'A-1' },
+      { object_id: 'a-2', object_name: 'A-2' },
+      { object_id: 'b-1', object_name: 'B-1' },
+    ],
+    [
+      { source_object_id: 'root-a', target_object_id: 'a-1' },
+      { source_object_id: 'root-a', target_object_id: 'a-2' },
+      { source_object_id: 'root-b', target_object_id: 'b-1' },
+    ],
+  );
+
+  assert.equal(rootId, 'root-a');
+});
+
+test('pickWorkflowV2PrimaryRoot 在无结构边时会稳定回退到对象名称更靠前的节点', () => {
+  const rootId = pickWorkflowV2PrimaryRoot(
+    [
+      { object_id: 'node-b', object_name: '制动系统' },
+      { object_id: 'node-a', object_name: '车身系统' },
+    ],
+    [],
+  );
+
+  assert.equal(rootId, 'node-a');
+});
+
+test('buildWorkflowV2SystemDecompositionView 会生成有深度上限的系统拆解树', () => {
+  const view = buildWorkflowV2SystemDecompositionView({
+    objects: [
+      { object_id: 'root', object_name: '整车', normalized_name: 'vehicle', core_function: '承载并协调所有子系统' },
+      { object_id: 'power', object_name: '动力系统', normalized_name: 'powertrain', core_function: '提供驱动力' },
+      { object_id: 'control', object_name: '控制系统', normalized_name: 'control', core_function: '协调整车控制' },
+      { object_id: 'engine', object_name: '发动机', normalized_name: 'engine', core_function: '输出机械能' },
+      { object_id: 'ecu', object_name: 'ECU', normalized_name: 'ecu', core_function: '执行控制逻辑' },
+      { object_id: 'sensor', object_name: '传感器', normalized_name: 'sensor', core_function: '采集状态' },
+    ],
+    edges: [
+      { source_object_id: 'root', target_object_id: 'power' },
+      { source_object_id: 'root', target_object_id: 'control' },
+      { source_object_id: 'power', target_object_id: 'engine' },
+      { source_object_id: 'control', target_object_id: 'ecu' },
+      { source_object_id: 'ecu', target_object_id: 'sensor' },
+    ],
+    maxDepth: 2,
+  });
+
+  assert.equal(view.root?.name, '整车');
+  assert.equal(view.summary.containmentCount, 5);
+  assert.equal(view.summary.leafCount, 2);
+  assert.equal(view.summary.maxDepth, 3);
+  assert.equal(view.root?.children.length, 2);
+  assert.equal(view.root?.children[1]?.children[0]?.name, 'ECU');
+  assert.equal(view.root?.children[1]?.children[0]?.hiddenDescendantCount, 1);
+});
+
+test('buildWorkflowV2SystemDecompositionView 在没有结构边时返回明确空态原因', () => {
+  const view = buildWorkflowV2SystemDecompositionView({
+    objects: [
+      { object_id: 'root', object_name: '整车', normalized_name: 'vehicle', core_function: '承载系统' },
+    ],
+    edges: [],
+    maxDepth: 2,
+  });
+
+  assert.equal(view.root?.name, '整车');
+  assert.equal(view.summary.containmentCount, 0);
+  assert.match(view.emptyReason, /没有形成可展示的系统拆解结构/);
+});
+
+test('buildWorkflowV2SystemDecompositionView 遇到环时不会无限展开重复节点', () => {
+  const view = buildWorkflowV2SystemDecompositionView({
+    objects: [
+      { object_id: 'a', object_name: '系统A' },
+      { object_id: 'b', object_name: '系统B' },
+      { object_id: 'c', object_name: '系统C' },
+    ],
+    edges: [
+      { source_object_id: 'a', target_object_id: 'b' },
+      { source_object_id: 'b', target_object_id: 'c' },
+      { source_object_id: 'c', target_object_id: 'a' },
+    ],
+    maxDepth: 3,
+  });
+
+  assert.ok(view.root);
+  assert.equal(view.root?.children.some((child) => child.id === view.root?.id), false);
 });
 
 test('buildWorkflowV2GraphLayout 会按拓扑深度生成简单 DAG 布局', () => {
