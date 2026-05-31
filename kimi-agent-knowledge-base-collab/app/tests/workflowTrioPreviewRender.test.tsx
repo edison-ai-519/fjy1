@@ -55,6 +55,7 @@ test('WorkflowTrioPreview 会把专家过程渲染成群聊式结构化视图', 
         status: 'completed',
         data: {
           round_summary: '模型 A 认为关系项需要补齐 target_id。',
+          object: '模型 A 认为关系项需要补齐 target_id。',
           resolved_conflicts: [
             {
               item_key: '机械狗-外壳',
@@ -125,5 +126,9 @@ test('WorkflowTrioPreview 会把专家过程渲染成群聊式结构化视图', 
   assert.match(conversationMarkup, /查看原始文本/);
   assert.match(conversationMarkup, /第 1 轮互评/);
   assert.match(conversationMarkup, /最终保留结果/);
-  assert.match(conversationMarkup, /target object name/i);
+  assert.match(conversationMarkup, /目标对象/);
+  assert.match(conversationMarkup, /裁决结果/);
+  assert.match(conversationMarkup, /模型 A 的互评意见/);
+  assert.doesNotMatch(conversationMarkup, />Object</i);
+  assert.doesNotMatch(conversationMarkup, />Round Summary</i);
 });

@@ -38,6 +38,42 @@ function asText(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+const FIELD_LABEL_MAP: Record<string, string> = {
+  object: '对象描述',
+  object_id: '对象 ID',
+  object_name: '对象名称',
+  normalized_name: '规范名称',
+  aliases: '别名',
+  core_function: '核心功能',
+  reason: '判断理由',
+  summary: '摘要',
+  round_summary: '本轮摘要',
+  relation: '关系',
+  relations: '关系列表',
+  target_name: '目标名称',
+  target_object_name: '目标对象',
+  source_id: '源对象 ID',
+  target_id: '目标对象 ID',
+  confidence: '置信度',
+  citation: '引用依据',
+  citations: '引用依据',
+  suggestion: '修改建议',
+  decision: '裁决结论',
+  selected_model: '采纳模型',
+  preferred_model: '建议保留模型',
+  target_model: '被评价模型',
+  stance: '立场',
+  object_level: '对象层级',
+  item_key: '冲突项',
+  final_value: '裁决结果',
+  resolved_conflicts: '已解决冲突',
+  selected_action: '处理动作',
+  source_window_ids: '来源窗口',
+  merge_reasons: '融合依据',
+  observation: '观察',
+  impact_reason: '影响原因',
+};
+
 function prettifyKey(key: string) {
   return key
     .replace(/_/g, ' ')
@@ -56,25 +92,57 @@ function getDisplayLabel(label?: string) {
     const match = text.match(/^item\s+(\d+)$/i);
     return match ? `第 ${match[1]} 项` : '条目';
   }
-  if (text === 'final_value') {
-    return '裁决结果';
-  }
-  if (text === 'item_key') {
-    return '冲突键';
+  if (FIELD_LABEL_MAP[text]) {
+    return FIELD_LABEL_MAP[text];
   }
   return prettifyKey(text);
 }
 
+function getDisplayText(value: unknown, options?: { rootFallback?: string; keepArrayItemLabel?: boolean }) {
+  const text = asText(value).trim();
+  if (!text) {
+    return '';
+  }
+  if (text === '__root__') {
+    return options?.rootFallback || '';
+  }
+  const itemMatch = text.match(/^item\s+(\d+)$/i);
+  if (itemMatch) {
+    if (options?.keepArrayItemLabel) {
+      return `第 ${itemMatch[1]} 项`;
+    }
+    return '';
+  }
+  return text;
+}
+
+function normalizeComparableText(value: unknown) {
+  return asText(value).replace(/\s+/g, ' ').trim();
+}
+
+function getDisplayModelName(value: unknown) {
+  const text = asText(value).trim();
+  if (!text) {
+    return '';
+  }
+  if (text === 'model_a') {
+    return '模型 A';
+  }
+  if (text === 'model_b') {
+    return '模型 B';
+  }
+  if (text === 'judge') {
+    return 'Judge';
+  }
+  return text;
+}
+
 function getDisplayConflictKey(value: string, index: number) {
-  const text = asText(value);
+  const text = getDisplayText(value, { rootFallback: '整体结果', keepArrayItemLabel: true });
   if (!text || text === '__root__') {
     return '整体结果';
   }
-  if (/^item\s+(\d+)$/i.test(text)) {
-    const match = text.match(/^item\s+(\d+)$/i);
-    return match ? `第 ${match[1]} 项` : `冲突项 ${index + 1}`;
-  }
-  return text;
+  return text || `冲突项 ${index + 1}`;
 }
 
 function streamStatusLabel(status: string | null | undefined) {
@@ -107,15 +175,16 @@ function tryParseRawText(rawText: string): unknown {
 }
 
 function getObjectTitle(record: Record<string, unknown>, fallback: string) {
-  return asText(record.object_name)
-    || asText(record.object)
-    || asText(record.name)
-    || asText(record.normalized_name)
-    || asText(record.item_key)
-    || asText(record.target_name)
-    || asText(record.target_object_name)
-    || asText(record.source_id)
-    || fallback;
+  return getDisplayText(record.object_name)
+    || getDisplayText(record.object)
+    || getDisplayText(record.name)
+    || getDisplayText(record.normalized_name)
+    || getDisplayText(record.item_key, { rootFallback: '整体结果', keepArrayItemLabel: true })
+    || getDisplayText(record.target_name)
+    || getDisplayText(record.target_object_name)
+    || getDisplayText(record.source_id)
+    || getDisplayText(fallback)
+    || '条目';
 }
 
 function getObjectSummary(record: Record<string, unknown>) {
@@ -132,9 +201,9 @@ function getObjectBadges(record: Record<string, unknown>) {
     asText(record.relation),
     asText(record.decision),
     asText(record.object_level),
-    asText(record.selected_model),
-    asText(record.preferred_model),
-    asText(record.target_model),
+    getDisplayModelName(record.selected_model),
+    getDisplayModelName(record.preferred_model),
+    getDisplayModelName(record.target_model),
     asText(record.stance),
   ].filter(Boolean);
 
@@ -211,7 +280,7 @@ function WorkflowStructuredArray({
         <div className="space-y-2">
           {value.map((item, index) => (
             <div key={`${label || 'item'}-${index}`} className="rounded-2xl border border-border/60 bg-background/75 p-3">
-              <WorkflowStructuredValue value={item} depth={depth + 1} label={`item ${index + 1}`} />
+              <WorkflowStructuredValue value={item} depth={depth + 1} />
             </div>
           ))}
         </div>
@@ -252,6 +321,8 @@ function WorkflowStructuredObject({
       .map((key) => [key, value[key]] as const),
     ...entries.filter(([key]) => !preferredOrder.includes(key)),
   ];
+  const summaryText = normalizeComparableText(summary);
+  const titleText = normalizeComparableText(title);
 
   return (
     <div className={cn(
@@ -284,6 +355,13 @@ function WorkflowStructuredObject({
       </div>
       <div className="mt-3 space-y-3">
         {orderedEntries.map(([key, entryValue]) => {
+          const entryText = normalizeComparableText(
+            getDisplayText(entryValue, { rootFallback: '整体结果', keepArrayItemLabel: true }) || asText(entryValue),
+          );
+          const isSummaryDuplicate = summaryText && entryText === summaryText;
+          const isTitleDuplicate = titleText && entryText === titleText;
+          const isTitleSourceField = ['object_name', 'object', 'name', 'normalized_name', 'item_key', 'target_name', 'target_object_name', 'source_id'].includes(key);
+
           if (key === 'reason' && entryValue === summary) {
             return null;
           }
@@ -291,6 +369,18 @@ function WorkflowStructuredObject({
             return null;
           }
           if (key === 'core_function' && entryValue === summary) {
+            return null;
+          }
+          if (key === 'round_summary' && isSummaryDuplicate) {
+            return null;
+          }
+          if (key === 'object' && isSummaryDuplicate) {
+            return null;
+          }
+          if (isTitleSourceField && isTitleDuplicate) {
+            return null;
+          }
+          if ((key === 'object' || key === 'observation') && isSummaryDuplicate) {
             return null;
           }
           return (
@@ -381,7 +471,7 @@ function WorkflowResolvedConflictList({
                 <div key={`${citation.targetModel}-${citationIndex}`} className="rounded-2xl border border-border/50 bg-muted/20 px-3 py-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className="rounded-full">
-                      {citation.targetModel || 'unknown'}
+                      {getDisplayModelName(citation.targetModel) || 'unknown'}
                     </Badge>
                     <Badge variant="secondary" className="rounded-full">
                       {citation.stance || '修改'}
@@ -553,7 +643,7 @@ function WorkflowRoundMessage({ round, index }: { round: WorkflowEnsembleRound; 
     <WorkflowChatBubble
       tone="system"
       title={`第 ${round.round || index + 1} 轮互评`}
-      modelName={round.reviewerModel || round.reviewerModelKey}
+      modelName={getDisplayModelName(round.reviewerModel || round.reviewerModelKey)}
       status={round.status}
       rawText={round.rawText}
       footer={round.resolvedConflicts.length > 0 ? <WorkflowResolvedConflictList conflicts={round.resolvedConflicts} /> : null}
