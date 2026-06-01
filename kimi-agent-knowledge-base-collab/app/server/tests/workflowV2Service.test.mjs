@@ -159,7 +159,7 @@ test("WorkflowV2Service 手动设置的 V2 参数不会在刷新配置时被环�
   });
 });
 
-test("WorkflowV2Service 能跑通 7 阶段并完成 graph_build 与 ablation_analysis", async () => {
+test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 graph_build 与 ablation_analysis", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-success-"));
   const service = createService({
     runtimeRoot,
@@ -393,18 +393,19 @@ test("WorkflowV2Service 能跑通 7 阶段并完成 graph_build 与 ablation_ana
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.stage_results.length, 7);
+  assert.equal(result.stage_results.length, 8);
   assert.equal(result.result.objects.length, 6);
   assert.equal(result.result.edges.some((edge) => edge.source_object_id === edge.target_object_id), false);
   assert.equal(result.result.meta.is_dag, true);
   assert.equal(result.stage_results[0].stage, "chunk_parse");
-  assert.equal(result.stage_results[1].stage, "window_extract");
-  assert.equal(result.stage_results[2].stage, "object_fusion");
-  assert.equal(result.stage_results[5].stage, "graph_build");
-  assert.equal(result.stage_results[6].stage, "ablation_analysis");
-  assert.equal(result.stage_results[2].output.fused_objects.length, 6);
-  assert.equal(result.stage_results[3].output.function_objects.length, 6);
-  assert.equal(result.stage_results[5].output.removed_cycle_edges.length, 1);
+  assert.equal(result.stage_results[1].stage, "chunk_filter");
+  assert.equal(result.stage_results[2].stage, "window_extract");
+  assert.equal(result.stage_results[3].stage, "object_fusion");
+  assert.equal(result.stage_results[6].stage, "graph_build");
+  assert.equal(result.stage_results[7].stage, "ablation_analysis");
+  assert.equal(result.stage_results[3].output.fused_objects.length, 6);
+  assert.equal(result.stage_results[4].output.function_objects.length, 6);
+  assert.equal(result.stage_results[6].output.removed_cycle_edges.length, 1);
   assert.equal(result.result.ablation.length >= 2, true);
   assert.equal(result.result.objects.every((item) => typeof item.core_function === "string" && item.core_function.length > 0), true);
   assert.equal(result.result.objects.some((item) => item.object_name === "电脑" && item.is_isolated === false), true);
@@ -657,6 +658,56 @@ test("WorkflowV2Service chunk_parse 会将弱语义短标题并入后续正文",
   assert.equal(output.chunks[1].text.includes("词条热门讨论"), true);
   assert.equal(output.chunks[1].text.includes("这里是关于该词条的详细讨论内容"), true);
   assert.match(output.chunks[1].reason, /短标题与后续正文合并/);
+});
+
+test("WorkflowV2Service chunk_filter 会筛出高信息 chunk，并在失败时回退全量保留", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-chunk-filter-"));
+  let shouldFail = false;
+  const service = createService({
+    runtimeRoot,
+    llmJsonInvoker: async ({ stage }) => {
+      if (stage !== "chunk_filter") {
+        throw new Error(`unexpected stage: ${stage}`);
+      }
+      if (shouldFail) {
+        const error = new Error("chunk filter upstream failed");
+        error.stageOutput = {
+          llm_raw_text: "{\"selected_chunk_ids\":[\"c2\"]}",
+        };
+        throw error;
+      }
+      return {
+        data: {
+          selected_chunk_ids: ["c2", "c4"],
+          reason: "这两个 chunk 明确包含对象结构与功能线索。",
+        },
+      };
+    },
+  });
+
+  const document = {
+    file_name: "filter.txt",
+    raw_text: "背景介绍。\n\n机械狗由外壳和电源构成。\n\n随便一句话。\n\n电源负责为整机供能。",
+  };
+  const chunks = [
+    { chunk_id: "c1", order: 1, text: "背景介绍。" },
+    { chunk_id: "c2", order: 2, text: "机械狗由外壳和电源构成。" },
+    { chunk_id: "c3", order: 3, text: "随便一句话。" },
+    { chunk_id: "c4", order: 4, text: "电源负责为整机供能。" },
+  ];
+
+  const selected = await service.chunkFilterStage(document, chunks);
+  assert.deepEqual(selected.selected_chunk_ids, ["c2", "c4"]);
+  assert.equal(selected.total_input_chunks, 4);
+  assert.equal(selected.total_selected_chunks, 2);
+  assert.equal(selected.skipped_count, 2);
+
+  shouldFail = true;
+  const fallback = await service.chunkFilterStage(document, chunks);
+  assert.deepEqual(fallback.selected_chunk_ids, ["c1", "c2", "c3", "c4"]);
+  assert.equal(fallback.total_selected_chunks, 4);
+  assert.equal(fallback.used_fallback, true);
+  assert.equal(fallback.error, "chunk filter upstream failed");
 });
 
 test("WorkflowV2Service window_extract 会上报滑动窗口执行进度", async () => {
@@ -1166,6 +1217,7 @@ test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功�
         raw_text: "电脑系统负责计算。",
       },
       chunks: [{ chunk_id: "c1", order: 1, text: "电脑系统负责计算。" }],
+      filtered_chunks: [{ chunk_id: "c1", order: 1, text: "电脑系统负责计算。" }],
       windows: [{ window_id: "w1", order: 1, chunk_ids: ["c1"], text: "电脑系统负责计算。" }],
       window_results: [{ window_id: "w1", objects: [] }],
       fused_objects: [],
@@ -1177,12 +1229,13 @@ test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功�
     },
     stage_results: [
       { stage: "chunk_parse", order: 1, status: "success", started_at: null, finished_at: null, output: {}, error: null },
-      { stage: "window_extract", order: 2, status: "success", started_at: null, finished_at: null, output: {}, error: null },
-      { stage: "object_fusion", order: 3, status: "success", started_at: null, finished_at: null, output: {}, error: null },
-      { stage: "function_analysis", order: 4, status: "pending", started_at: null, finished_at: null, output: null, error: null },
-      { stage: "object_decompose", order: 5, status: "pending", started_at: null, finished_at: null, output: null, error: null },
-      { stage: "graph_build", order: 6, status: "pending", started_at: null, finished_at: null, output: null, error: null },
-      { stage: "ablation_analysis", order: 7, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "chunk_filter", order: 2, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "window_extract", order: 3, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "object_fusion", order: 4, status: "success", started_at: null, finished_at: null, output: {}, error: null },
+      { stage: "function_analysis", order: 5, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "object_decompose", order: 6, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "graph_build", order: 7, status: "pending", started_at: null, finished_at: null, output: null, error: null },
+      { stage: "ablation_analysis", order: 8, status: "pending", started_at: null, finished_at: null, output: null, error: null },
     ],
   });
 
@@ -1194,7 +1247,7 @@ test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功�
 
   assert.equal(retried.ok, false);
   assert.match(retried.errors[0].message, /not retryable|previous stage/);
-  assert.equal(retried.stage_results[2].status, "success");
+  assert.equal(retried.stage_results[3].status, "success");
   assert.equal(retried.stage_results.find((item) => item.stage === "function_analysis")?.status, "pending");
 });
 

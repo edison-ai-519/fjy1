@@ -18,7 +18,6 @@ import {
   Atom,
   Link2,
   TreePine,
-  FileUp,
 } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
@@ -46,14 +45,12 @@ import { toast } from 'sonner';
 
 const loadAssistantPage = () => import('@/app/pages/AssistantPage').then((module) => ({ default: module.AssistantPage }));
 const loadExplorerPage = () => import('@/app/pages/ExplorerPage').then((module) => ({ default: module.ExplorerPage }));
-const loadFileWorkflowPage = () => import('@/app/pages/FileWorkflowPage').then((module) => ({ default: module.FileWorkflowPage }));
 const loadFileWorkflowV2Page = () => import('@/app/pages/FileWorkflowV2Page').then((module) => ({ default: module.FileWorkflowV2Page }));
 const loadLabPage = () => import('@/app/pages/LabPage').then((module) => ({ default: module.LabPage }));
 const loadWorkspacePage = () => import('@/app/pages/WorkspacePage').then((module) => ({ default: module.WorkspacePage }));
 
 const AssistantPage = lazy(loadAssistantPage);
 const ExplorerPage = lazy(loadExplorerPage);
-const FileWorkflowPage = lazy(loadFileWorkflowPage);
 const FileWorkflowV2Page = lazy(loadFileWorkflowV2Page);
 const LabPage = lazy(loadLabPage);
 const WorkspacePage = lazy(loadWorkspacePage);
@@ -286,6 +283,12 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
   } = useOntologyContext();
   const assistantState = useOntologyAssistantState(selectedEntity);
   const shouldLoadOntologyData = activeTab === 'lab' || activeTab === 'explorer';
+
+  useEffect(() => {
+    if (activeTab === 'file-workflow') {
+      setActiveTab('file-workflow-v2');
+    }
+  }, [activeTab, setActiveTab]);
 
   useEffect(() => subscribeSelectedProjectIdChange((projectId) => {
     setSelectedWorkspaceProjectId(projectId);
@@ -592,10 +595,6 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
                   <Zap className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">本体图谱</span>
                 </TabsTrigger>
-                <TabsTrigger value="file-workflow" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
-                  <FileUp className="mr-3 h-5 w-5 text-primary" />
-                  <span className="font-black text-sm uppercase tracking-tight">文件工作流</span>
-                </TabsTrigger>
                 <TabsTrigger value="file-workflow-v2" className="w-full justify-start rounded-2xl px-3 py-4 data-[state=active]:bg-background data-[state=active]:shadow-md transition-all">
                   <Blocks className="mr-3 h-5 w-5 text-primary" />
                   <span className="font-black text-sm uppercase tracking-tight">文件工作流 V2</span>
@@ -652,11 +651,6 @@ function AppShellContent({ activeTab, setActiveTab }: AppShellContentProps) {
           <TabsContent value="workspace" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
             <Suspense fallback={<PageLoader label="正在加载工作台..." />}>
               <WorkspacePage />
-            </Suspense>
-          </TabsContent>
-          <TabsContent value="file-workflow" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">
-            <Suspense fallback={<PageLoader label="正在加载文件工作流..." />}>
-              <FileWorkflowPage />
             </Suspense>
           </TabsContent>
           <TabsContent value="file-workflow-v2" className="mt-0 h-full flex-1 min-h-0 animate-in fade-in duration-300">

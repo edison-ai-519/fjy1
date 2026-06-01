@@ -533,7 +533,7 @@ export function buildWorkflowV2SystemDecompositionView(input: {
         maxDepth: 0,
         hiddenDescendantCount: 0,
       },
-      emptyReason: '当前还没有形成稳定的系统结构根节点，请等待图构建完成后再查看。',
+      emptyReason: '当前还没有形成稳定的系统拆解结构，请等待图构建完成后再查看。',
     };
   }
 

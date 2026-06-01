@@ -39,7 +39,7 @@ function renderStructureNode(node: WorkflowV2SystemStructureNode): ReactNode {
             </Badge>
           ) : null}
           <Badge variant={isRoot ? 'default' : 'outline'} className="rounded-full">
-            {isRoot ? '根节点' : isLeaf ? '叶子节点' : `${node.childCount} 个子级`}
+            {isLeaf ? '叶子节点' : `${node.childCount} 个子级`}
           </Badge>
         </div>
       </div>
@@ -100,12 +100,11 @@ export function WorkflowV2SystemDecompositionPanel({
         <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
             <Boxes className="h-4 w-4 text-primary" />
-            拆解簇
+            结构簇
           </div>
           <div className="mt-2 text-sm font-black">{clusterCount} 组</div>
           <div className="mt-1 break-words text-xs text-muted-foreground">
-            {roots.slice(0, 3).map((node) => node.name).join(' / ')}
-            {roots.length > 3 ? ` 等 ${roots.length} 个根节点` : ''}
+            {clusterCount > 1 ? '当前存在多组可独立阅读的结构簇。' : '当前已形成 1 组主要结构。'}
           </div>
         </div>
         <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
@@ -140,7 +139,6 @@ export function WorkflowV2SystemDecompositionPanel({
             </Badge>
           ) : null}
           <Badge variant="outline" className="rounded-full">结构树优先</Badge>
-          <Badge variant="outline" className="rounded-full">根节点 {clusterCount}</Badge>
         </div>
         <div className="grid gap-4 xl:grid-cols-2">
           {roots.map((root) => renderStructureNode(root))}

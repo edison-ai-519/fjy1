@@ -43,6 +43,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -109,6 +116,7 @@ import { WorkflowV2SystemDecompositionPanel } from './WorkflowV2SystemDecomposit
 
 const STAGE_ICONS: Record<string, ReactNode> = {
   chunk_parse: <ScissorsLineDashed className="h-4 w-4" />,
+  chunk_filter: <FileSearch className="h-4 w-4" />,
   system_scope_identify: <FileSearch className="h-4 w-4" />,
   window_extract: <FileSearch className="h-4 w-4" />,
   object_fusion: <Blocks className="h-4 w-4" />,
@@ -315,7 +323,6 @@ function MetricCard({
 
 type WorkflowV2ShellSection =
   | 'overview-status'
-  | 'overview-quality'
   | 'overview-system'
   | 'analysis-objects'
   | 'analysis-graph'
@@ -380,6 +387,10 @@ export function FileWorkflowV2Page() {
     structure: 'all',
   });
   const [selectedObjectId, setSelectedObjectId] = useState('');
+  const [objectLibraryOpen, setObjectLibraryOpen] = useState(false);
+  const [graphFocusNodeId, setGraphFocusNodeId] = useState('');
+  const [systemViewOpen, setSystemViewOpen] = useState(false);
+  const [graphViewOpen, setGraphViewOpen] = useState(false);
   const [hideIsolatedNodes, setHideIsolatedNodes] = useState(true);
   const [graphZoom, setGraphZoom] = useState(1);
   const [mermaidCopied, setMermaidCopied] = useState(false);
@@ -498,14 +509,16 @@ export function FileWorkflowV2Page() {
   const summary = extractWorkflowV2Summary(result);
 
   const chunkOutput = asRecord(stageResults.find((item) => item.stage === 'chunk_parse')?.output);
+  const chunkFilterOutput = asRecord(stageResults.find((item) => item.stage === 'chunk_filter')?.output);
   const windowOutput = asRecord(stageResults.find((item) => item.stage === 'window_extract')?.output);
   const fusionOutput = asRecord(stageResults.find((item) => item.stage === 'object_fusion')?.output);
   const functionOutput = asRecord(stageResults.find((item) => item.stage === 'function_analysis')?.output);
   const decomposeOutput = asRecord(stageResults.find((item) => item.stage === 'object_decompose')?.output);
   const graphOutput = asRecord(stageResults.find((item) => item.stage === 'graph_build')?.output);
-  const qualityOutput = asRecord(stageResults.find((item) => item.stage === 'structure_quality_gate')?.output);
   const ablationOutput = asRecord(stageResults.find((item) => item.stage === 'ablation_analysis')?.output);
   const chunkItems = Array.isArray(chunkOutput.chunks) ? chunkOutput.chunks : [];
+  const selectedChunkItems = Array.isArray(chunkFilterOutput.selected_chunks) ? chunkFilterOutput.selected_chunks : [];
+  const selectedChunkIds = asStringArray(chunkFilterOutput.selected_chunk_ids);
   const windowItems = Array.isArray(windowOutput.window_results) ? windowOutput.window_results : [];
   const failedWindowItems = Array.isArray(windowOutput.failed_windows) ? windowOutput.failed_windows : [];
   const fusionJudgeItems = Array.isArray(fusionOutput.judge_results) ? fusionOutput.judge_results : [];
@@ -610,6 +623,8 @@ export function FileWorkflowV2Page() {
     ? Math.round((ablationAnalysisProgress.completed / ablationAnalysisProgress.total) * 100)
     : 0;
   const chunkTotalCount = asCount(chunkOutput.total_chunks, summary.chunkCount);
+  const selectedChunkTotalCount = asCount(chunkFilterOutput.total_selected_chunks, selectedChunkItems.length);
+  const selectedChunkInputCount = asCount(chunkFilterOutput.total_input_chunks, chunkTotalCount);
   const windowTotalCount = windowExtractProgress?.total ?? asCount(windowOutput.total_windows, summary.windowCount);
   const failedWindowTotalCount = asCount(asRecord(windowOutput.progress).failed, failedWindowItems.length);
   const fusedObjectTotalCount = asCount(
@@ -634,18 +649,16 @@ export function FileWorkflowV2Page() {
     ),
     [fusedObjectItems, result?.edges, result?.objects, stageGraphEdges],
   );
-  const decompositionRootCount = Math.max(systemDecompositionView.summary.clusterCount, summary.rootCount || 0);
-  const decompositionRootLabel = decompositionRootCount > 0 ? `${decompositionRootCount} 个根节点` : '待生成';
-  const decompositionRootPreview = systemDecompositionView.roots.length > 0
-    ? systemDecompositionView.roots.slice(0, 3).map((node) => node.name).join(' / ')
-    : '等待结构边产出';
-  const structureQualityScore = Number(qualityOutput.quality_score ?? summary.qualityScore ?? 0) || 0;
-  const structureMaxDepth = asCount(qualityOutput.max_depth, summary.maxDepth);
-  const structureWarnings = [
-    summary.tooFlatWarning,
-    summary.mixedGranularityWarning,
-    asText(qualityOutput.fragmented_root_warning),
-  ].filter(Boolean);
+  const objectLibraryItemMap = useMemo(() => {
+    return new Map(
+      objectLibraryItems
+        .map((item) => {
+          const record = asRecord(item);
+          return [asText(record.object_id), record] as const;
+        })
+        .filter(([objectId]) => Boolean(objectId)),
+    );
+  }, [objectLibraryItems]);
   const latestFocusTarget = ablationAnalysisProgress?.currentParentObjectName
     || ablationAnalysisProgress?.lastParentObjectName
     || objectDecomposeProgress?.lastObjectName
@@ -689,6 +702,45 @@ export function FileWorkflowV2Page() {
       return asText(record.source_object_id) === selectedObjectIdValue || asText(record.target_object_id) === selectedObjectIdValue;
     });
   }, [result?.edges, selectedObjectIdValue, stageGraphEdges]);
+  const graphNodeMap = useMemo(() => {
+    return new Map(graphLayout.nodes.map((node) => [node.id, node] as const));
+  }, [graphLayout.nodes]);
+  const graphRenderableImpactEdges = useMemo(() => {
+    return siblingImpactEdges.filter((edge) => graphNodeMap.has(edge.sourceId) && graphNodeMap.has(edge.targetId));
+  }, [graphNodeMap, siblingImpactEdges]);
+  const selectedGraphNodeIdValue = graphNodeMap.has(graphFocusNodeId) ? graphFocusNodeId : '';
+  const selectedGraphNode = selectedGraphNodeIdValue ? graphNodeMap.get(selectedGraphNodeIdValue) ?? null : null;
+  const selectedGraphNodeRecord = useMemo(() => {
+    return asRecord(selectedGraphNodeIdValue ? objectLibraryItemMap.get(selectedGraphNodeIdValue) ?? null : null);
+  }, [objectLibraryItemMap, selectedGraphNodeIdValue]);
+  const selectedGraphStructureEdges = useMemo(() => {
+    if (!selectedGraphNodeIdValue) {
+      return [];
+    }
+    return graphLayout.edges.filter((edge) => edge.sourceId === selectedGraphNodeIdValue || edge.targetId === selectedGraphNodeIdValue);
+  }, [graphLayout.edges, selectedGraphNodeIdValue]);
+  const selectedGraphImpactEdges = useMemo(() => {
+    if (!selectedGraphNodeIdValue) {
+      return [];
+    }
+    return graphRenderableImpactEdges.filter((edge) => edge.sourceId === selectedGraphNodeIdValue || edge.targetId === selectedGraphNodeIdValue);
+  }, [graphRenderableImpactEdges, selectedGraphNodeIdValue]);
+  const graphFocusedNeighborIds = useMemo(() => {
+    const relatedIds = new Set<string>();
+    if (!selectedGraphNodeIdValue) {
+      return relatedIds;
+    }
+    relatedIds.add(selectedGraphNodeIdValue);
+    for (const edge of selectedGraphStructureEdges) {
+      relatedIds.add(edge.sourceId);
+      relatedIds.add(edge.targetId);
+    }
+    for (const edge of selectedGraphImpactEdges) {
+      relatedIds.add(edge.sourceId);
+      relatedIds.add(edge.targetId);
+    }
+    return relatedIds;
+  }, [selectedGraphImpactEdges, selectedGraphNodeIdValue, selectedGraphStructureEdges]);
   const recentSessions = sessions.slice(0, 3);
   const stageNavigationItems = useMemo(() => {
     return WORKFLOW_V2_STAGE_DEFINITIONS.map((stage) => {
@@ -702,7 +754,6 @@ export function FileWorkflowV2Page() {
   }, [session, stageResults]);
   const contentNavigationItems: WorkflowV2SidebarItem[] = [
     { id: 'overview-status', label: '运行态摘要', hint: '先看结果是否可用' },
-    { id: 'overview-quality', label: '结构质量', hint: '质量分与关键告警' },
     { id: 'overview-system', label: '系统拆解视图', hint: '结构树主位' },
     { id: 'analysis-objects', label: '对象库', hint: '筛选与详情' },
     { id: 'analysis-graph', label: '结构验证图', hint: 'Mermaid 与 DAG 校验' },
@@ -721,6 +772,12 @@ export function FileWorkflowV2Page() {
       setSelectedObjectId(asText(asRecord(filteredObjectItems[0]).object_id));
     }
   }, [filteredObjectItems, selectedObjectId]);
+
+  useEffect(() => {
+    if (graphFocusNodeId && !graphNodeMap.has(graphFocusNodeId)) {
+      setGraphFocusNodeId('');
+    }
+  }, [graphFocusNodeId, graphNodeMap]);
 
   const handleStart = () => {
     if (!selectedFile) {
@@ -861,6 +918,7 @@ export function FileWorkflowV2Page() {
 
   const stageSectionMap: Record<string, WorkflowV2ShellSection> = {
     chunk_parse: 'analysis-stages',
+    chunk_filter: 'analysis-stages',
     system_scope_identify: 'overview-system',
     window_extract: 'analysis-stages',
     object_fusion: 'analysis-objects',
@@ -868,7 +926,7 @@ export function FileWorkflowV2Page() {
     function_analysis: 'analysis-objects',
     object_decompose: 'analysis-stages',
     graph_build: 'analysis-graph',
-    structure_quality_gate: 'overview-quality',
+    structure_quality_gate: 'analysis-graph',
     ablation_analysis: 'analysis-effects',
   };
   const expertPreviewSummary = {
@@ -903,7 +961,6 @@ export function FileWorkflowV2Page() {
           <Card className="rounded-[30px] border-border/60 bg-background/90 shadow-sm">
             <CardHeader className="pb-4">
               <CardTitle className="text-lg font-black tracking-tight">当前会话</CardTitle>
-              <CardDescription>先判断结果是否可用，再进入右侧阅读流。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-2">
@@ -919,7 +976,7 @@ export function FileWorkflowV2Page() {
                 <div>写回：{writebackSummary?.lastCommitId || (writebackError ? '最近失败' : '尚未写回')}</div>
               </div>
               <div className="rounded-2xl border border-border/60 bg-muted/15 p-3 text-xs leading-5 text-muted-foreground">
-                {session?.statusMessage || '右侧会先展示运行态、结构质量和系统拆解视图。'}
+                {session?.statusMessage || '当前暂无状态信息。'}
               </div>
             </CardContent>
           </Card>
@@ -1110,15 +1167,11 @@ export function FileWorkflowV2Page() {
                   <div className="max-w-4xl">
                     <div className="text-xs font-black uppercase tracking-[0.24em] text-muted-foreground">Workflow V2</div>
                     <CardTitle className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">文件工作流 V2 分析页</CardTitle>
-                    <CardDescription className="mt-3 text-sm leading-7 text-foreground/75 sm:text-base">
-                      左侧管导航，右侧只负责阅读。先确认当前结果是否可信，再决定看系统拆解、对象库还是技术验证图。
-                    </CardDescription>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <Badge className={cn('rounded-full border px-4 py-1.5 font-semibold', sessionStatusMeta.badgeClass)}>
                         {sessionStatusMeta.label}
                       </Badge>
                       <Badge variant="outline" className="rounded-full px-4 py-1.5">项目 {selectedProjectName}</Badge>
-                      <Badge variant="outline" className="rounded-full px-4 py-1.5">根节点 {decompositionRootCount || '待生成'}</Badge>
                       <Badge variant="outline" className="rounded-full px-4 py-1.5">
                         {writebackSummary?.lastCommitId ? `commit ${writebackSummary.lastCommitId}` : '尚未写回'}
                       </Badge>
@@ -1131,18 +1184,6 @@ export function FileWorkflowV2Page() {
                       value={`${progressValue}%`}
                       hint={`${completedStages}/${totalStages} 已完成，${failedStages} 个失败`}
                       accent="border-sky-500/20"
-                    />
-                    <MetricCard
-                      title="根节点"
-                      value={decompositionRootLabel}
-                      hint={decompositionRootPreview}
-                      accent="border-cyan-500/20"
-                    />
-                    <MetricCard
-                      title="结构质量"
-                      value={structureQualityScore ? structureQualityScore : '待评估'}
-                      hint={summary.isStructurallySound ? `结构稳定，孤点 ${summary.orphanCount}` : (structureWarnings[0] || '等待质检阶段输出')}
-                      accent="border-emerald-500/20"
                     />
                     <MetricCard
                       title="写回状态"
@@ -1318,7 +1359,7 @@ export function FileWorkflowV2Page() {
           </Card>
 
           <div id="overview-status" className="scroll-mt-6">
-            <SectionCard title="运行态摘要" description="首屏先回答：当前结果是否可用、现在跑到哪一步、下一步该看哪里。">
+            <SectionCard title="运行态摘要" description="查看当前会话与阶段状态。">
               <div className="space-y-4">
                 <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1338,9 +1379,9 @@ export function FileWorkflowV2Page() {
                   <Progress value={progressValue} className="mt-4 h-2.5 bg-primary/10" />
                 </div>
                 <div className="grid gap-3 md:grid-cols-4">
-                  <MetricCard title="根节点" value={decompositionRootLabel} hint={decompositionRootPreview} accent="border-cyan-500/20" />
-                  <MetricCard title="结构质量" value={structureQualityScore ? structureQualityScore : '待评估'} hint={summary.isStructurallySound ? '当前结果可优先阅读' : '请先关注告警'} accent="border-emerald-500/20" />
-                  <MetricCard title="对象库" value={filteredObjectItems.length} hint={`总对象 ${objectLibraryItems.length}`} accent="border-sky-500/20" />
+                  <MetricCard title="对象库" value={filteredObjectItems.length} hint={`总对象 ${objectLibraryItems.length}`} accent="border-cyan-500/20" />
+                  <MetricCard title="窗口数" value={summary.windowCount || 0} hint={`chunks ${summary.chunkCount || 0}`} accent="border-emerald-500/20" />
+                  <MetricCard title="结构边" value={summary.edgeCount || 0} hint={`孤点 ${summary.orphanCount || 0}`} accent="border-sky-500/20" />
                   <MetricCard title="写回状态" value={writebackSummary?.successCount ?? 0} hint={writebackSummary ? `最近 ${writebackSummary.lastCommitId}` : '尚未写回'} accent="border-violet-500/20" />
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1375,225 +1416,260 @@ export function FileWorkflowV2Page() {
             </SectionCard>
           </div>
 
-          <div id="overview-quality" className="scroll-mt-6">
-            <SectionCard title="结构质量摘要" description="先决定结果信不信，再决定去看系统树还是技术验证图。">
-              <div className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-4">
-                  <MetricCard title="质量分" value={structureQualityScore || '待评估'} hint={summary.isStructurallySound ? '结构稳定' : '需人工复核'} accent="border-emerald-500/20" />
-                  <MetricCard title="孤点数" value={summary.orphanCount} hint="未进入结构边的对象" accent="border-amber-500/20" />
-                  <MetricCard title="根节点" value={summary.rootCount || '待确认'} hint="越多越可能结构碎片化" accent="border-cyan-500/20" />
-                  <MetricCard title="最大层级" value={structureMaxDepth ? `${structureMaxDepth} 层` : '待生成'} hint={`DAG ${summary.isDag ? '已去环' : '未确认'}`} accent="border-violet-500/20" />
-                </div>
-                <div className="grid gap-3">
-                  {structureWarnings.length > 0 ? structureWarnings.map((warning) => (
-                    <div key={warning} className="rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm leading-6 text-amber-900">
-                      {warning}
-                    </div>
-                  )) : (
-                    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm leading-6 text-emerald-900">
-                      当前结构质量没有明显告警，可以优先按系统拆解视图阅读结果。
-                    </div>
-                  )}
-                </div>
-              </div>
-            </SectionCard>
-          </div>
-
           <div id="overview-system" className="scroll-mt-6">
             <SectionCard
               title="系统拆解视图"
-              description="总览主位只回答“这些结构由什么组成”，对象长列表和技术验证图都下沉到后面。"
+              description="查看结构树与系统拆解。"
               action={(
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline">拆解簇 {systemDecompositionView.summary.clusterCount || '待生成'}</Badge>
                   <Badge variant="outline">包含边 {systemDecompositionView.summary.containmentCount}</Badge>
                   <Badge variant="outline">叶子节点 {systemDecompositionView.summary.leafCount}</Badge>
-                  <Button type="button" size="sm" variant="outline" className="rounded-full" onClick={() => scrollToSection('analysis-objects')}>
-                    查看对象库
+                  <Button type="button" size="sm" variant="default" className="rounded-full" onClick={() => setSystemViewOpen(true)}>
+                    打开系统拆解视图
                   </Button>
                 </div>
               )}
             >
-              <WorkflowV2SystemDecompositionPanel view={systemDecompositionView} />
+              {systemDecompositionView.summary.hiddenDescendantCount > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">折叠下级 {systemDecompositionView.summary.hiddenDescendantCount}</Badge>
+                </div>
+              ) : null}
             </SectionCard>
+            <Dialog open={systemViewOpen} onOpenChange={setSystemViewOpen}>
+              <DialogContent className="grid h-[min(94vh,1080px)] w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-[28px] border-border/60 bg-background/95 p-0 shadow-2xl sm:w-[min(96vw,1800px)] sm:max-w-none">
+                <DialogHeader className="border-b border-border/50 px-6 py-5">
+                  <DialogTitle className="text-2xl font-black tracking-tight">系统拆解视图</DialogTitle>
+                  <DialogDescription className="text-sm leading-6">
+                    在大视图中阅读结构树，按“包含 / 下级 / 叶子”关系查看对象拆解。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="overflow-auto px-6 py-5">
+                  <WorkflowV2SystemDecompositionPanel view={systemDecompositionView} />
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
 
           <div id="analysis-objects" className="scroll-mt-6">
-            <SectionCard title="对象库" description="把对象阅读收进一个独立分析段，支持按粒度、结构状态和关键词筛选。">
-              <div className="space-y-4">
-                {failedFunctionItems.length > 0 ? (
-                  <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
-                    <div className="text-sm font-black text-amber-900">核心功能分析有 {failedFunctionTotalCount} 个对象失败，已自动跳过并保留其余结果。</div>
-                  </div>
+            <SectionCard
+              title="对象库"
+              description="查看对象列表与详情。"
+              action={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">对象 {objectLibraryItems.length}</Badge>
+                  <Badge variant="outline">筛选后 {filteredObjectItems.length}</Badge>
+                  <Button type="button" variant="default" size="sm" className="rounded-full" onClick={() => setObjectLibraryOpen(true)}>
+                    打开对象库
+                  </Button>
+                </div>
+              )}
+            >
+              <div className="flex flex-wrap gap-2">
+                {selectedObjectIdValue ? (
+                  <Badge variant="secondary">当前对象 {asText(selectedObjectRecord.object_name)}</Badge>
                 ) : null}
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1.4fr)_200px_200px]">
-                  <Input
-                    value={objectLibraryFilter.search}
-                    onChange={(event) => setObjectLibraryFilter((current) => ({ ...current, search: event.target.value }))}
-                    placeholder="搜索 object_name / normalized_name"
-                    className="rounded-2xl bg-background/90"
-                  />
-                  <Select value={objectLibraryFilter.level} onValueChange={(value) => setObjectLibraryFilter((current) => ({ ...current, level: value }))}>
-                    <SelectTrigger className="rounded-2xl bg-background/90">
-                      <SelectValue placeholder="粒度筛选" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部粒度</SelectItem>
-                      {objectLevelOptions.map((level) => (
-                        <SelectItem key={level} value={level}>{level}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={objectLibraryFilter.structure} onValueChange={(value) => setObjectLibraryFilter((current) => ({ ...current, structure: value as WorkflowV2ObjectLibraryFilter['structure'] }))}>
-                    <SelectTrigger className="rounded-2xl bg-background/90">
-                      <SelectValue placeholder="结构状态筛选" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部结构状态</SelectItem>
-                      <SelectItem value="structured">结构内对象</SelectItem>
-                      <SelectItem value="isolated">孤立对象</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
-                  <ScrollArea className="h-[520px] rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-black">Object Library</div>
-                        <Badge variant="outline">筛选后 {filteredObjectItems.length} / 总 {objectLibraryItems.length}</Badge>
-                      </div>
-                      {filteredObjectItems.length > 0 ? filteredObjectItems.map((item) => {
-                        const record = asRecord(item);
-                        const objectId = asText(record.object_id);
-                        const selected = objectId === selectedObjectIdValue;
-                        return (
-                          <button
-                            key={objectId}
-                            type="button"
-                            onClick={() => setSelectedObjectId(objectId)}
-                            className={cn(
-                              'w-full rounded-2xl border p-4 text-left transition-colors',
-                              selected
-                                ? 'border-primary/30 bg-primary/10'
-                                : 'border-border/60 bg-background/80 hover:bg-muted/20',
-                            )}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-base font-black">{asText(record.object_name)}</div>
-                                <div className="truncate text-xs text-muted-foreground">{asText(record.normalized_name)}</div>
-                              </div>
-                              <div className="flex flex-wrap items-center justify-end gap-2">
-                                {asText(record.object_level) ? <Badge variant="secondary">{asText(record.object_level)}</Badge> : null}
-                                <Badge variant="outline">{asText(record.structure_status) || 'unknown'}</Badge>
-                              </div>
-                            </div>
-                            <div className="mt-3 text-sm leading-6 text-foreground/85">{asText(record.core_function) || '当前还没有核心功能摘要。'}</div>
-                            {asText(record.error) ? (
-                              <div className="mt-2 text-xs leading-5 text-amber-700">{asText(record.error)}</div>
-                            ) : null}
-                            <ErrorDiagnosticBadges value={record} />
-                            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                              <span>深度 {String(record.structure_depth ?? 0)}</span>
-                              <span>·</span>
-                              <span>{asText(record.structural_role) || '未标记'}</span>
-                            </div>
-                          </button>
-                        );
-                      }) : (
-                        <div className="rounded-2xl border border-dashed border-border/60 bg-background/60 p-4 text-sm text-muted-foreground">
-                          当前筛选条件下没有对象。
-                        </div>
-                      )}
-                    </div>
-                  </ScrollArea>
-
-                  <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
-                    {selectedObjectIdValue ? (
-                      <div className="space-y-4">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="text-xl font-black">{asText(selectedObjectRecord.object_name)}</div>
-                            {asText(selectedObjectRecord.object_level) ? <Badge variant="secondary">{asText(selectedObjectRecord.object_level)}</Badge> : null}
-                            <Badge variant="outline">{asText(selectedObjectRecord.structure_status) || 'unknown'}</Badge>
-                          </div>
-                          <div className="mt-1 text-sm text-muted-foreground">{asText(selectedObjectRecord.normalized_name)}</div>
-                        </div>
-                        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-foreground/90">
-                          {asText(selectedObjectRecord.core_function) || '当前对象还没有核心功能摘要。'}
-                        </div>
-                        {asText(selectedObjectRecord.error) ? (
-                          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-900">
-                            <div className="font-black">功能分析失败</div>
-                            <div className="mt-2 leading-6">{asText(selectedObjectRecord.error)}</div>
-                            <ErrorDiagnosticBadges value={selectedObjectRecord} />
-                          </div>
-                        ) : null}
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
-                            <div className="text-xs font-semibold text-muted-foreground">别名</div>
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {asStringArray(selectedObjectRecord.aliases).length > 0 ? asStringArray(selectedObjectRecord.aliases).map((alias) => (
-                                <Badge key={alias} variant="secondary">{alias}</Badge>
-                              )) : <span className="text-sm text-muted-foreground">暂无别名</span>}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
-                            <div className="text-xs font-semibold text-muted-foreground">结构关系</div>
-                            <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-                              {selectedObjectEdges.length > 0 ? selectedObjectEdges.map((edge, index) => {
-                                const edgeRecord = asRecord(edge);
-                                return (
-                                  <div key={`${selectedObjectIdValue}-edge-${index}`}>
-                                    {asText(edgeRecord.source_object_id)} → {asText(edgeRecord.target_object_id)}
-                                  </div>
-                                );
-                              }) : <span>当前没有直接结构边</span>}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
-                          <div className="text-xs font-semibold text-muted-foreground">引用</div>
-                          <div className="mt-3 space-y-3">
-                            {asStringArray(selectedObjectRecord.citations ?? selectedObjectRecord.citation).length > 0 ? asStringArray(selectedObjectRecord.citations ?? selectedObjectRecord.citation).map((citation, index) => (
-                              <CitationPreview key={`${selectedObjectIdValue}-citation-${index}`} citation={citation} />
-                            )) : (
-                              <div className="text-sm text-muted-foreground">暂无引用。</div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted-foreground">
-                        选择左侧对象后，在这里查看详情。
-                      </div>
-                    )}
-                  </div>
-                </div>
+                {failedFunctionItems.length > 0 ? (
+                  <Badge variant="outline">失败对象 {failedFunctionTotalCount}</Badge>
+                ) : null}
               </div>
             </SectionCard>
+            <Dialog open={objectLibraryOpen} onOpenChange={setObjectLibraryOpen}>
+              <DialogContent className="grid h-[min(96vh,1120px)] w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-[28px] border-border/60 bg-background/95 p-0 shadow-2xl sm:w-[min(97vw,1900px)] sm:max-w-none">
+                <DialogHeader className="border-b border-border/50 px-6 py-5">
+                  <DialogTitle className="text-2xl font-black tracking-tight">对象库</DialogTitle>
+                  <DialogDescription className="text-sm leading-6">
+                    在大视图中筛选对象，并查看核心功能、结构关系、别名和引用。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="overflow-auto px-6 py-5">
+                  <div className="space-y-4">
+                    {failedFunctionItems.length > 0 ? (
+                      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+                        <div className="text-sm font-black text-amber-900">核心功能分析有 {failedFunctionTotalCount} 个对象失败，已自动跳过并保留其余结果。</div>
+                      </div>
+                    ) : null}
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1.4fr)_200px_200px]">
+                      <Input
+                        value={objectLibraryFilter.search}
+                        onChange={(event) => setObjectLibraryFilter((current) => ({ ...current, search: event.target.value }))}
+                        placeholder="搜索 object_name / normalized_name"
+                        className="rounded-2xl bg-background/90"
+                      />
+                      <Select value={objectLibraryFilter.level} onValueChange={(value) => setObjectLibraryFilter((current) => ({ ...current, level: value }))}>
+                        <SelectTrigger className="rounded-2xl bg-background/90">
+                          <SelectValue placeholder="粒度筛选" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全部粒度</SelectItem>
+                          {objectLevelOptions.map((level) => (
+                            <SelectItem key={level} value={level}>{level}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={objectLibraryFilter.structure} onValueChange={(value) => setObjectLibraryFilter((current) => ({ ...current, structure: value as WorkflowV2ObjectLibraryFilter['structure'] }))}>
+                        <SelectTrigger className="rounded-2xl bg-background/90">
+                          <SelectValue placeholder="结构状态筛选" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全部结构状态</SelectItem>
+                          <SelectItem value="structured">结构内对象</SelectItem>
+                          <SelectItem value="isolated">孤立对象</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+                      <ScrollArea className="h-[640px] rounded-3xl border border-border/60 bg-muted/15 p-4">
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-black">Object Library</div>
+                            <Badge variant="outline">筛选后 {filteredObjectItems.length} / 总 {objectLibraryItems.length}</Badge>
+                          </div>
+                          {filteredObjectItems.length > 0 ? filteredObjectItems.map((item) => {
+                            const record = asRecord(item);
+                            const objectId = asText(record.object_id);
+                            const selected = objectId === selectedObjectIdValue;
+                            return (
+                              <button
+                                key={objectId}
+                                type="button"
+                                onClick={() => setSelectedObjectId(objectId)}
+                                className={cn(
+                                  'w-full rounded-2xl border p-4 text-left transition-colors',
+                                  selected
+                                    ? 'border-primary/30 bg-primary/10'
+                                    : 'border-border/60 bg-background/80 hover:bg-muted/20',
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-base font-black">{asText(record.object_name)}</div>
+                                    <div className="truncate text-xs text-muted-foreground">{asText(record.normalized_name)}</div>
+                                  </div>
+                                  <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {asText(record.object_level) ? <Badge variant="secondary">{asText(record.object_level)}</Badge> : null}
+                                    <Badge variant="outline">{asText(record.structure_status) || 'unknown'}</Badge>
+                                  </div>
+                                </div>
+                                <div className="mt-3 text-sm leading-6 text-foreground/85">{asText(record.core_function) || '当前还没有核心功能摘要。'}</div>
+                                {asText(record.error) ? (
+                                  <div className="mt-2 text-xs leading-5 text-amber-700">{asText(record.error)}</div>
+                                ) : null}
+                                <ErrorDiagnosticBadges value={record} />
+                                <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                  <span>深度 {String(record.structure_depth ?? 0)}</span>
+                                  <span>·</span>
+                                  <span>{asText(record.structural_role) || '未标记'}</span>
+                                </div>
+                              </button>
+                            );
+                          }) : (
+                            <div className="rounded-2xl border border-dashed border-border/60 bg-background/60 p-4 text-sm text-muted-foreground">
+                              当前筛选条件下没有对象。
+                            </div>
+                          )}
+                        </div>
+                      </ScrollArea>
+
+                      <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
+                        {selectedObjectIdValue ? (
+                          <div className="space-y-4">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-xl font-black">{asText(selectedObjectRecord.object_name)}</div>
+                                {asText(selectedObjectRecord.object_level) ? <Badge variant="secondary">{asText(selectedObjectRecord.object_level)}</Badge> : null}
+                                <Badge variant="outline">{asText(selectedObjectRecord.structure_status) || 'unknown'}</Badge>
+                              </div>
+                              <div className="mt-1 text-sm text-muted-foreground">{asText(selectedObjectRecord.normalized_name)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-foreground/90">
+                              {asText(selectedObjectRecord.core_function) || '当前对象还没有核心功能摘要。'}
+                            </div>
+                            {asText(selectedObjectRecord.error) ? (
+                              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-900">
+                                <div className="font-black">功能分析失败</div>
+                                <div className="mt-2 leading-6">{asText(selectedObjectRecord.error)}</div>
+                                <ErrorDiagnosticBadges value={selectedObjectRecord} />
+                              </div>
+                            ) : null}
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
+                                <div className="text-xs font-semibold text-muted-foreground">别名</div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {asStringArray(selectedObjectRecord.aliases).length > 0 ? asStringArray(selectedObjectRecord.aliases).map((alias) => (
+                                    <Badge key={alias} variant="secondary">{alias}</Badge>
+                                  )) : <span className="text-sm text-muted-foreground">暂无别名</span>}
+                                </div>
+                              </div>
+                              <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
+                                <div className="text-xs font-semibold text-muted-foreground">结构关系</div>
+                                <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                                  {selectedObjectEdges.length > 0 ? selectedObjectEdges.map((edge, index) => {
+                                    const edgeRecord = asRecord(edge);
+                                    return (
+                                      <div key={`${selectedObjectIdValue}-edge-${index}`}>
+                                        {asText(edgeRecord.source_object_id)} → {asText(edgeRecord.target_object_id)}
+                                      </div>
+                                    );
+                                  }) : <span>当前没有直接结构边</span>}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
+                              <div className="text-xs font-semibold text-muted-foreground">引用</div>
+                              <div className="mt-3 space-y-3">
+                                {asStringArray(selectedObjectRecord.citations ?? selectedObjectRecord.citation).length > 0 ? asStringArray(selectedObjectRecord.citations ?? selectedObjectRecord.citation).map((citation, index) => (
+                                  <CitationPreview key={`${selectedObjectIdValue}-citation-${index}`} citation={citation} />
+                                )) : (
+                                  <div className="text-sm text-muted-foreground">暂无引用。</div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted-foreground">
+                            选择左侧对象后，在这里查看详情。
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
 
           <div id="analysis-graph" className="scroll-mt-6">
-            <Collapsible open={expandedPanels.graph} onOpenChange={() => togglePanel('graph')}>
-              <SectionCard
-                title="结构验证图"
-                description="保留 Mermaid、缩放和孤立节点开关，但默认折叠成技术验证层。"
-                action={(
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">节点 {graphNodeTotalCount}</Badge>
-                    <Badge variant="outline">主边 {graphEdgeTotalCount}</Badge>
-                    <CollapsibleTrigger asChild>
-                      <Button type="button" variant="outline" size="sm" className="rounded-full">
-                        {expandedPanels.graph ? '收起' : '展开'}
-                        <ChevronDown className={cn('ml-2 h-4 w-4 transition-transform', expandedPanels.graph ? 'rotate-180' : '')} />
-                      </Button>
-                    </CollapsibleTrigger>
-                  </div>
-                )}
-              >
-                <CollapsibleContent className="space-y-4">
+            <SectionCard
+              title="结构验证图"
+              description="查看图结构与节点关系。"
+              action={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">节点 {graphNodeTotalCount}</Badge>
+                  <Badge variant="outline">主边 {graphEdgeTotalCount}</Badge>
+                  <Button type="button" variant="default" size="sm" className="rounded-full" onClick={() => setGraphViewOpen(true)}>
+                    打开结构验证图
+                  </Button>
+                </div>
+              )}
+            >
+              {selectedGraphNode ? (
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">已聚焦 {selectedGraphNode.label}</Badge>
+                </div>
+              ) : null}
+            </SectionCard>
+            <Dialog open={graphViewOpen} onOpenChange={setGraphViewOpen}>
+              <DialogContent className="grid h-[min(96vh,1120px)] w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-[28px] border-border/60 bg-background/95 p-0 shadow-2xl sm:w-[min(97vw,1900px)] sm:max-w-none">
+                <DialogHeader className="border-b border-border/50 px-6 py-5">
+                  <DialogTitle className="text-2xl font-black tracking-tight">结构验证图</DialogTitle>
+                  <DialogDescription className="text-sm leading-6">
+                    在大视图中验证图结构，支持节点聚焦、缩放、孤立节点切换和 Mermaid 复制。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="overflow-auto px-6 py-5">
                   <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
@@ -1639,106 +1715,279 @@ export function FileWorkflowV2Page() {
                         >
                           还原
                         </Button>
+                        {selectedGraphNode ? (
+                          <Badge variant="secondary" className="rounded-full px-3">
+                            已聚焦 {selectedGraphNode.label}
+                          </Badge>
+                        ) : null}
                       </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full"
-                        onClick={() => void handleCopyMermaid()}
-                        disabled={!mermaidCode.trim()}
-                      >
-                        {mermaidCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                        {mermaidCopied ? '已复制 Mermaid' : '复制 Mermaid'}
-                      </Button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {selectedGraphNode ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="rounded-full"
+                            onClick={() => setGraphFocusNodeId('')}
+                          >
+                            清除聚焦
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() => void handleCopyMermaid()}
+                          disabled={!mermaidCode.trim()}
+                        >
+                          {mermaidCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+                          {mermaidCopied ? '已复制 Mermaid' : '复制 Mermaid'}
+                        </Button>
+                      </div>
                     </div>
 
                     {graphLayout.nodes.length > 0 ? (
-                      <div className="overflow-auto rounded-2xl border border-border/50 bg-background/60">
-                        <svg
-                          viewBox={`0 0 ${graphCanvasWidth} ${graphCanvasHeight}`}
-                          className="block"
-                          style={{
-                            width: `${graphScaledWidth}px`,
-                            height: `${graphScaledHeight}px`,
-                            minWidth: `${graphScaledWidth}px`,
-                            minHeight: `${graphScaledHeight}px`,
-                          }}
-                        >
-                          <defs>
-                            <marker id="workflow-v2-dag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                              <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(14,165,233,0.75)" />
-                            </marker>
-                            <marker id="workflow-v2-impact-arrow-high" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                              <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(239,68,68,0.9)" />
-                            </marker>
-                            <marker id="workflow-v2-impact-arrow-medium" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                              <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(245,158,11,0.9)" />
-                            </marker>
-                            <marker id="workflow-v2-impact-arrow-low" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                              <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(14,165,233,0.82)" />
-                            </marker>
-                            <marker id="workflow-v2-impact-arrow-none" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                              <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(148,163,184,0.72)" />
-                            </marker>
-                          </defs>
-                          {graphLayout.edges.map((edge) => {
-                            const source = graphLayout.nodes.find((node) => node.id === edge.sourceId);
-                            const target = graphLayout.nodes.find((node) => node.id === edge.targetId);
-                            if (!source || !target) return null;
-                            return (
-                              <path
-                                key={edge.id}
-                                d={`M ${source.x + 90} ${source.y + 24} C ${source.x + 150} ${source.y + 24}, ${target.x - 60} ${target.y + 24}, ${target.x} ${target.y + 24}`}
-                                fill="none"
-                                stroke="rgba(14,165,233,0.45)"
-                                strokeWidth="2.5"
-                                markerEnd="url(#workflow-v2-dag-arrow)"
-                              />
-                            );
-                          })}
-                          {siblingImpactEdges.map((edge) => {
-                            const source = graphLayout.nodes.find((node) => node.id === edge.sourceId);
-                            const target = graphLayout.nodes.find((node) => node.id === edge.targetId);
-                            if (!source || !target) return null;
-                            const style = getWorkflowV2ImpactEdgeStyle(edge.impactLevel);
-                            return (
-                              <path
-                                key={`impact-${edge.id}`}
-                                d={`M ${source.x + 90} ${source.y + 24} C ${source.x + 150} ${source.y + 24}, ${target.x - 60} ${target.y + 24}, ${target.x} ${target.y + 24}`}
-                                fill="none"
-                                stroke={style.stroke}
-                                strokeWidth={style.strokeWidth}
-                                strokeDasharray={style.strokeDasharray}
-                                strokeLinecap="round"
-                                opacity="0.95"
-                                markerEnd={`url(#workflow-v2-impact-arrow-${edge.impactLevel})`}
-                              />
-                            );
-                          })}
-                          {graphLayout.nodes.map((node) => (
-                            <g key={node.id}>
-                              <rect
-                                x={node.x}
-                                y={node.y}
-                                rx="18"
-                                width="120"
-                                height="48"
-                                fill={node.isIsolated ? 'rgba(255,255,255,0.34)' : 'rgba(255,255,255,0.96)'}
-                                stroke={node.isIsolated ? 'rgba(148,163,184,0.38)' : 'rgba(15,23,42,0.12)'}
-                                strokeDasharray={node.isIsolated ? '6 6' : undefined}
-                              />
-                              <text x={node.x + 60} y={node.y + 26} textAnchor="middle" fontSize="14" fontWeight="700" fill={node.isIsolated ? 'rgba(71,85,105,0.72)' : '#0f172a'}>
-                                {node.label}
-                              </text>
-                              {node.isIsolated ? (
-                                <text x={node.x + 60} y={node.y + 39} textAnchor="middle" fontSize="9" fontWeight="700" letterSpacing="0.08em" fill="rgba(100,116,139,0.82)">
-                                  孤立
-                                </text>
-                              ) : null}
-                            </g>
-                          ))}
-                        </svg>
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+                        <div className="overflow-auto rounded-2xl border border-border/50 bg-background/60">
+                          <svg
+                            viewBox={`0 0 ${graphCanvasWidth} ${graphCanvasHeight}`}
+                            className="block"
+                            style={{
+                              width: `${graphScaledWidth}px`,
+                              height: `${graphScaledHeight}px`,
+                              minWidth: `${graphScaledWidth}px`,
+                              minHeight: `${graphScaledHeight}px`,
+                            }}
+                          >
+                            <defs>
+                              <marker id="workflow-v2-dag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(14,165,233,0.75)" />
+                              </marker>
+                              <marker id="workflow-v2-impact-arrow-high" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(239,68,68,0.9)" />
+                              </marker>
+                              <marker id="workflow-v2-impact-arrow-medium" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(245,158,11,0.9)" />
+                              </marker>
+                              <marker id="workflow-v2-impact-arrow-low" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(14,165,233,0.82)" />
+                              </marker>
+                              <marker id="workflow-v2-impact-arrow-none" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(148,163,184,0.72)" />
+                              </marker>
+                            </defs>
+                            {graphLayout.edges.map((edge) => {
+                              const source = graphNodeMap.get(edge.sourceId);
+                              const target = graphNodeMap.get(edge.targetId);
+                              if (!source || !target) return null;
+                              const isFocusedEdge = selectedGraphNodeIdValue
+                                ? edge.sourceId === selectedGraphNodeIdValue || edge.targetId === selectedGraphNodeIdValue
+                                : false;
+                              const isDimmed = selectedGraphNodeIdValue ? !isFocusedEdge : false;
+                              return (
+                                <path
+                                  key={edge.id}
+                                  d={`M ${source.x + 90} ${source.y + 24} C ${source.x + 150} ${source.y + 24}, ${target.x - 60} ${target.y + 24}, ${target.x} ${target.y + 24}`}
+                                  fill="none"
+                                  stroke={isFocusedEdge ? 'rgba(14,165,233,0.88)' : 'rgba(14,165,233,0.45)'}
+                                  strokeWidth={isFocusedEdge ? 3.4 : 2.5}
+                                  opacity={isDimmed ? 0.12 : 1}
+                                  markerEnd="url(#workflow-v2-dag-arrow)"
+                                />
+                              );
+                            })}
+                            {graphRenderableImpactEdges.map((edge) => {
+                              const source = graphNodeMap.get(edge.sourceId);
+                              const target = graphNodeMap.get(edge.targetId);
+                              if (!source || !target) return null;
+                              const style = getWorkflowV2ImpactEdgeStyle(edge.impactLevel);
+                              const isFocusedEdge = selectedGraphNodeIdValue
+                                ? edge.sourceId === selectedGraphNodeIdValue || edge.targetId === selectedGraphNodeIdValue
+                                : false;
+                              const isDimmed = selectedGraphNodeIdValue ? !isFocusedEdge : false;
+                              return (
+                                <path
+                                  key={`impact-${edge.id}`}
+                                  d={`M ${source.x + 90} ${source.y + 24} C ${source.x + 150} ${source.y + 24}, ${target.x - 60} ${target.y + 24}, ${target.x} ${target.y + 24}`}
+                                  fill="none"
+                                  stroke={style.stroke}
+                                  strokeWidth={isFocusedEdge ? style.strokeWidth + 0.8 : style.strokeWidth}
+                                  strokeDasharray={style.strokeDasharray}
+                                  strokeLinecap="round"
+                                  opacity={isDimmed ? 0.12 : 0.95}
+                                  markerEnd={`url(#workflow-v2-impact-arrow-${edge.impactLevel})`}
+                                />
+                              );
+                            })}
+                            {graphLayout.nodes.map((node) => {
+                              const isSelected = node.id === selectedGraphNodeIdValue;
+                              const isConnected = selectedGraphNodeIdValue ? graphFocusedNeighborIds.has(node.id) : true;
+                              const isDimmed = selectedGraphNodeIdValue ? !isConnected : false;
+                              return (
+                                <g
+                                  key={node.id}
+                                  className="cursor-pointer"
+                                  onClick={() => {
+                                    setGraphFocusNodeId((current) => current === node.id ? '' : node.id);
+                                    setSelectedObjectId(node.id);
+                                  }}
+                                >
+                                  <rect
+                                    x={node.x}
+                                    y={node.y}
+                                    rx="18"
+                                    width="120"
+                                    height="48"
+                                    fill={isSelected ? 'rgba(14,165,233,0.18)' : node.isIsolated ? 'rgba(255,255,255,0.34)' : 'rgba(255,255,255,0.96)'}
+                                    stroke={isSelected ? 'rgba(14,165,233,0.9)' : node.isIsolated ? 'rgba(148,163,184,0.38)' : 'rgba(15,23,42,0.12)'}
+                                    strokeWidth={isSelected ? 2.5 : 1.2}
+                                    strokeDasharray={node.isIsolated ? '6 6' : undefined}
+                                    opacity={isDimmed ? 0.22 : 1}
+                                  />
+                                  <text
+                                    x={node.x + 60}
+                                    y={node.y + 26}
+                                    textAnchor="middle"
+                                    fontSize="14"
+                                    fontWeight="700"
+                                    fill={isSelected ? '#0369a1' : node.isIsolated ? 'rgba(71,85,105,0.72)' : '#0f172a'}
+                                    opacity={isDimmed ? 0.3 : 1}
+                                  >
+                                    {node.label}
+                                  </text>
+                                  {node.isIsolated ? (
+                                    <text
+                                      x={node.x + 60}
+                                      y={node.y + 39}
+                                      textAnchor="middle"
+                                      fontSize="9"
+                                      fontWeight="700"
+                                      letterSpacing="0.08em"
+                                      fill="rgba(100,116,139,0.82)"
+                                      opacity={isDimmed ? 0.3 : 1}
+                                    >
+                                      孤立
+                                    </text>
+                                  ) : null}
+                                </g>
+                              );
+                            })}
+                          </svg>
+                        </div>
+
+                        <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
+                          {selectedGraphNode ? (
+                            <div className="space-y-4">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-lg font-black">{selectedGraphNode.label}</div>
+                                  {asText(selectedGraphNodeRecord.object_level) ? (
+                                    <Badge variant="secondary">{asText(selectedGraphNodeRecord.object_level)}</Badge>
+                                  ) : null}
+                                  <Badge variant={selectedGraphNode.isIsolated ? 'outline' : 'default'}>
+                                    {selectedGraphNode.isIsolated ? '孤立节点' : '结构节点'}
+                                  </Badge>
+                                </div>
+                                <div className="mt-1 text-sm text-muted-foreground">
+                                  {asText(selectedGraphNodeRecord.normalized_name) || '当前没有 normalized_name'}
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-foreground/90">
+                                {asText(selectedGraphNodeRecord.core_function) || '当前节点还没有核心功能摘要。'}
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                                <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                  <div className="text-xs font-semibold text-muted-foreground">结构状态</div>
+                                  <div className="mt-2 text-sm font-black text-foreground">
+                                    {selectedGraphNode.structureStatus || asText(selectedGraphNodeRecord.structure_status) || '未标注'}
+                                  </div>
+                                  <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                                    {selectedGraphNode.structureReason || asText(selectedGraphNodeRecord.structure_reason) || '当前没有结构状态说明。'}
+                                  </div>
+                                </div>
+                                <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                  <div className="text-xs font-semibold text-muted-foreground">关联摘要</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <Badge variant="outline">结构边 {selectedGraphStructureEdges.length}</Badge>
+                                    <Badge variant="outline">影响边 {selectedGraphImpactEdges.length}</Badge>
+                                    <Badge variant="outline">相邻节点 {Math.max(graphFocusedNeighborIds.size - 1, 0)}</Badge>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                <div className="text-xs font-semibold text-muted-foreground">直接结构关系</div>
+                                <div className="mt-3 space-y-2 text-sm text-foreground/85">
+                                  {selectedGraphStructureEdges.length > 0 ? selectedGraphStructureEdges.map((edge) => {
+                                    const sourceLabel = graphNodeMap.get(edge.sourceId)?.label || edge.sourceId;
+                                    const targetLabel = graphNodeMap.get(edge.targetId)?.label || edge.targetId;
+                                    const direction = edge.sourceId === selectedGraphNodeIdValue ? '包含' : '被包含于';
+                                    return (
+                                      <div key={`graph-structure-${edge.id}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
+                                        <div className="font-medium">{sourceLabel} → {targetLabel}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">{direction}</div>
+                                      </div>
+                                    );
+                                  }) : (
+                                    <div className="text-sm text-muted-foreground">当前节点没有直接结构边。</div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                <div className="text-xs font-semibold text-muted-foreground">作用关系</div>
+                                <div className="mt-3 space-y-2 text-sm text-foreground/85">
+                                  {selectedGraphImpactEdges.length > 0 ? selectedGraphImpactEdges.map((edge) => {
+                                    const sourceLabel = graphNodeMap.get(edge.sourceId)?.label || edge.sourceId;
+                                    const targetLabel = graphNodeMap.get(edge.targetId)?.label || edge.targetId;
+                                    return (
+                                      <div key={`graph-impact-${edge.id}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
+                                        <div className="font-medium">{sourceLabel} 影响 {targetLabel}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">影响等级 {edge.impactLevel}</div>
+                                      </div>
+                                    );
+                                  }) : (
+                                    <div className="text-sm text-muted-foreground">当前节点没有直接 sibling impact 关系。</div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                <div className="text-xs font-semibold text-muted-foreground">引用</div>
+                                <div className="mt-3 space-y-3">
+                                  {asStringArray(selectedGraphNodeRecord.citations ?? selectedGraphNodeRecord.citation).length > 0 ? (
+                                    asStringArray(selectedGraphNodeRecord.citations ?? selectedGraphNodeRecord.citation).slice(0, 3).map((citation, index) => (
+                                      <CitationPreview key={`graph-citation-${selectedGraphNodeIdValue}-${index}`} citation={citation} />
+                                    ))
+                                  ) : (
+                                    <div className="text-sm text-muted-foreground">暂无引用。</div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="w-full rounded-full"
+                                onClick={() => {
+                                  setGraphViewOpen(false);
+                                  setSelectedObjectId(selectedGraphNodeIdValue);
+                                  scrollToSection('analysis-objects');
+                                }}
+                              >
+                                在对象库中查看该节点
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex h-full min-h-[420px] items-center justify-center rounded-2xl border border-dashed border-border/60 bg-muted/10 p-6 text-center text-sm leading-6 text-muted-foreground">
+                              点击图中的节点后，这里会显示该节点的功能、结构关系与作用关系，
+                              同时图中只保留与它直接相连的节点和边。
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="flex h-[420px] items-center justify-center text-sm text-muted-foreground">
@@ -1746,9 +1995,9 @@ export function FileWorkflowV2Page() {
                       </div>
                     )}
                   </div>
-                </CollapsibleContent>
-              </SectionCard>
-            </Collapsible>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
 
           <div id="analysis-stages" className="scroll-mt-6">
@@ -1787,6 +2036,53 @@ export function FileWorkflowV2Page() {
                               );
                             }) : (
                               <div className="text-sm text-muted-foreground">启动后会在这里显示 chunk 列表。</div>
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </AccordionContent>
+                    </AccordionItem>
+
+                    <AccordionItem value="chunk-filter" className="rounded-3xl border border-border/60 bg-muted/15 px-4">
+                      <AccordionTrigger className="py-4 text-sm font-black">Chunk Filter</AccordionTrigger>
+                      <AccordionContent className="pb-4">
+                        <ScrollArea className="h-[260px] rounded-2xl border border-border/60 bg-background/80 p-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-black">预筛结果</div>
+                              <Badge variant="outline">输入 {selectedChunkInputCount} / 保留 {selectedChunkTotalCount}</Badge>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {asText(chunkFilterOutput.reason) || '完成 chunk 预筛后，会在这里显示保留结果。'}
+                            </div>
+                            {chunkFilterOutput.used_fallback === true ? (
+                              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-900">
+                                当前使用回退结果：预筛未能稳定收敛，因此暂时保留全量 chunk 继续后续流程。
+                              </div>
+                            ) : null}
+                            {asText(chunkFilterOutput.error) ? (
+                              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3">
+                                <div className="text-xs leading-5 text-amber-900">{asText(chunkFilterOutput.error)}</div>
+                                <ErrorDiagnosticBadges value={chunkFilterOutput} />
+                              </div>
+                            ) : null}
+                            {selectedChunkIds.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {selectedChunkIds.map((chunkId) => (
+                                  <Badge key={chunkId} variant="secondary">{chunkId}</Badge>
+                                ))}
+                              </div>
+                            ) : null}
+                            {selectedChunkItems.length > 0 ? selectedChunkItems.map((chunk) => {
+                              const record = asRecord(chunk);
+                              return (
+                                <div key={asText(record.chunk_id)} className="rounded-2xl border border-border/60 bg-muted/20 p-3">
+                                  <div className="text-xs font-black uppercase tracking-[0.18em] text-muted-foreground">{asText(record.chunk_id)}</div>
+                                  <div className="mt-2 text-sm leading-6">{asText(record.text)}</div>
+                                  <div className="mt-2 text-xs text-muted-foreground">{asText(record.reason)}</div>
+                                </div>
+                              );
+                            }) : (
+                              <div className="text-sm text-muted-foreground">启动后会在这里显示筛后保留的 chunk。</div>
                             )}
                           </div>
                         </ScrollArea>

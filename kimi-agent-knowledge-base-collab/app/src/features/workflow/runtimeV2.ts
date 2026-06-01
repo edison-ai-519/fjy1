@@ -211,6 +211,28 @@ function compactStageOutput(stage: string, output: Record<string, unknown> | nul
     };
   }
 
+  if (stage === 'chunk_filter') {
+    const selectedChunks = Array.isArray(output.selected_chunks) ? output.selected_chunks : [];
+    return {
+      total_input_chunks: Number(output.total_input_chunks ?? 0) || 0,
+      total_selected_chunks: Number(output.total_selected_chunks ?? selectedChunks.length) || selectedChunks.length,
+      skipped_count: Number(output.skipped_count ?? 0) || 0,
+      used_fallback: output.used_fallback === true,
+      reason: trimText(output.reason, 300),
+      error: trimText(output.error, 240),
+      selected_chunk_ids: compactArray(output.selected_chunk_ids, 24, (item) => trimText(item, 32)),
+      selected_chunks: compactArray(selectedChunks, 24, (item) => {
+        const record = asRecord(item);
+        return {
+          chunk_id: record.chunk_id,
+          order: record.order,
+          text: trimText(record.text, 180),
+          reason: trimText(record.reason, 120),
+        };
+      }),
+    };
+  }
+
   if (stage === 'system_scope_identify') {
     return {
       document_focus: trimText(output.document_focus, 120),

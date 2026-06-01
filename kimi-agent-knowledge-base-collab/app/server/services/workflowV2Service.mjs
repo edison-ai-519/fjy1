@@ -815,6 +815,7 @@ function emptyWorkflowV2Result(document = null) {
     ablation: [],
     meta: {
       total_chunks: 0,
+      total_selected_chunks: 0,
       total_windows: 0,
       total_objects: 0,
       total_edges: 0,
@@ -870,6 +871,9 @@ function buildWorkflowV2ResultFromState(state) {
   const safeState = asRecord(state);
   const objects = Array.isArray(safeState.fused_objects) ? safeState.fused_objects : [];
   const edges = Array.isArray(safeState.edges) ? safeState.edges : [];
+  const filteredChunks = Array.isArray(safeState.filtered_chunks) && safeState.filtered_chunks.length > 0
+    ? safeState.filtered_chunks
+    : (Array.isArray(safeState.chunks) ? safeState.chunks : []);
   const nodeIds = objects.map((item) => asText(item?.object_id)).filter(Boolean);
   const systemScope = asRecord(safeState.system_scope);
   const structureQuality = asRecord(safeState.structure_quality);
@@ -882,6 +886,7 @@ function buildWorkflowV2ResultFromState(state) {
     ablation: Array.isArray(safeState.parent_summaries) ? safeState.parent_summaries : [],
     meta: {
       total_chunks: Array.isArray(safeState.chunks) ? safeState.chunks.length : 0,
+      total_selected_chunks: filteredChunks.length,
       total_windows: Array.isArray(safeState.windows) ? safeState.windows.length : 0,
       total_objects: objects.length,
       total_edges: edges.length,
@@ -1369,6 +1374,54 @@ function buildWindowExtractPrompt(window) {
   };
 }
 
+function buildChunkFilterPrompt(document, chunks) {
+  return {
+    instruction: [
+      "你是一个文档预处理筛选器。",
+      "你的任务是从给定 chunks 中，筛出对后续对象抽取、组成关系识别、系统拆解最有信息量的 chunk。",
+      "你只能返回应保留的 chunk_id 列表，不要改写 chunk 文本。",
+      "优先保留以下 chunk：",
+      "1. 明确出现对象、系统、模块、部件、概念名的 chunk。",
+      "2. 明确出现“由…组成 / 包含 / 包括 / 构成 / 分为 / 包括…部分”等结构关系的 chunk。",
+      "3. 明确描述对象核心功能、用途、职责、作用的 chunk。",
+      "4. 对前后 chunk 形成必要语义补充、能帮助理解对象或关系的 chunk。",
+      "尽量过滤掉纯寒暄、纯背景铺垫、重复表达、噪声句、与对象结构无关的弱信息 chunk。",
+      "如果一个 chunk 中同时出现整体对象与组成项，即使文本很短，也必须保留。",
+      "如果文档整体信息密度很高，可以保留多个 chunk；不要为了少而少。",
+      "如果无法明确判断，宁可保留，不要误删关键 chunk。",
+      "selected_chunk_ids 必须只包含输入里真实存在的 chunk_id，并保持原始顺序。",
+      "如果所有 chunk 都值得保留，也可以全部返回。",
+      buildWorkflowV2OutputExampleText({
+        selected_chunk_ids: ["c1", "c2", "c4"],
+        reason: "这些 chunk 明确包含对象名称、组成关系和核心功能线索；其余 chunk 主要是铺垫或弱相关描述。",
+      }),
+    ].join("\n"),
+    responseSchema: {
+      name: "workflow_v2_chunk_filter",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          selected_chunk_ids: {
+            type: "array",
+            items: { type: "string" },
+          },
+          reason: { type: "string" },
+        },
+        required: ["selected_chunk_ids", "reason"],
+      },
+    },
+    payload: {
+      document_name: asText(document?.file_name) || asText(document?.document_id) || "document",
+      chunks: chunks.map((chunk) => ({
+        chunk_id: chunk.chunk_id,
+        order: chunk.order,
+        text: chunk.text,
+      })),
+    },
+  };
+}
+
 function buildFusionJudgePrompt(existingObject, candidate) {
   return {
     instruction: [
@@ -1715,6 +1768,34 @@ const WORKFLOW_V2_CONFLICT_REVIEW_RESPONSE_SCHEMA = {
 
 function buildWorkflowV2EnsembleShape(stage, responseSchema) {
   const schemaName = asText(responseSchema?.name);
+  if (stage === "chunk_filter" || schemaName === "workflow_v2_chunk_filter") {
+    return {
+      kind: "array",
+      containerKey: "selected_chunk_ids",
+      extractItems(value) {
+        return Array.isArray(asRecord(value).selected_chunk_ids) ? asRecord(value).selected_chunk_ids : [];
+      },
+      getItemKey(item, index) {
+        return asText(item) || `selected_chunk_ids:${index + 1}`;
+      },
+      buildComparableValue(item) {
+        return asText(item);
+      },
+      pickShell(value) {
+        const record = asRecord(value);
+        return {
+          reason: asText(record.reason),
+        };
+      },
+      wrap(items, shell) {
+        return {
+          ...shell,
+          selected_chunk_ids: items,
+        };
+      },
+    };
+  }
+
   if (stage === "window_extract" || schemaName === "workflow_v2_window_extract") {
     return {
       kind: "array",
@@ -3290,6 +3371,78 @@ export class WorkflowV2Service extends LinearWorkflowService {
     };
   }
 
+  async chunkFilterStage(document, chunks, options = {}) {
+    throwIfWorkflowV2Aborted(options?.signal);
+    const safeChunks = Array.isArray(chunks) ? chunks.filter((item) => asText(item?.chunk_id) && asText(item?.text)) : [];
+    if (safeChunks.length === 0) {
+      return {
+        selected_chunk_ids: [],
+        selected_chunks: [],
+        total_input_chunks: 0,
+        total_selected_chunks: 0,
+        skipped_count: 0,
+        reason: "当前没有可筛选的 chunk，因此跳过文档预筛。",
+      };
+    }
+
+    if (safeChunks.length <= 3) {
+      return {
+        selected_chunk_ids: safeChunks.map((chunk) => chunk.chunk_id),
+        selected_chunks: safeChunks,
+        total_input_chunks: safeChunks.length,
+        total_selected_chunks: safeChunks.length,
+        skipped_count: 0,
+        reason: "当前 chunk 数较少，直接全量保留，避免过筛导致后续信息损失。",
+      };
+    }
+
+    const chunkMap = new Map(safeChunks.map((chunk) => [chunk.chunk_id, chunk]));
+    const prompt = buildChunkFilterPrompt(document, safeChunks);
+
+    try {
+      const llmResult = await this.invokeStageJson({
+        stage: "chunk_filter",
+        instruction: prompt.instruction,
+        payload: prompt.payload,
+        responseSchema: prompt.responseSchema,
+        signal: options?.signal,
+      });
+      const payload = asRecord(llmResult.data);
+      const selectedChunkIds = uniqueStrings(payload.selected_chunk_ids).filter((chunkId) => chunkMap.has(chunkId));
+      const selectedChunks = selectedChunkIds.map((chunkId) => chunkMap.get(chunkId)).filter(Boolean);
+      const fallbackToAll = selectedChunks.length === 0;
+      const finalSelectedChunks = fallbackToAll ? safeChunks : selectedChunks;
+      const finalSelectedIds = finalSelectedChunks.map((chunk) => chunk.chunk_id);
+
+      return {
+        selected_chunk_ids: finalSelectedIds,
+        selected_chunks: finalSelectedChunks,
+        total_input_chunks: safeChunks.length,
+        total_selected_chunks: finalSelectedChunks.length,
+        skipped_count: Math.max(0, safeChunks.length - finalSelectedChunks.length),
+        used_fallback: fallbackToAll,
+        llm_ensemble: llmResult.llm_ensemble ?? null,
+        reason: fallbackToAll
+          ? `模型未明确选出可保留 chunk，已回退为全量保留以保全后续流程。${asText(payload.reason) ? ` ${asText(payload.reason)}` : ""}`.trim()
+          : (asText(payload.reason) || "已筛出更值得进入后续窗口抽取的高信息 chunk。"),
+      };
+    } catch (error) {
+      return {
+        selected_chunk_ids: safeChunks.map((chunk) => chunk.chunk_id),
+        selected_chunks: safeChunks,
+        total_input_chunks: safeChunks.length,
+        total_selected_chunks: safeChunks.length,
+        skipped_count: 0,
+        used_fallback: true,
+        error: getErrorMessage(error, "chunk_filter failed"),
+        raw_text: getErrorRawText(error),
+        llm_ensemble: error?.stageOutput?.llm_ensemble ?? null,
+        ...getErrorDiagnostics(error),
+        reason: "文档预筛失败，已自动回退为全量 chunk 继续后续窗口抽取。",
+      };
+    }
+  }
+
   buildWindows(chunks) {
     if (!Array.isArray(chunks) || chunks.length === 0) {
       return [];
@@ -4386,6 +4539,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       let state = {
         document: null,
         chunks: [],
+        filtered_chunks: [],
         windows: [],
         window_results: [],
         fused_objects: [],
@@ -4498,22 +4652,33 @@ export class WorkflowV2Service extends LinearWorkflowService {
         });
       }
       if (stageStartIndex <= 1) {
-        await runStage("window_extract", async () => this.windowExtractStage(state.document, state.chunks, {
+        await runStage("chunk_filter", async () => this.chunkFilterStage(state.document, state.chunks, {
           signal: input?.signal,
-          onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
         }), (output) => {
+          state.filtered_chunks = Array.isArray(output.selected_chunks) ? output.selected_chunks : state.chunks;
+        });
+      }
+      if (stageStartIndex <= 2) {
+        await runStage("window_extract", async () => this.windowExtractStage(
+          state.document,
+          Array.isArray(state.filtered_chunks) && state.filtered_chunks.length > 0 ? state.filtered_chunks : state.chunks,
+          {
+            signal: input?.signal,
+            onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
+          },
+        ), (output) => {
           state.windows = output.windows;
           state.window_results = output.window_results;
         });
       }
-      if (stageStartIndex <= 2) {
+      if (stageStartIndex <= 3) {
         await runStage("object_fusion", async () => this.objectFusionStage(state.window_results, {
           signal: input?.signal,
         }), (output) => {
           state.fused_objects = output.fused_objects;
         });
       }
-      if (stageStartIndex <= 3) {
+      if (stageStartIndex <= 4) {
         await runStage("function_analysis", async () => this.functionAnalysisStage(state.fused_objects, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4522,7 +4687,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.fused_objects = output.updated_objects;
         });
       }
-      if (stageStartIndex <= 4) {
+      if (stageStartIndex <= 5) {
         await runStage("object_decompose", async () => this.objectDecomposeStage(state.fused_objects, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4530,7 +4695,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.decomposition_results = output.decomposition_results;
         });
       }
-      if (stageStartIndex <= 5) {
+      if (stageStartIndex <= 6) {
         await runStage("graph_build", async () => this.graphBuildStage(state.fused_objects, state.decomposition_results, {
           signal: input?.signal,
         }), (output) => {
@@ -4539,7 +4704,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.removed_cycle_edges = output.removed_cycle_edges;
         });
       }
-      if (stageStartIndex <= 6) {
+      if (stageStartIndex <= 7) {
         await runStage("ablation_analysis", async () => this.ablationAnalysisStage(state.fused_objects, state.edges, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4550,7 +4715,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
       const result = {
         ...buildWorkflowV2ResultFromState(state),
-        reason: "已完成文档分块、对象抽取、对象融合、核心功能分析、拆解建图与消融分析的全流程。",
+        reason: "已完成文档分块、预筛 chunk、对象抽取、对象融合、核心功能分析、拆解建图与消融分析的全流程。",
       };
       const finishedAt = new Date().toISOString();
       await this.writeWorkflowSnapshot(conversationId, {
