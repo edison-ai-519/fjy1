@@ -173,6 +173,28 @@ function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : []).map((item) => asText(item)).filter(Boolean))];
 }
 
+function buildWorkflowV2ChunkTextMap(chunks) {
+  const chunkMap = new Map();
+  for (const chunk of Array.isArray(chunks) ? chunks : []) {
+    const chunkId = asText(chunk?.chunk_id);
+    if (!chunkId) {
+      continue;
+    }
+    chunkMap.set(chunkId, asText(chunk?.text));
+  }
+  return chunkMap;
+}
+
+function materializeWorkflowV2CitationTexts(chunkMap, chunkIds, fallbackTexts = []) {
+  const resolved = uniqueStrings(chunkIds)
+    .map((chunkId) => asText(chunkMap?.get?.(chunkId)))
+    .filter(Boolean);
+  if (resolved.length > 0) {
+    return resolved;
+  }
+  return uniqueStrings(fallbackTexts);
+}
+
 function cloneJsonValue(value, fallback = null) {
   if (value === undefined) {
     return fallback;
@@ -1314,10 +1336,11 @@ function buildWindowExtractPrompt(window) {
       "优先抽取名词性实体、组成项、部件名、概念名、对象名，不要把完整句子、描述性短语或关系短语当成实体。",
       "如果文本出现“A 由 XXX 组成”“A 包含 XXX”“A 包括 XXX”这类结构表达，必须同时提取整体对象 A 和其中出现的组成项 XXX，不能只提取其中一侧。",
       "当一句话同时给出整体与组成关系时，整体对象、各个直接组成项都要分别列入 objects。",
-      "每个 object 必须包含 object_name、normalized_name、citation、confidence、reason。",
-      "citation 必须直接来自窗口原文，并尽量完整包含与该对象有关的全部原文内容。",
-      "不要只截取对象名称本身或过短片段；如果同一窗口中有多处原文共同描述该对象，请尽量都收录到 citation 数组。",
-      "citation 应优先保留完整句子、完整分句或必要的相邻上下文，避免截断导致语义缺失。",
+      "每个 object 必须包含 object_name、normalized_name、citation_chunk_ids、confidence、reason。",
+      "citation_chunk_ids 只能填写当前窗口 chunk_ids 中真实存在的 chunk_id。",
+      "不要复述原文，不要抄写句子，不要返回 citation 文本；只返回能支撑该对象的 chunk_id 数组。",
+      "如果同一对象需要多个 chunk 共同支撑，请把多个 chunk_id 一起放进 citation_chunk_ids。",
+      "如果一个 chunk 中同时出现整体对象与组成项，即使文本很短，也要把该 chunk_id 同时分配给相关对象。",
       "confidence 必须是 0 到 1 之间的小数。",
       "如果没有合适对象，返回空数组。",
       buildWorkflowV2OutputExampleText({
@@ -1325,14 +1348,14 @@ function buildWindowExtractPrompt(window) {
           {
             object_name: "机械狗",
             normalized_name: "机械狗",
-            citation: ["机械狗由外壳、芯片、电源构成。"],
+            citation_chunk_ids: ["c1"],
             confidence: 0.98,
             reason: "原文明确提到整体对象机械狗，并给出了它的组成关系。",
           },
           {
             object_name: "外壳",
             normalized_name: "外壳",
-            citation: ["机械狗由外壳、芯片、电源构成。"],
+            citation_chunk_ids: ["c1"],
             confidence: 0.96,
             reason: "原文明确提到外壳是机械狗的直接组成项。",
           },
@@ -1354,11 +1377,11 @@ function buildWindowExtractPrompt(window) {
               properties: {
                 object_name: { type: "string" },
                 normalized_name: { type: "string" },
-                citation: { type: "array", items: { type: "string" } },
+                citation_chunk_ids: { type: "array", items: { type: "string" } },
                 confidence: { type: "number" },
                 reason: { type: "string" },
               },
-              required: ["object_name", "normalized_name", "citation", "confidence", "reason"],
+              required: ["object_name", "normalized_name", "citation_chunk_ids", "confidence", "reason"],
             },
           },
           reason: { type: "string" },
@@ -3474,6 +3497,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
   async windowExtractStage(document, chunks, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
     const windows = this.buildWindows(chunks);
+    const chunkTextMap = buildWorkflowV2ChunkTextMap(chunks);
     let processedWindows = 0;
     let failedWindowsCount = 0;
     options?.onProgress?.({
@@ -3505,10 +3529,19 @@ export class WorkflowV2Service extends LinearWorkflowService {
             const record = asRecord(item);
             const objectName = asText(record.object_name);
             const normalizedName = normalizeObjectName(record.normalized_name || objectName);
+            const requestedChunkIds = uniqueStrings(record.citation_chunk_ids).filter((chunkId) => window.chunk_ids.includes(chunkId));
+            const fallbackChunkIds = window.chunk_ids.length > 0 ? window.chunk_ids : uniqueStrings(record.citation_chunk_ids);
+            const citationChunkIds = requestedChunkIds.length > 0 ? requestedChunkIds : fallbackChunkIds;
+            const citationTexts = materializeWorkflowV2CitationTexts(
+              chunkTextMap,
+              citationChunkIds,
+              Array.isArray(record.citation) ? record.citation : [],
+            );
             return {
               object_name: objectName,
               normalized_name: normalizedName,
-              citation: uniqueStrings(record.citation),
+              citation_chunk_ids: citationChunkIds,
+              citation: citationTexts,
               confidence: clampConfidence(record.confidence, 0.5),
               reason: asText(record.reason) || `${objectName || "该对象"} 在窗口文本中被识别为独立对象。`,
             };
@@ -3612,6 +3645,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
   async objectFusionStage(windowResults, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
+    const chunkTextMap = buildWorkflowV2ChunkTextMap(options?.chunks);
     const candidates = [];
     for (const windowResult of windowResults) {
       for (const object of Array.isArray(windowResult.objects) ? windowResult.objects : []) {
@@ -3630,8 +3664,16 @@ export class WorkflowV2Service extends LinearWorkflowService {
       throwIfWorkflowV2Aborted(options?.signal);
       const directMatch = fused.find((item) => item.normalized_name === candidate.normalized_name || item.aliases.includes(candidate.object_name));
       if (directMatch) {
+        directMatch.citation_chunk_ids = uniqueStrings([
+          ...(Array.isArray(directMatch.citation_chunk_ids) ? directMatch.citation_chunk_ids : []),
+          ...(Array.isArray(candidate.citation_chunk_ids) ? candidate.citation_chunk_ids : []),
+        ]);
         directMatch.aliases = uniqueStrings([...directMatch.aliases, candidate.object_name]);
-        directMatch.citations = uniqueStrings([...directMatch.citations, ...candidate.citation]);
+        directMatch.citations = materializeWorkflowV2CitationTexts(
+          chunkTextMap,
+          directMatch.citation_chunk_ids,
+          [...directMatch.citations, ...candidate.citation],
+        );
         directMatch.source_window_ids = uniqueStrings([...directMatch.source_window_ids, candidate.source_window_id]);
         directMatch.merge_reasons = uniqueStrings([...directMatch.merge_reasons, candidate.reason, "normalized_name 完全一致，因此直接合并。"]);
         directMatch.confidence = averageConfidence([directMatch.confidence, candidate.confidence]);
@@ -3662,7 +3704,15 @@ export class WorkflowV2Service extends LinearWorkflowService {
             ambiguous.object_name = asText(judge.object_name) || ambiguous.object_name;
             ambiguous.normalized_name = normalizeObjectName(judge.normalized_name || ambiguous.normalized_name);
             ambiguous.aliases = uniqueStrings([...ambiguous.aliases, ...uniqueStrings(judge.aliases), candidate.object_name]);
-            ambiguous.citations = uniqueStrings([...ambiguous.citations, ...candidate.citation]);
+            ambiguous.citation_chunk_ids = uniqueStrings([
+              ...(Array.isArray(ambiguous.citation_chunk_ids) ? ambiguous.citation_chunk_ids : []),
+              ...(Array.isArray(candidate.citation_chunk_ids) ? candidate.citation_chunk_ids : []),
+            ]);
+            ambiguous.citations = materializeWorkflowV2CitationTexts(
+              chunkTextMap,
+              ambiguous.citation_chunk_ids,
+              [...ambiguous.citations, ...candidate.citation],
+            );
             ambiguous.source_window_ids = uniqueStrings([...ambiguous.source_window_ids, candidate.source_window_id]);
             ambiguous.merge_reasons = uniqueStrings([...ambiguous.merge_reasons, asText(judge.reason), candidate.reason]);
             ambiguous.confidence = averageConfidence([ambiguous.confidence, candidate.confidence]);
@@ -3695,7 +3745,12 @@ export class WorkflowV2Service extends LinearWorkflowService {
         object_name: candidate.object_name,
         normalized_name: candidate.normalized_name,
         aliases: uniqueStrings([candidate.object_name]),
-        citations: uniqueStrings(candidate.citation),
+        citation_chunk_ids: uniqueStrings(candidate.citation_chunk_ids),
+        citations: materializeWorkflowV2CitationTexts(
+          chunkTextMap,
+          candidate.citation_chunk_ids,
+          candidate.citation,
+        ),
         source_window_ids: uniqueStrings([candidate.source_window_id]),
         confidence: clampConfidence(candidate.confidence, 0.5),
         merge_reasons: uniqueStrings([candidate.reason]),
@@ -4674,6 +4729,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       if (stageStartIndex <= 3) {
         await runStage("object_fusion", async () => this.objectFusionStage(state.window_results, {
           signal: input?.signal,
+          chunks: Array.isArray(state.filtered_chunks) && state.filtered_chunks.length > 0 ? state.filtered_chunks : state.chunks,
         }), (output) => {
           state.fused_objects = output.fused_objects;
         });

@@ -245,6 +245,489 @@ function CitationPreview({ citation }: { citation: string }) {
   );
 }
 
+type WorkflowV2ObjectDecompositionItem = {
+  parentName: string;
+  childName: string;
+  relation: string;
+  reason: string;
+  citation: string;
+  confidence: number | null;
+};
+
+type WorkflowV2ObjectImportanceItem = {
+  parentName: string;
+  childName: string;
+  importanceLevel: string;
+  judgement: string;
+  reason: string;
+};
+
+type WorkflowV2ObjectImpactItem = {
+  parentName: string;
+  sourceName: string;
+  targetName: string;
+  impactLevel: string;
+  judgement: string;
+  reason: string;
+};
+
+type WorkflowV2ObjectFailureItem = {
+  label: string;
+  error: string;
+  payload: Record<string, unknown>;
+};
+
+type WorkflowV2ObjectStageInsight = {
+  finalReason: string;
+  mergeReasons: string[];
+  functionReason: string;
+  functionConfidence: number | null;
+  functionError: string;
+  functionErrorPayload: Record<string, unknown> | null;
+  decompositionReason: string;
+  outgoingDecompositions: WorkflowV2ObjectDecompositionItem[];
+  incomingDecompositions: WorkflowV2ObjectDecompositionItem[];
+  decompositionError: string;
+  decompositionFailureAttempts: WorkflowV2ObjectFailureItem[];
+  parentAblationReason: string;
+  importanceAsParent: WorkflowV2ObjectImportanceItem[];
+  importanceAsChild: WorkflowV2ObjectImportanceItem[];
+  impactAsSource: WorkflowV2ObjectImpactItem[];
+  impactAsTarget: WorkflowV2ObjectImpactItem[];
+  ablationFailures: WorkflowV2ObjectFailureItem[];
+};
+
+function normalizeWorkflowV2IdentityValue(value: unknown) {
+  return asText(value).trim().toLowerCase();
+}
+
+function buildWorkflowV2ObjectIdentitySet(record: Record<string, unknown>) {
+  const identities = new Set<string>();
+  const append = (value: unknown) => {
+    const normalized = normalizeWorkflowV2IdentityValue(value);
+    if (normalized) {
+      identities.add(normalized);
+    }
+  };
+
+  append(record.object_id);
+  append(record.object_name);
+  append(record.normalized_name);
+  for (const alias of asStringArray(record.aliases)) {
+    append(alias);
+  }
+  return identities;
+}
+
+function matchesWorkflowV2Identity(value: unknown, identities: Set<string>) {
+  const normalized = normalizeWorkflowV2IdentityValue(value);
+  return Boolean(normalized) && identities.has(normalized);
+}
+
+function matchesWorkflowV2ObjectRecord(
+  record: Record<string, unknown>,
+  identities: Set<string>,
+  keys: string[],
+) {
+  for (const key of keys) {
+    if (key === 'aliases') {
+      if (asStringArray(record.aliases).some((value) => matchesWorkflowV2Identity(value, identities))) {
+        return true;
+      }
+      continue;
+    }
+    if (matchesWorkflowV2Identity(record[key], identities)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function asOptionalNumber(value: unknown) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function getWorkflowV2ObjectDisplayName(
+  objectMap: Map<string, Record<string, unknown>>,
+  objectId: string,
+  fallback = '',
+) {
+  return asText(asRecord(objectMap.get(objectId)).object_name) || fallback || objectId;
+}
+
+function buildWorkflowV2ObjectStageInsight(input: {
+  objectRecord: Record<string, unknown>;
+  functionObjects: unknown[];
+  failedFunctionObjects: unknown[];
+  decompositionGroups: unknown[];
+  failedObjectItems: unknown[];
+  ablationItems: unknown[];
+  failedAblationParentItems: unknown[];
+  failedAblationChildItems: unknown[];
+}): WorkflowV2ObjectStageInsight {
+  const identities = buildWorkflowV2ObjectIdentitySet(input.objectRecord);
+  const functionRecord = input.functionObjects
+    .map((item) => asRecord(item))
+    .find((item) => matchesWorkflowV2ObjectRecord(item, identities, ['object_id', 'object_name', 'normalized_name', 'aliases'])) ?? null;
+  const functionFailure = input.failedFunctionObjects
+    .map((item) => asRecord(item))
+    .find((item) => matchesWorkflowV2ObjectRecord(item, identities, ['object_id', 'object_name', 'normalized_name'])) ?? null;
+  const decompositionGroup = input.decompositionGroups
+    .map((item) => asRecord(item))
+    .find((item) => matchesWorkflowV2ObjectRecord(item, identities, ['object_id', 'object_name'])) ?? null;
+  const outgoingDecompositions = Array.isArray(decompositionGroup?.decompositions)
+    ? decompositionGroup.decompositions.map((item) => {
+      const record = asRecord(item);
+      return {
+        parentName: asText(record.parent_object_name) || asText(input.objectRecord.object_name),
+        childName: asText(record.child_object_name) || asText(record.child_object_id),
+        relation: asText(record.relation) || 'contains',
+        reason: asText(record.reason),
+        citation: asText(record.citation),
+        confidence: asOptionalNumber(record.confidence),
+      };
+    })
+    : [];
+  const incomingDecompositions = input.decompositionGroups
+    .map((item) => asRecord(item))
+    .flatMap((group) => {
+      const decompositions = Array.isArray(group.decompositions) ? group.decompositions : [];
+      return decompositions
+        .map((item) => asRecord(item))
+        .filter((item) => matchesWorkflowV2ObjectRecord(item, identities, ['child_object_id', 'child_object_name']))
+        .map((item) => ({
+          parentName: asText(item.parent_object_name) || asText(group.object_name) || asText(group.object_id),
+          childName: asText(item.child_object_name) || asText(item.child_object_id),
+          relation: asText(item.relation) || 'contains',
+          reason: asText(item.reason),
+          citation: asText(item.citation),
+          confidence: asOptionalNumber(item.confidence),
+        }));
+    });
+  const decompositionFailure = input.failedObjectItems
+    .map((item) => asRecord(item))
+    .find((item) => matchesWorkflowV2ObjectRecord(item, identities, ['object_id', 'object_name'])) ?? null;
+  const decompositionFailureAttempts = Array.isArray(decompositionFailure?.attempts)
+    ? decompositionFailure.attempts.map((item, index) => {
+      const record = asRecord(item);
+      return {
+        label: `第 ${asCount(record.attempt, index + 1)} 次`,
+        error: asText(record.error) || asText(record.reason) || '对象拆解失败',
+        payload: record,
+      };
+    })
+    : [];
+  const parentAblation = input.ablationItems
+    .map((item) => asRecord(item))
+    .find((item) => matchesWorkflowV2ObjectRecord(item, identities, ['parent_object_id', 'parent_object_name'])) ?? null;
+  const importanceAsParent = Array.isArray(parentAblation?.child_importance_list)
+    ? parentAblation.child_importance_list.map((item) => {
+      const record = asRecord(item);
+      return {
+        parentName: asText(parentAblation.parent_object_name) || asText(parentAblation.parent_object_id),
+        childName: asText(record.ablated_child_object_name) || asText(record.ablated_child_object_id),
+        importanceLevel: asText(record.importance_level),
+        judgement: asText(record.judgement),
+        reason: asText(record.reason),
+      };
+    })
+    : [];
+  const importanceAsChild = input.ablationItems
+    .map((item) => asRecord(item))
+    .flatMap((summary) => {
+      const childImportanceList = Array.isArray(summary.child_importance_list) ? summary.child_importance_list : [];
+      return childImportanceList
+        .map((item) => asRecord(item))
+        .filter((item) => matchesWorkflowV2ObjectRecord(item, identities, ['ablated_child_object_id', 'ablated_child_object_name']))
+        .map((item) => ({
+          parentName: asText(summary.parent_object_name) || asText(summary.parent_object_id),
+          childName: asText(item.ablated_child_object_name) || asText(item.ablated_child_object_id),
+          importanceLevel: asText(item.importance_level),
+          judgement: asText(item.judgement),
+          reason: asText(item.reason),
+        }));
+    });
+  const impactAsSource = input.ablationItems
+    .map((item) => asRecord(item))
+    .flatMap((summary) => {
+      const siblingDependencyTable = Array.isArray(summary.sibling_dependency_table) ? summary.sibling_dependency_table : [];
+      return siblingDependencyTable
+        .map((item) => asRecord(item))
+        .filter((item) => matchesWorkflowV2ObjectRecord(item, identities, ['ablated_child_object_id', 'ablated_child_object_name']))
+        .map((item) => ({
+          parentName: asText(summary.parent_object_name) || asText(summary.parent_object_id),
+          sourceName: asText(item.ablated_child_object_name) || asText(item.ablated_child_object_id),
+          targetName: asText(item.target_sibling_object_name) || asText(item.target_sibling_object_id),
+          impactLevel: asText(item.impact_level),
+          judgement: asText(item.judgement),
+          reason: asText(item.reason),
+        }));
+    });
+  const impactAsTarget = input.ablationItems
+    .map((item) => asRecord(item))
+    .flatMap((summary) => {
+      const siblingDependencyTable = Array.isArray(summary.sibling_dependency_table) ? summary.sibling_dependency_table : [];
+      return siblingDependencyTable
+        .map((item) => asRecord(item))
+        .filter((item) => matchesWorkflowV2ObjectRecord(item, identities, ['target_sibling_object_id', 'target_sibling_object_name']))
+        .map((item) => ({
+          parentName: asText(summary.parent_object_name) || asText(summary.parent_object_id),
+          sourceName: asText(item.ablated_child_object_name) || asText(item.ablated_child_object_id),
+          targetName: asText(item.target_sibling_object_name) || asText(item.target_sibling_object_id),
+          impactLevel: asText(item.impact_level),
+          judgement: asText(item.judgement),
+          reason: asText(item.reason),
+        }));
+    });
+  const ablationFailures: WorkflowV2ObjectFailureItem[] = [];
+  for (const item of input.failedAblationParentItems.map((entry) => asRecord(entry))) {
+    if (matchesWorkflowV2ObjectRecord(item, identities, ['parent_object_id', 'parent_object_name'])) {
+      ablationFailures.push({
+        label: '父节点消融',
+        error: asText(item.error) || asText(item.reason) || '父节点消融失败',
+        payload: item,
+      });
+    }
+  }
+  for (const item of input.failedAblationChildItems.map((entry) => asRecord(entry))) {
+    if (matchesWorkflowV2ObjectRecord(item, identities, ['parent_object_id', 'parent_object_name', 'child_object_id', 'child_object_name'])) {
+      ablationFailures.push({
+        label: asText(item.step) || '子任务消融',
+        error: asText(item.error) || asText(item.reason) || '子任务消融失败',
+        payload: item,
+      });
+    }
+  }
+
+  return {
+    finalReason: asText(input.objectRecord.reason),
+    mergeReasons: asStringArray(input.objectRecord.merge_reasons),
+    functionReason: asText(functionRecord?.reason),
+    functionConfidence: asOptionalNumber(functionRecord?.confidence),
+    functionError: asText(functionFailure?.error) || asText(functionFailure?.reason),
+    functionErrorPayload: functionFailure,
+    decompositionReason: asText(decompositionGroup?.reason),
+    outgoingDecompositions,
+    incomingDecompositions,
+    decompositionError: asText(decompositionFailure?.reason) || asText(decompositionFailure?.error),
+    decompositionFailureAttempts,
+    parentAblationReason: asText(parentAblation?.reason),
+    importanceAsParent,
+    importanceAsChild,
+    impactAsSource,
+    impactAsTarget,
+    ablationFailures,
+  };
+}
+
+function WorkflowV2StageSummaryCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
+      <div className="text-xs font-semibold text-muted-foreground">{title}</div>
+      <div className="mt-3">{children}</div>
+    </div>
+  );
+}
+
+function WorkflowV2ObjectProcessSections({
+  insight,
+}: {
+  insight: WorkflowV2ObjectStageInsight;
+}) {
+  const hasFunctionSummary = insight.functionReason || insight.functionError;
+  const hasFusionSummary = insight.finalReason || insight.mergeReasons.length > 0;
+  const hasDecompositionSummary = insight.decompositionReason
+    || insight.outgoingDecompositions.length > 0
+    || insight.incomingDecompositions.length > 0
+    || insight.decompositionError
+    || insight.decompositionFailureAttempts.length > 0;
+  const hasAblationSummary = insight.parentAblationReason
+    || insight.importanceAsParent.length > 0
+    || insight.importanceAsChild.length > 0
+    || insight.impactAsSource.length > 0
+    || insight.impactAsTarget.length > 0
+    || insight.ablationFailures.length > 0;
+
+  if (!hasFunctionSummary && !hasFusionSummary && !hasDecompositionSummary && !hasAblationSummary) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {hasFunctionSummary ? (
+        <WorkflowV2StageSummaryCard title="功能分析">
+          <div className="space-y-3 text-sm">
+            {insight.functionConfidence !== null ? (
+              <Badge variant="outline">置信度 {insight.functionConfidence.toFixed(2)}</Badge>
+            ) : null}
+            {insight.functionReason ? (
+              <div className="leading-6 text-foreground/90">{insight.functionReason}</div>
+            ) : null}
+            {insight.functionError ? (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-amber-900">
+                <div className="font-black">分析失败</div>
+                <div className="mt-2 leading-6">{insight.functionError}</div>
+                <ErrorDiagnosticBadges value={insight.functionErrorPayload} />
+              </div>
+            ) : null}
+          </div>
+        </WorkflowV2StageSummaryCard>
+      ) : null}
+
+      {hasFusionSummary ? (
+        <WorkflowV2StageSummaryCard title="融合 / 归并">
+          <div className="space-y-3 text-sm">
+            {insight.finalReason ? (
+              <div className="leading-6 text-foreground/90">{insight.finalReason}</div>
+            ) : null}
+            {insight.mergeReasons.length > 0 ? (
+              <div className="space-y-2">
+                {insight.mergeReasons.map((reason, index) => (
+                  <div key={`merge-reason-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-2 text-sm leading-6 text-foreground/85">
+                    {reason}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </WorkflowV2StageSummaryCard>
+      ) : null}
+
+      {hasDecompositionSummary ? (
+        <WorkflowV2StageSummaryCard title="对象拆解">
+          <div className="space-y-3 text-sm">
+            {insight.decompositionReason ? (
+              <div className="leading-6 text-foreground/90">{insight.decompositionReason}</div>
+            ) : null}
+            {insight.outgoingDecompositions.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">向下拆解</div>
+                {insight.outgoingDecompositions.map((item, index) => (
+                  <div key={`outgoing-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.parentName} → {item.childName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.relation}{item.confidence !== null ? ` · 置信度 ${item.confidence.toFixed(2)}` : ''}</div>
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                    {item.citation ? <CitationPreview citation={item.citation} /> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.incomingDecompositions.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">作为子部件被引用</div>
+                {insight.incomingDecompositions.map((item, index) => (
+                  <div key={`incoming-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.parentName} → {item.childName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.relation}{item.confidence !== null ? ` · 置信度 ${item.confidence.toFixed(2)}` : ''}</div>
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                    {item.citation ? <CitationPreview citation={item.citation} /> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.decompositionError || insight.decompositionFailureAttempts.length > 0 ? (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-amber-900">
+                <div className="font-black">拆解失败</div>
+                {insight.decompositionError ? <div className="mt-2 text-sm leading-6">{insight.decompositionError}</div> : null}
+                {insight.decompositionFailureAttempts.length > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    {insight.decompositionFailureAttempts.map((attempt, index) => (
+                      <div key={`decompose-attempt-${index}`} className="rounded-xl border border-amber-500/20 bg-background/80 px-3 py-2">
+                        <div className="text-xs font-black">{attempt.label}</div>
+                        <div className="mt-1 text-xs leading-5">{attempt.error}</div>
+                        <ErrorDiagnosticBadges value={attempt.payload} />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </WorkflowV2StageSummaryCard>
+      ) : null}
+
+      {hasAblationSummary ? (
+        <WorkflowV2StageSummaryCard title="消融 / 作用关系">
+          <div className="space-y-3 text-sm">
+            {insight.parentAblationReason ? (
+              <div className="leading-6 text-foreground/90">{insight.parentAblationReason}</div>
+            ) : null}
+            {insight.importanceAsParent.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">作为父节点的子部件重要性</div>
+                {insight.importanceAsParent.map((item, index) => (
+                  <div key={`importance-parent-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.childName} · {item.importanceLevel || '未标级'}</div>
+                    {item.judgement ? <div className="mt-1 text-xs text-muted-foreground">{item.judgement}</div> : null}
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.importanceAsChild.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">作为子部件被消融的结论</div>
+                {insight.importanceAsChild.map((item, index) => (
+                  <div key={`importance-child-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.parentName} · {item.importanceLevel || '未标级'}</div>
+                    {item.judgement ? <div className="mt-1 text-xs text-muted-foreground">{item.judgement}</div> : null}
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.impactAsSource.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">该对象移除后影响到的同级</div>
+                {insight.impactAsSource.map((item, index) => (
+                  <div key={`impact-source-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.sourceName} 影响 {item.targetName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.parentName} · {item.impactLevel || '未标级'}{item.judgement ? ` · ${item.judgement}` : ''}</div>
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.impactAsTarget.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground">其他同级移除后对该对象的影响</div>
+                {insight.impactAsTarget.map((item, index) => (
+                  <div key={`impact-target-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                    <div className="font-medium">{item.sourceName} 影响 {item.targetName}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{item.parentName} · {item.impactLevel || '未标级'}{item.judgement ? ` · ${item.judgement}` : ''}</div>
+                    {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {insight.ablationFailures.length > 0 ? (
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-amber-900">
+                <div className="font-black">消融失败</div>
+                <div className="mt-3 space-y-2">
+                  {insight.ablationFailures.map((item, index) => (
+                    <div key={`ablation-failure-${index}`} className="rounded-xl border border-amber-500/20 bg-background/80 px-3 py-2">
+                      <div className="text-xs font-black">{item.label}</div>
+                      <div className="mt-1 text-xs leading-5">{item.error}</div>
+                      <ErrorDiagnosticBadges value={item.payload} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </WorkflowV2StageSummaryCard>
+      ) : null}
+    </div>
+  );
+}
+
 function canRetryWorkflowV2Stage(session: WorkflowV2RunSession | null, stageKey: string, retryable: boolean) {
   if (!session || session.isRunning || !retryable) {
     return false;
@@ -331,12 +814,6 @@ type WorkflowV2ShellSection =
   | 'analysis-experts'
   | 'debug';
 
-type WorkflowV2SidebarItem = {
-  id: WorkflowV2ShellSection;
-  label: string;
-  hint: string;
-};
-
 type WorkflowV2ObjectLibraryFilter = {
   search: string;
   level: 'all' | string;
@@ -373,7 +850,6 @@ export function FileWorkflowV2Page() {
   const [configDirty, setConfigDirty] = useState(false);
   const [configSheetOpen, setConfigSheetOpen] = useState(false);
   const [historySheetOpen, setHistorySheetOpen] = useState(false);
-  const [activeSection, setActiveSection] = useState<WorkflowV2ShellSection>('overview-status');
   const [expandedPanels, setExpandedPanels] = useState<WorkflowV2AnalysisSectionState>({
     graph: false,
     stageProducts: false,
@@ -483,7 +959,6 @@ export function FileWorkflowV2Page() {
   }, []);
 
   useEffect(() => {
-    setActiveSection('overview-status');
     setExpandedPanels((current) => ({ ...current, debug: false }));
     setWritebackPayload(null);
     setWritebackError('');
@@ -695,13 +1170,13 @@ export function FileWorkflowV2Page() {
     return asRecord(explicit ?? filteredObjectItems[0] ?? null);
   }, [filteredObjectItems, selectedObjectId]);
   const selectedObjectIdValue = asText(selectedObjectRecord.object_id);
+  const rawGraphEdges = Array.isArray(result?.edges) ? result.edges : stageGraphEdges;
   const selectedObjectEdges = useMemo(() => {
-    const edges = Array.isArray(result?.edges) ? result.edges : stageGraphEdges;
-    return (Array.isArray(edges) ? edges : []).filter((item) => {
+    return (Array.isArray(rawGraphEdges) ? rawGraphEdges : []).filter((item) => {
       const record = asRecord(item);
       return asText(record.source_object_id) === selectedObjectIdValue || asText(record.target_object_id) === selectedObjectIdValue;
     });
-  }, [result?.edges, selectedObjectIdValue, stageGraphEdges]);
+  }, [rawGraphEdges, selectedObjectIdValue]);
   const graphNodeMap = useMemo(() => {
     return new Map(graphLayout.nodes.map((node) => [node.id, node] as const));
   }, [graphLayout.nodes]);
@@ -713,6 +1188,15 @@ export function FileWorkflowV2Page() {
   const selectedGraphNodeRecord = useMemo(() => {
     return asRecord(selectedGraphNodeIdValue ? objectLibraryItemMap.get(selectedGraphNodeIdValue) ?? null : null);
   }, [objectLibraryItemMap, selectedGraphNodeIdValue]);
+  const selectedGraphRawEdges = useMemo(() => {
+    if (!selectedGraphNodeIdValue) {
+      return [];
+    }
+    return (Array.isArray(rawGraphEdges) ? rawGraphEdges : []).filter((item) => {
+      const record = asRecord(item);
+      return asText(record.source_object_id) === selectedGraphNodeIdValue || asText(record.target_object_id) === selectedGraphNodeIdValue;
+    });
+  }, [rawGraphEdges, selectedGraphNodeIdValue]);
   const selectedGraphStructureEdges = useMemo(() => {
     if (!selectedGraphNodeIdValue) {
       return [];
@@ -741,6 +1225,48 @@ export function FileWorkflowV2Page() {
     }
     return relatedIds;
   }, [selectedGraphImpactEdges, selectedGraphNodeIdValue, selectedGraphStructureEdges]);
+  const selectedObjectInsight = useMemo(() => (
+    buildWorkflowV2ObjectStageInsight({
+      objectRecord: selectedObjectRecord,
+      functionObjects: Array.isArray(functionOutput.function_objects) ? functionOutput.function_objects : [],
+      failedFunctionObjects: failedFunctionItems,
+      decompositionGroups,
+      failedObjectItems,
+      ablationItems,
+      failedAblationParentItems,
+      failedAblationChildItems,
+    })
+  ), [
+    ablationItems,
+    decompositionGroups,
+    failedAblationChildItems,
+    failedAblationParentItems,
+    failedFunctionItems,
+    failedObjectItems,
+    functionOutput.function_objects,
+    selectedObjectRecord,
+  ]);
+  const selectedGraphNodeInsight = useMemo(() => (
+    buildWorkflowV2ObjectStageInsight({
+      objectRecord: selectedGraphNodeRecord,
+      functionObjects: Array.isArray(functionOutput.function_objects) ? functionOutput.function_objects : [],
+      failedFunctionObjects: failedFunctionItems,
+      decompositionGroups,
+      failedObjectItems,
+      ablationItems,
+      failedAblationParentItems,
+      failedAblationChildItems,
+    })
+  ), [
+    ablationItems,
+    decompositionGroups,
+    failedAblationChildItems,
+    failedAblationParentItems,
+    failedFunctionItems,
+    failedObjectItems,
+    functionOutput.function_objects,
+    selectedGraphNodeRecord,
+  ]);
   const recentSessions = sessions.slice(0, 3);
   const stageNavigationItems = useMemo(() => {
     return WORKFLOW_V2_STAGE_DEFINITIONS.map((stage) => {
@@ -752,17 +1278,6 @@ export function FileWorkflowV2Page() {
       };
     });
   }, [session, stageResults]);
-  const contentNavigationItems: WorkflowV2SidebarItem[] = [
-    { id: 'overview-status', label: '运行态摘要', hint: '先看结果是否可用' },
-    { id: 'overview-system', label: '系统拆解视图', hint: '结构树主位' },
-    { id: 'analysis-objects', label: '对象库', hint: '筛选与详情' },
-    { id: 'analysis-graph', label: '结构验证图', hint: 'Mermaid 与 DAG 校验' },
-    { id: 'analysis-stages', label: '阶段产物', hint: 'Chunks / Windows / Decompose' },
-    { id: 'analysis-effects', label: '作用关系', hint: 'Ablation 与 sibling impacts' },
-    { id: 'analysis-experts', label: '专家过程', hint: 'A / B / Judge 汇总' },
-    { id: 'debug', label: '调试区', hint: 'Raw JSON 与历史会话' },
-  ];
-
   useEffect(() => {
     if (!selectedObjectId && filteredObjectItems.length > 0) {
       setSelectedObjectId(asText(asRecord(filteredObjectItems[0]).object_id));
@@ -795,7 +1310,6 @@ export function FileWorkflowV2Page() {
       });
       activateWorkflowV2Session(conversationId);
       setSession(getLatestWorkflowV2Session());
-      setActiveSection('overview-status');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '启动 V2 工作流失败');
     }
@@ -803,7 +1317,6 @@ export function FileWorkflowV2Page() {
 
   const handleEnterFreshView = () => {
     setSession(null);
-    setActiveSection('overview-status');
     setExpandedPanels({
       graph: false,
       stageProducts: false,
@@ -883,7 +1396,6 @@ export function FileWorkflowV2Page() {
       });
       const summaryInfo = extractWorkflowV2WritebackSummary(payload);
       setWritebackPayload(payload);
-      setActiveSection('overview-status');
       toast.success(
         summaryInfo.lastCommitId
           ? `已写入 OntoGit，commit ${summaryInfo.lastCommitId}`
@@ -903,7 +1415,6 @@ export function FileWorkflowV2Page() {
   };
 
   const scrollToSection = (sectionId: WorkflowV2ShellSection) => {
-    setActiveSection(sectionId);
     setExpandedPanels((current) => ({
       ...current,
       graph: sectionId === 'analysis-graph' ? true : current.graph,
@@ -1033,31 +1544,6 @@ export function FileWorkflowV2Page() {
                   </div>
                 );
               })}
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-[30px] border-border/60 bg-background/90 shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-black tracking-tight">内容导航</CardTitle>
-              <CardDescription>右侧主阅读流的锚点入口。</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {contentNavigationItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => scrollToSection(item.id)}
-                  className={cn(
-                    'w-full rounded-2xl border px-3 py-3 text-left transition-colors',
-                    activeSection === item.id
-                      ? 'border-primary/30 bg-primary/10'
-                      : 'border-border/60 bg-background/70 hover:bg-muted/20',
-                  )}
-                >
-                  <div className="text-sm font-black">{item.label}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{item.hint}</div>
-                </button>
-              ))}
             </CardContent>
           </Card>
 
@@ -1587,6 +2073,11 @@ export function FileWorkflowV2Page() {
                             <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-foreground/90">
                               {asText(selectedObjectRecord.core_function) || '当前对象还没有核心功能摘要。'}
                             </div>
+                            {selectedObjectInsight.functionReason ? (
+                              <div className="text-sm leading-6 text-muted-foreground">
+                                {selectedObjectInsight.functionReason}
+                              </div>
+                            ) : null}
                             {asText(selectedObjectRecord.error) ? (
                               <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-900">
                                 <div className="font-black">功能分析失败</div>
@@ -1605,18 +2096,30 @@ export function FileWorkflowV2Page() {
                               </div>
                               <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
                                 <div className="text-xs font-semibold text-muted-foreground">结构关系</div>
-                                <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                                <div className="mt-3 space-y-3 text-sm text-muted-foreground">
                                   {selectedObjectEdges.length > 0 ? selectedObjectEdges.map((edge, index) => {
                                     const edgeRecord = asRecord(edge);
+                                    const sourceId = asText(edgeRecord.source_object_id);
+                                    const targetId = asText(edgeRecord.target_object_id);
+                                    const sourceName = getWorkflowV2ObjectDisplayName(objectLibraryItemMap, sourceId, sourceId);
+                                    const targetName = getWorkflowV2ObjectDisplayName(objectLibraryItemMap, targetId, targetId);
                                     return (
-                                      <div key={`${selectedObjectIdValue}-edge-${index}`}>
-                                        {asText(edgeRecord.source_object_id)} → {asText(edgeRecord.target_object_id)}
+                                      <div key={`${selectedObjectIdValue}-edge-${index}`} className="rounded-xl border border-border/50 bg-muted/15 px-3 py-3">
+                                        <div className="font-medium text-foreground/90">{sourceName} → {targetName}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                          {asText(edgeRecord.relation) || 'contains'}
+                                        </div>
+                                        {asText(edgeRecord.reason) ? (
+                                          <div className="mt-2 text-sm leading-6 text-foreground/85">{asText(edgeRecord.reason)}</div>
+                                        ) : null}
+                                        {asText(edgeRecord.citation) ? <CitationPreview citation={asText(edgeRecord.citation)} /> : null}
                                       </div>
                                     );
                                   }) : <span>当前没有直接结构边</span>}
                                 </div>
                               </div>
                             </div>
+                            <WorkflowV2ObjectProcessSections insight={selectedObjectInsight} />
                             <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
                               <div className="text-xs font-semibold text-muted-foreground">引用</div>
                               <div className="mt-3 space-y-3">
@@ -1897,6 +2400,11 @@ export function FileWorkflowV2Page() {
                               <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-foreground/90">
                                 {asText(selectedGraphNodeRecord.core_function) || '当前节点还没有核心功能摘要。'}
                               </div>
+                              {selectedGraphNodeInsight.functionReason ? (
+                                <div className="text-sm leading-6 text-muted-foreground">
+                                  {selectedGraphNodeInsight.functionReason}
+                                </div>
+                              ) : null}
 
                               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
                                 <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
@@ -1921,14 +2429,21 @@ export function FileWorkflowV2Page() {
                               <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
                                 <div className="text-xs font-semibold text-muted-foreground">直接结构关系</div>
                                 <div className="mt-3 space-y-2 text-sm text-foreground/85">
-                                  {selectedGraphStructureEdges.length > 0 ? selectedGraphStructureEdges.map((edge) => {
-                                    const sourceLabel = graphNodeMap.get(edge.sourceId)?.label || edge.sourceId;
-                                    const targetLabel = graphNodeMap.get(edge.targetId)?.label || edge.targetId;
-                                    const direction = edge.sourceId === selectedGraphNodeIdValue ? '包含' : '被包含于';
+                                  {selectedGraphRawEdges.length > 0 ? selectedGraphRawEdges.map((edge, index) => {
+                                    const edgeRecord = asRecord(edge);
+                                    const sourceId = asText(edgeRecord.source_object_id);
+                                    const targetId = asText(edgeRecord.target_object_id);
+                                    const sourceLabel = getWorkflowV2ObjectDisplayName(objectLibraryItemMap, sourceId, sourceId);
+                                    const targetLabel = getWorkflowV2ObjectDisplayName(objectLibraryItemMap, targetId, targetId);
+                                    const direction = sourceId === selectedGraphNodeIdValue ? '包含' : '被包含于';
                                     return (
-                                      <div key={`graph-structure-${edge.id}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
+                                      <div key={`graph-structure-${index}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-3">
                                         <div className="font-medium">{sourceLabel} → {targetLabel}</div>
                                         <div className="mt-1 text-xs text-muted-foreground">{direction}</div>
+                                        {asText(edgeRecord.reason) ? (
+                                          <div className="mt-2 text-sm leading-6 text-foreground/85">{asText(edgeRecord.reason)}</div>
+                                        ) : null}
+                                        {asText(edgeRecord.citation) ? <CitationPreview citation={asText(edgeRecord.citation)} /> : null}
                                       </div>
                                     );
                                   }) : (
@@ -1938,22 +2453,37 @@ export function FileWorkflowV2Page() {
                               </div>
 
                               <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
-                                <div className="text-xs font-semibold text-muted-foreground">作用关系</div>
+                                <div className="text-xs font-semibold text-muted-foreground">消融 / 作用关系</div>
                                 <div className="mt-3 space-y-2 text-sm text-foreground/85">
-                                  {selectedGraphImpactEdges.length > 0 ? selectedGraphImpactEdges.map((edge) => {
-                                    const sourceLabel = graphNodeMap.get(edge.sourceId)?.label || edge.sourceId;
-                                    const targetLabel = graphNodeMap.get(edge.targetId)?.label || edge.targetId;
-                                    return (
-                                      <div key={`graph-impact-${edge.id}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
-                                        <div className="font-medium">{sourceLabel} 影响 {targetLabel}</div>
-                                        <div className="mt-1 text-xs text-muted-foreground">影响等级 {edge.impactLevel}</div>
-                                      </div>
-                                    );
-                                  }) : (
-                                    <div className="text-sm text-muted-foreground">当前节点没有直接 sibling impact 关系。</div>
-                                  )}
+                                  {selectedGraphNodeInsight.impactAsSource.length > 0 ? selectedGraphNodeInsight.impactAsSource.map((item, index) => (
+                                    <div key={`graph-impact-source-${index}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-3">
+                                      <div className="font-medium">{item.sourceName} 影响 {item.targetName}</div>
+                                      <div className="mt-1 text-xs text-muted-foreground">{item.parentName} · {item.impactLevel || '未标级'}{item.judgement ? ` · ${item.judgement}` : ''}</div>
+                                      {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                                    </div>
+                                  )) : null}
+                                  {selectedGraphNodeInsight.impactAsTarget.length > 0 ? selectedGraphNodeInsight.impactAsTarget.map((item, index) => (
+                                    <div key={`graph-impact-target-${index}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-3">
+                                      <div className="font-medium">{item.sourceName} 影响 {item.targetName}</div>
+                                      <div className="mt-1 text-xs text-muted-foreground">{item.parentName} · {item.impactLevel || '未标级'}{item.judgement ? ` · ${item.judgement}` : ''}</div>
+                                      {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                                    </div>
+                                  )) : null}
+                                  {selectedGraphNodeInsight.importanceAsChild.length > 0 ? selectedGraphNodeInsight.importanceAsChild.map((item, index) => (
+                                    <div key={`graph-importance-child-${index}`} className="rounded-xl border border-border/50 bg-background/70 px-3 py-3">
+                                      <div className="font-medium">{item.parentName} · {item.importanceLevel || '未标级'}</div>
+                                      {item.judgement ? <div className="mt-1 text-xs text-muted-foreground">{item.judgement}</div> : null}
+                                      {item.reason ? <div className="mt-2 text-sm leading-6 text-foreground/85">{item.reason}</div> : null}
+                                    </div>
+                                  )) : null}
+                                  {selectedGraphNodeInsight.impactAsSource.length === 0
+                                  && selectedGraphNodeInsight.impactAsTarget.length === 0
+                                  && selectedGraphNodeInsight.importanceAsChild.length === 0 ? (
+                                    <div className="text-sm text-muted-foreground">当前节点没有直接 sibling impact 或消融结论。</div>
+                                  ) : null}
                                 </div>
                               </div>
+                              <WorkflowV2ObjectProcessSections insight={selectedGraphNodeInsight} />
 
                               <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
                                 <div className="text-xs font-semibold text-muted-foreground">引用</div>
@@ -2466,7 +2996,7 @@ export function FileWorkflowV2Page() {
                               return (
                                 <WorkflowTrioPreview
                                   key={`decompose-preview-${asText(record.object_id)}-${index}`}
-                                  title={`${asText(record.object_id) || `Group ${index + 1}`} 的对象拆解`}
+                                  title={`${asText(record.object_name) || asText(record.parent_object_name) || asText(record.object_id) || `Group ${index + 1}`} 的对象拆解`}
                                   ensemble={record.llm_ensemble}
                                   summary="对象拆解阶段的 A/B/judge 过程。"
                                 />
@@ -2500,7 +3030,7 @@ export function FileWorkflowV2Page() {
                                   return (
                                     <WorkflowTrioPreview
                                       key={`${asText(record.parent_object_id)}-sibling-preview-${index}`}
-                                      title={`${asText(impactRecord.ablated_child_object_id) || '子节点'} 对兄弟 ${asText(impactRecord.target_sibling_object_id) || '对象'} 的影响`}
+                                      title={`${asText(impactRecord.ablated_child_object_name) || asText(impactRecord.ablated_child_object_id) || '子节点'} 对兄弟 ${asText(impactRecord.target_sibling_object_name) || asText(impactRecord.target_sibling_object_id) || '对象'} 的影响`}
                                       ensemble={impactRecord.llm_ensemble}
                                       summary="兄弟影响分析过程。"
                                     />
@@ -2513,7 +3043,7 @@ export function FileWorkflowV2Page() {
                                   return (
                                     <WorkflowTrioPreview
                                       key={`${asText(record.parent_object_id)}-importance-preview-${index}`}
-                                      title={`${asText(impactRecord.ablated_child_object_id) || '子节点'} 对父节点的重要性`}
+                                      title={`${asText(impactRecord.ablated_child_object_name) || asText(impactRecord.ablated_child_object_id) || '子节点'} 对父节点的重要性`}
                                       ensemble={impactRecord.llm_ensemble}
                                       summary="父节点重要性分析过程。"
                                     />

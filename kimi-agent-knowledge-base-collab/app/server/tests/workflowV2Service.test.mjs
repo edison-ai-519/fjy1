@@ -172,21 +172,21 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
                 {
                   object_name: "电脑",
                   normalized_name: "电脑",
-                  citation: ["电脑包含 CPU 和 GPU。"],
+                  citation_chunk_ids: ["c1"],
                   confidence: 0.96,
                   reason: "窗口明确描述了电脑的组成关系。",
                 },
                 {
                   object_name: "CPU",
                   normalized_name: "cpu",
-                  citation: ["电脑包含 CPU 和 GPU。"],
+                  citation_chunk_ids: ["c1"],
                   confidence: 0.92,
                   reason: "CPU 在窗口中被单独提及。",
                 },
                 {
                   object_name: "GPU",
                   normalized_name: "gpu",
-                  citation: ["电脑包含 CPU 和 GPU。"],
+                  citation_chunk_ids: ["c1"],
                   confidence: 0.92,
                   reason: "GPU 在窗口中被单独提及。",
                 },
@@ -201,35 +201,35 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
               {
                 object_name: "CPU",
                 normalized_name: "cpu",
-                citation: ["CPU 包含 ALU 和 REG。"],
+                citation_chunk_ids: ["c2"],
                 confidence: 0.9,
                 reason: "CPU 在第二窗口被继续展开。",
               },
               {
                 object_name: "GPU",
                 normalized_name: "gpu",
-                citation: ["GPU 包含 TENSOR_CORE。"],
+                citation_chunk_ids: ["c3"],
                 confidence: 0.9,
                 reason: "GPU 在第二窗口被继续展开。",
               },
               {
                 object_name: "ALU",
                 normalized_name: "alu",
-                citation: ["CPU 包含 ALU 和 REG。"],
+                citation_chunk_ids: ["c2"],
                 confidence: 0.85,
                 reason: "ALU 作为 CPU 子对象出现。",
               },
               {
                 object_name: "REG",
                 normalized_name: "reg",
-                citation: ["CPU 包含 ALU 和 REG。"],
+                citation_chunk_ids: ["c2"],
                 confidence: 0.85,
                 reason: "REG 作为 CPU 子对象出现。",
               },
               {
                 object_name: "TENSOR_CORE",
                 normalized_name: "tensor_core",
-                citation: ["GPU 包含 TENSOR_CORE。"],
+                citation_chunk_ids: ["c3"],
                 confidence: 0.84,
                 reason: "TENSOR_CORE 作为 GPU 子对象出现。",
               },
@@ -426,7 +426,7 @@ test("WorkflowV2Service 可将快照结果转换为标准实体 JSON 并写入 O
               {
                 object_name: "CPU",
                 normalized_name: "cpu",
-                citation: ["CPU 是核心处理单元。"],
+                citation_chunk_ids: ["c1"],
                 confidence: 0.96,
                 reason: "窗口明确提到了 CPU。",
               },
@@ -612,6 +612,7 @@ test("WorkflowV2Service object_fusion 会对模糊候选发起裁决并合并", 
         {
           object_name: "电脑",
           normalized_name: "电脑",
+          citation_chunk_ids: ["c1"],
           citation: ["电脑包含 CPU 和 GPU。"],
           confidence: 0.9,
           reason: "第一窗口中直接提及。",
@@ -624,18 +625,25 @@ test("WorkflowV2Service object_fusion 会对模糊候选发起裁决并合并", 
         {
           object_name: "电脑系统",
           normalized_name: "电脑系统",
+          citation_chunk_ids: ["c2"],
           citation: ["该电脑系统负责通用计算。"],
           confidence: 0.88,
           reason: "第二窗口中使用了名称包含关系的近义称呼。",
         },
       ],
     },
-  ]);
+  ], {
+    chunks: [
+      { chunk_id: "c1", text: "电脑包含 CPU 和 GPU。" },
+      { chunk_id: "c2", text: "该电脑系统负责通用计算。" },
+    ],
+  });
 
   assert.equal(judgeCalled, 2);
   assert.equal(output.fused_objects.length, 1);
   assert.equal(output.fused_objects[0].aliases.includes("计算机"), true);
   assert.equal(output.fused_objects[0].citations.length, 2);
+  assert.deepEqual(output.fused_objects[0].citation_chunk_ids, ["c1", "c2"]);
 });
 
 test("WorkflowV2Service chunk_parse 会将弱语义短标题并入后续正文", async () => {
@@ -728,7 +736,7 @@ test("WorkflowV2Service window_extract 会上报滑动窗口执行进度", async
             {
               object_name: payload.window_id,
               normalized_name: payload.window_id,
-              citation: [payload.window_text],
+              citation_chunk_ids: Array.isArray(payload.chunk_ids) ? payload.chunk_ids : [],
               confidence: 0.8,
               reason: "测试用对象。",
             },
@@ -766,6 +774,8 @@ test("WorkflowV2Service window_extract 会上报滑动窗口执行进度", async
   assert.match(seenInstructions[0], /必须同时提取整体对象 A 和其中出现的组成项 XXX/);
   assert.match(seenInstructions[0], /合法 JSON 输出样例/);
   assert.match(seenInstructions[0], /"reason": "已提取该窗口中的整体对象及其直接组成项。"/);
+  assert.deepEqual(output.window_results[0].objects[0].citation_chunk_ids, ["c1", "c2"]);
+  assert.deepEqual(output.window_results[0].objects[0].citation, ["第一段", "第二段"]);
 });
 
 test("WorkflowV2Service window_extract 会跳过失败窗口并保留其余窗口结果", async () => {
@@ -783,7 +793,7 @@ test("WorkflowV2Service window_extract 会跳过失败窗口并保留其余窗�
               {
                 object_name: "电脑",
                 normalized_name: "电脑",
-                citation: [payload.window_text],
+                citation_chunk_ids: Array.isArray(payload.chunk_ids) ? payload.chunk_ids : [],
                 confidence: 0.8,
                 reason: "测试用对象。",
               },
@@ -1074,14 +1084,14 @@ test("WorkflowV2Service 能从成功阶段重试，并复用真实快照状态",
               {
                 object_name: "电脑",
                 normalized_name: "电脑",
-                citation: ["电脑包含 CPU。"],
+                citation_chunk_ids: ["c1"],
                 confidence: 0.95,
                 reason: "窗口里明确给出了父对象。",
               },
               {
                 object_name: "CPU",
                 normalized_name: "cpu",
-                citation: ["电脑包含 CPU。"],
+                citation_chunk_ids: ["c1"],
                 confidence: 0.92,
                 reason: "窗口里明确给出了子对象。",
               },
@@ -1321,7 +1331,7 @@ test("WorkflowV2Service 终止运行中的 LLM 调用后会释放项目锁", asy
               {
                 object_name: "CPU",
                 normalized_name: "cpu",
-                citation: ["CPU 是核心处理单元。"],
+                citation_chunk_ids: ["c1"],
                 confidence: 0.95,
                 reason: "窗口里只出现了 CPU。",
               },

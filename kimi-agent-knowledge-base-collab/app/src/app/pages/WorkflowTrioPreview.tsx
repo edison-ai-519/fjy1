@@ -40,7 +40,7 @@ function asText(value: unknown): string {
 
 const FIELD_LABEL_MAP: Record<string, string> = {
   object: '对象描述',
-  object_id: '对象 ID',
+  object_id: '对象',
   object_name: '对象名称',
   normalized_name: '规范名称',
   aliases: '别名',
@@ -52,8 +52,8 @@ const FIELD_LABEL_MAP: Record<string, string> = {
   relations: '关系列表',
   target_name: '目标名称',
   target_object_name: '目标对象',
-  source_id: '源对象 ID',
-  target_id: '目标对象 ID',
+  source_id: '源对象',
+  target_id: '目标对象',
   confidence: '置信度',
   citation: '引用依据',
   citations: '引用依据',
@@ -176,12 +176,20 @@ function tryParseRawText(rawText: string): unknown {
 
 function getObjectTitle(record: Record<string, unknown>, fallback: string) {
   return getDisplayText(record.object_name)
+    || getDisplayText(record.parent_object_name)
+    || getDisplayText(record.child_object_name)
+    || getDisplayText(record.ablated_child_object_name)
+    || getDisplayText(record.target_sibling_object_name)
     || getDisplayText(record.object)
     || getDisplayText(record.name)
     || getDisplayText(record.normalized_name)
     || getDisplayText(record.item_key, { rootFallback: '整体结果', keepArrayItemLabel: true })
     || getDisplayText(record.target_name)
     || getDisplayText(record.target_object_name)
+    || getDisplayText(record.parent_object_id)
+    || getDisplayText(record.child_object_id)
+    || getDisplayText(record.ablated_child_object_id)
+    || getDisplayText(record.target_sibling_object_id)
     || getDisplayText(record.source_id)
     || getDisplayText(fallback)
     || '条目';
@@ -215,13 +223,56 @@ function getObjectBadges(record: Record<string, unknown>) {
   return badges.slice(0, 4);
 }
 
+function getIdReplacementValue(key: string, record: Record<string, unknown>) {
+  if (key === 'object_id') {
+    return getDisplayText(record.object_name)
+      || getDisplayText(record.parent_object_name)
+      || getDisplayText(record.child_object_name)
+      || getDisplayText(record.target_object_name)
+      || getDisplayText(record.target_name);
+  }
+  if (key === 'source_id') {
+    return getDisplayText(record.source_name)
+      || getDisplayText(record.source_object_name)
+      || getDisplayText(record.object_name)
+      || getDisplayText(record.parent_object_name);
+  }
+  if (key === 'target_id') {
+    return getDisplayText(record.target_name)
+      || getDisplayText(record.target_object_name)
+      || getDisplayText(record.child_object_name)
+      || getDisplayText(record.target_sibling_object_name);
+  }
+  if (key === 'parent_object_id') {
+    return getDisplayText(record.parent_object_name);
+  }
+  if (key === 'child_object_id') {
+    return getDisplayText(record.child_object_name);
+  }
+  if (key === 'ablated_child_object_id') {
+    return getDisplayText(record.ablated_child_object_name);
+  }
+  if (key === 'target_sibling_object_id') {
+    return getDisplayText(record.target_sibling_object_name);
+  }
+  return '';
+}
+
+function shouldHideIdField(key: string, record: Record<string, unknown>) {
+  return Boolean(getIdReplacementValue(key, record));
+}
+
 function WorkflowStructuredPrimitive({
   label,
   value,
+  record,
 }: {
   label?: string;
   value: string | number | boolean | null;
+  record?: Record<string, unknown>;
 }) {
+  const replacement = label ? getIdReplacementValue(label, record ?? {}) : '';
+  const displayValue = replacement || primitiveText(value);
   return (
     <div className="space-y-1">
       {getDisplayLabel(label) ? (
@@ -230,7 +281,7 @@ function WorkflowStructuredPrimitive({
         </div>
       ) : null}
       <div className="rounded-2xl border border-black/5 bg-black/5 px-3 py-2 text-sm leading-6 text-foreground/90">
-        {primitiveText(value)}
+        {displayValue}
       </div>
     </div>
   );
@@ -383,12 +434,16 @@ function WorkflowStructuredObject({
           if ((key === 'object' || key === 'observation') && isSummaryDuplicate) {
             return null;
           }
+          if (shouldHideIdField(key, value)) {
+            return null;
+          }
           return (
             <WorkflowStructuredValue
               key={key}
               label={key}
               value={entryValue}
               depth={depth + 1}
+              parentRecord={value}
             />
           );
         })}
@@ -401,13 +456,15 @@ function WorkflowStructuredValue({
   label,
   value,
   depth = 0,
+  parentRecord,
 }: {
   label?: string;
   value: unknown;
   depth?: number;
+  parentRecord?: Record<string, unknown>;
 }) {
   if (isPrimitive(value)) {
-    return <WorkflowStructuredPrimitive label={label} value={value} />;
+    return <WorkflowStructuredPrimitive label={label} value={value} record={parentRecord} />;
   }
 
   if (Array.isArray(value)) {
