@@ -593,6 +593,184 @@ function mergeStageResult(
     .sort((a, b) => a.order - b.order);
 }
 
+function getWorkflowV2StageStatusPriority(status: WorkflowV2StageResult['status']) {
+  switch (status) {
+    case 'failed':
+      return 3;
+    case 'success':
+      return 2;
+    case 'running':
+      return 1;
+    case 'pending':
+    default:
+      return 0;
+  }
+}
+
+function mergeWorkflowV2StageResults(
+  baseStageResults: WorkflowV2StageResult[],
+  overlayStageResults: WorkflowV2StageResult[],
+): WorkflowV2StageResult[] {
+  const overlayByStage = new Map(overlayStageResults.map((stage) => [stage.stage, stage] as const));
+  return baseStageResults
+    .map((stage) => {
+      const overlay = overlayByStage.get(stage.stage);
+      if (!overlay) {
+        return stage;
+      }
+      return getWorkflowV2StageStatusPriority(overlay.status) >= getWorkflowV2StageStatusPriority(stage.status)
+        ? { ...stage, ...overlay }
+        : stage;
+    })
+    .sort((a, b) => a.order - b.order);
+}
+
+function mergeWorkflowV2ResultObjects(
+  primaryObjects: Array<Record<string, unknown>>,
+  fallbackObjects: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (primaryObjects.length === 0) {
+    return fallbackObjects;
+  }
+  const fallbackById = new Map(
+    fallbackObjects
+      .map((object) => [asText(object?.object_id), object] as const)
+      .filter(([objectId]) => Boolean(objectId)),
+  );
+  return primaryObjects.map((object) => {
+    const objectId = asText(object?.object_id);
+    const fallback = fallbackById.get(objectId);
+    if (!fallback) {
+      return object;
+    }
+    return {
+      ...fallback,
+      ...object,
+      object_level: object?.object_level ?? fallback?.object_level,
+      granularity_confidence: object?.granularity_confidence ?? fallback?.granularity_confidence,
+      granularity_reason: object?.granularity_reason ?? fallback?.granularity_reason,
+      structure_status: object?.structure_status ?? fallback?.structure_status,
+      structure_reason: object?.structure_reason ?? fallback?.structure_reason,
+      structure_depth: object?.structure_depth ?? fallback?.structure_depth,
+      structural_role: object?.structural_role ?? fallback?.structural_role,
+    };
+  });
+}
+
+function mergeWorkflowV2RunResults(
+  baseRunResult: WorkflowV2RunResponse | null,
+  nextRunResult: WorkflowV2RunResponse,
+): WorkflowV2RunResponse {
+  const base = baseRunResult ?? nextRunResult;
+  const mergedStageResults = mergeWorkflowV2StageResults(
+    base.stage_results ?? [],
+    nextRunResult.stage_results ?? [],
+  );
+  const baseObjects = Array.isArray(base.result?.objects) ? base.result.objects : [];
+  const nextObjects = Array.isArray(nextRunResult.result?.objects) ? nextRunResult.result.objects : [];
+  const mergedObjects = mergeWorkflowV2ResultObjects(nextObjects, baseObjects);
+  return {
+    ...base,
+    ...nextRunResult,
+    workflow: {
+      ...base.workflow,
+      ...nextRunResult.workflow,
+      status: nextRunResult.workflow?.status || base.workflow?.status || 'running',
+    },
+    stage_results: mergedStageResults,
+    errors: nextRunResult.errors?.length > 0 ? nextRunResult.errors : base.errors,
+    result: {
+      ...base.result,
+      ...nextRunResult.result,
+      objects: mergedObjects,
+      edges: (Array.isArray(nextRunResult.result?.edges) && nextRunResult.result.edges.length > 0)
+        ? nextRunResult.result.edges
+        : base.result?.edges ?? [],
+      chunks: (Array.isArray(nextRunResult.result?.chunks) && nextRunResult.result.chunks.length > 0)
+        ? nextRunResult.result.chunks
+        : base.result?.chunks ?? [],
+      windows: (Array.isArray(nextRunResult.result?.windows) && nextRunResult.result.windows.length > 0)
+        ? nextRunResult.result.windows
+        : base.result?.windows ?? [],
+      ablation: (Array.isArray(nextRunResult.result?.ablation) && nextRunResult.result.ablation.length > 0)
+        ? nextRunResult.result.ablation
+        : base.result?.ablation ?? [],
+      meta: {
+        ...(base.result?.meta ?? {}),
+        ...(nextRunResult.result?.meta ?? {}),
+      },
+      reason: nextRunResult.result?.reason || base.result?.reason,
+    },
+  };
+}
+
+export function markWorkflowV2StageRunning(
+  stageResults: WorkflowV2StageResult[],
+  stageKey: string,
+): WorkflowV2StageResult[] {
+  return stageResults
+    .map((stage) => {
+      if (stage.stage !== stageKey || stage.status !== 'pending') {
+        return stage;
+      }
+      return {
+        ...stage,
+        status: 'running' as const,
+        started_at: stage.started_at ?? new Date().toISOString(),
+      };
+    })
+    .sort((a, b) => a.order - b.order);
+}
+
+export function alignWorkflowV2StageProgression(
+  stageResults: WorkflowV2StageResult[],
+  stageKey: string,
+  status: WorkflowV2StageResult['status'],
+): WorkflowV2StageResult[] {
+  const currentStageIndex = WORKFLOW_V2_STAGE_KEYS.indexOf(stageKey);
+  if (currentStageIndex < 0) {
+    return stageResults.slice().sort((a, b) => a.order - b.order);
+  }
+
+  const currentOrder = currentStageIndex + 1;
+  const currentTimestamp = new Date().toISOString();
+  return stageResults
+    .map((stage) => {
+      if (stage.stage === stageKey) {
+        if (status === 'running' && stage.status === 'pending') {
+          return {
+            ...stage,
+            status: 'running' as const,
+            started_at: stage.started_at ?? currentTimestamp,
+          };
+        }
+        if (status !== stage.status) {
+          return {
+            ...stage,
+            status: status as WorkflowV2StageResult['status'],
+            started_at: stage.started_at ?? currentTimestamp,
+            finished_at: status === 'running'
+              ? null
+              : (stage.finished_at ?? currentTimestamp),
+          };
+        }
+        return stage;
+      }
+
+      if (stage.order < currentOrder && stage.status === 'pending' && status !== 'pending') {
+        return {
+          ...stage,
+          status: 'success' as const,
+          started_at: stage.started_at ?? currentTimestamp,
+          finished_at: stage.finished_at ?? currentTimestamp,
+        };
+      }
+
+      return stage;
+    })
+    .sort((a, b) => a.order - b.order);
+}
+
 function createEmptyWorkflowResult(): WorkflowV2Result {
   return {
     document: null,
@@ -1082,19 +1260,20 @@ class WorkflowRuntimeV2Manager {
         const response = await apiFetch(`/api/workflow/v2/session?conversationId=${encodeURIComponent(conversationId)}`);
         const payload = await parseJson<WorkflowV2RunResponse>(response);
         this.update(conversationId, (current) => {
+          const mergedPayload = mergeWorkflowV2RunResults(current.runResult, payload);
           const workflowStatus = payload.workflow?.status || current.runResult?.workflow?.status || 'idle';
           const nextIsRunning = workflowStatus === 'running';
-          const hydratedWindowProgress = extractWindowProgressFromRunResult(payload);
-          const hydratedObjectDecomposeProgress = extractObjectDecomposeProgressFromRunResult(payload);
-          const hydratedAblationAnalysisProgress = extractAblationAnalysisProgressFromRunResult(payload);
+          const hydratedWindowProgress = extractWindowProgressFromRunResult(mergedPayload);
+          const hydratedObjectDecomposeProgress = extractObjectDecomposeProgressFromRunResult(mergedPayload);
+          const hydratedAblationAnalysisProgress = extractAblationAnalysisProgressFromRunResult(mergedPayload);
           const nextStatusMessage = nextIsRunning
             ? current.statusMessage
             : workflowStatus === 'success'
               ? '已从服务端恢复完整 V2 结果。'
-              : (payload.errors?.[0]?.message || current.statusMessage);
+              : (mergedPayload.errors?.[0]?.message || current.statusMessage);
           return {
             ...current,
-            runResult: payload,
+            runResult: mergedPayload,
             isRunning: nextIsRunning,
             windowExtractProgress: hydratedWindowProgress ?? current.windowExtractProgress,
             objectDecomposeProgress: hydratedObjectDecomposeProgress ?? current.objectDecomposeProgress,
@@ -1255,9 +1434,22 @@ class WorkflowRuntimeV2Manager {
         && Number.isFinite(completed)
         && Number.isFinite(total)
       );
+      const shouldMarkStageRunning = Boolean(stage);
       this.update(conversationId, (current) => ({
         ...current,
         statusMessage: message,
+        runResult: shouldMarkStageRunning && current.runResult
+          ? {
+            ...current.runResult,
+            stage_results: alignWorkflowV2StageProgression(current.runResult.stage_results, stage, 'running'),
+            workflow: {
+              ...current.runResult.workflow,
+              status: current.runResult.workflow.status === 'failed'
+                ? 'failed'
+                : 'running',
+            },
+          }
+          : current.runResult,
         windowExtractProgress: isWindowExtractProgress
           ? {
             completed: Math.max(0, Math.floor(completed)),
@@ -1339,7 +1531,11 @@ class WorkflowRuntimeV2Manager {
           ...current,
           runResult: {
             ...base,
-            stage_results: mergeStageResult(base.stage_results, stageData),
+            stage_results: alignWorkflowV2StageProgression(
+              mergeStageResult(base.stage_results, stageData),
+              stageData.stage,
+              stageData.status,
+            ),
             workflow: {
               ...base.workflow,
               status: stageData.status === 'failed' ? 'failed' : 'running',
@@ -1424,7 +1620,7 @@ class WorkflowRuntimeV2Manager {
       const payload = data as WorkflowV2RunResponse;
       this.update(conversationId, (current) => ({
         ...current,
-        runResult: payload,
+        runResult: mergeWorkflowV2RunResults(current.runResult, payload),
         lastRunAt: new Date().toLocaleString(),
         statusMessage: payload.ok
           ? 'V2 工作流执行完成，分析结果已同步展示。'

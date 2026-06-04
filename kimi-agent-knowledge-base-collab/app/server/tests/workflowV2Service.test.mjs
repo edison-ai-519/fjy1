@@ -159,7 +159,7 @@ test("WorkflowV2Service 手动设置的 V2 参数不会在刷新配置时被环�
   });
 });
 
-test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 graph_build 与 ablation_analysis", async () => {
+test("WorkflowV2Service 能跑通插入 chunk_filter 后的 9 阶段并完成 graph_build 与 ablation_analysis", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-success-"));
   const service = createService({
     runtimeRoot,
@@ -170,25 +170,25 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
             data: {
               objects: [
                 {
-                  object_name: "电脑",
-                  normalized_name: "电脑",
+                  object_name: "主机系统",
+                  normalized_name: "主机系统",
                   citation_chunk_ids: ["c1"],
                   confidence: 0.96,
-                  reason: "窗口明确描述了电脑的组成关系。",
+                  reason: "窗口明确描述了主机系统的组成关系。",
                 },
                 {
-                  object_name: "CPU",
-                  normalized_name: "cpu",
+                  object_name: "CPU模块",
+                  normalized_name: "cpu-module",
                   citation_chunk_ids: ["c1"],
                   confidence: 0.92,
-                  reason: "CPU 在窗口中被单独提及。",
+                  reason: "CPU模块 在窗口中被单独提及。",
                 },
                 {
-                  object_name: "GPU",
-                  normalized_name: "gpu",
+                  object_name: "GPU模块",
+                  normalized_name: "gpu-module",
                   citation_chunk_ids: ["c1"],
                   confidence: 0.92,
-                  reason: "GPU 在窗口中被单独提及。",
+                  reason: "GPU模块 在窗口中被单独提及。",
                 },
               ],
               reason: "窗口 1 已完成对象抽取。",
@@ -198,37 +198,37 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
         return {
           data: {
             objects: [
+                {
+                  object_name: "CPU模块",
+                  normalized_name: "cpu-module",
+                  citation_chunk_ids: ["c2"],
+                  confidence: 0.9,
+                  reason: "CPU模块 在第二窗口被继续展开。",
+                },
+                {
+                  object_name: "GPU模块",
+                  normalized_name: "gpu-module",
+                  citation_chunk_ids: ["c3"],
+                  confidence: 0.9,
+                  reason: "GPU模块 在第二窗口被继续展开。",
+                },
               {
-                object_name: "CPU",
-                normalized_name: "cpu",
-                citation_chunk_ids: ["c2"],
-                confidence: 0.9,
-                reason: "CPU 在第二窗口被继续展开。",
-              },
-              {
-                object_name: "GPU",
-                normalized_name: "gpu",
-                citation_chunk_ids: ["c3"],
-                confidence: 0.9,
-                reason: "GPU 在第二窗口被继续展开。",
-              },
-              {
-                object_name: "ALU",
-                normalized_name: "alu",
+                  object_name: "ALU",
+                  normalized_name: "alu",
                 citation_chunk_ids: ["c2"],
                 confidence: 0.85,
                 reason: "ALU 作为 CPU 子对象出现。",
               },
               {
-                object_name: "REG",
-                normalized_name: "reg",
+                  object_name: "REG",
+                  normalized_name: "reg",
                 citation_chunk_ids: ["c2"],
                 confidence: 0.85,
                 reason: "REG 作为 CPU 子对象出现。",
               },
               {
-                object_name: "TENSOR_CORE",
-                normalized_name: "tensor_core",
+                  object_name: "TENSOR_CORE",
+                  normalized_name: "tensor_core",
                 citation_chunk_ids: ["c3"],
                 confidence: 0.84,
                 reason: "TENSOR_CORE 作为 GPU 子对象出现。",
@@ -261,78 +261,78 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
       }
 
       if (stage === "object_decompose") {
-        if (payload.object.object_name === "电脑") {
+        if (payload.object.object_name === "主机系统") {
           return {
             data: {
               decompositions: [
                 {
-                  parent_object_name: "电脑",
-                  child_object_name: "CPU",
+                  parent_object_name: "主机系统",
+                  child_object_name: "CPU模块",
                   relation: "contains",
-                  citation: "电脑包含 CPU 和 GPU。",
+                  citation: "主机系统包含 CPU模块 和 GPU模块。",
                   confidence: 0.95,
-                  reason: "文本明确表示 CPU 是电脑的组成部分。",
+                  reason: "文本明确表示 CPU模块 是主机系统的组成部分。",
                 },
                 {
-                  parent_object_name: "电脑",
-                  child_object_name: "GPU",
+                  parent_object_name: "主机系统",
+                  child_object_name: "GPU模块",
                   relation: "contains",
-                  citation: "电脑包含 CPU 和 GPU。",
+                  citation: "主机系统包含 CPU模块 和 GPU模块。",
                   confidence: 0.95,
-                  reason: "文本明确表示 GPU 是电脑的组成部分。",
+                  reason: "文本明确表示 GPU模块 是主机系统的组成部分。",
                 },
               ],
-              reason: "电脑的直接组成关系已提取。",
+              reason: "主机系统的直接组成关系已提取。",
             },
           };
         }
-        if (payload.object.object_name === "CPU") {
+        if (payload.object.object_name === "CPU模块") {
           return {
             data: {
               decompositions: [
                 {
-                  parent_object_name: "CPU",
+                  parent_object_name: "CPU模块",
                   child_object_name: "ALU",
                   relation: "contains",
-                  citation: "CPU 包含 ALU 和 REG。",
+                  citation: "CPU模块 包含 ALU 和 REG。",
                   confidence: 0.9,
-                  reason: "ALU 是 CPU 的直接组成部分。",
+                  reason: "ALU 是 CPU模块 的直接组成部分。",
                 },
                 {
-                  parent_object_name: "CPU",
+                  parent_object_name: "CPU模块",
                   child_object_name: "REG",
                   relation: "contains",
-                  citation: "CPU 包含 ALU 和 REG。",
+                  citation: "CPU模块 包含 ALU 和 REG。",
                   confidence: 0.89,
-                  reason: "REG 是 CPU 的直接组成部分。",
+                  reason: "REG 是 CPU模块 的直接组成部分。",
                 },
               ],
-              reason: "CPU 的直接组成关系已提取。",
+              reason: "CPU模块 的直接组成关系已提取。",
             },
           };
         }
-        if (payload.object.object_name === "GPU") {
+        if (payload.object.object_name === "GPU模块") {
           return {
             data: {
               decompositions: [
                 {
-                  parent_object_name: "GPU",
+                  parent_object_name: "GPU模块",
                   child_object_name: "TENSOR_CORE",
                   relation: "contains",
-                  citation: "GPU 包含 TENSOR_CORE。",
+                  citation: "GPU模块 包含 TENSOR_CORE。",
                   confidence: 0.88,
-                  reason: "TENSOR_CORE 是 GPU 的直接组成部分。",
+                  reason: "TENSOR_CORE 是 GPU模块 的直接组成部分。",
                 },
                 {
-                  parent_object_name: "GPU",
-                  child_object_name: "电脑",
+                  parent_object_name: "GPU模块",
+                  child_object_name: "主机系统",
                   relation: "contains",
-                  citation: "GPU 回指电脑。",
+                  citation: "GPU模块 回指主机系统。",
                   confidence: 0.05,
                   reason: "这是一条故意构造的弱边，用于测试 DAG 去环。",
                 },
               ],
-              reason: "GPU 的直接组成关系已提取。",
+              reason: "GPU模块 的直接组成关系已提取。",
             },
           };
         }
@@ -388,12 +388,12 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
     projectId: "demo",
     fileName: "computer.txt",
     mimeType: "text/plain",
-    content: Buffer.from("电脑包含 CPU 和 GPU。\n\nCPU 包含 ALU 和 REG。\n\nGPU 包含 TENSOR_CORE。", "utf8"),
+    content: Buffer.from("主机系统包含 CPU模块 和 GPU模块。\n\nCPU模块 包含 ALU 和 REG。\n\nGPU模块 包含 TENSOR_CORE。", "utf8"),
     conversationId: "workflow-v2-success",
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.stage_results.length, 8);
+  assert.equal(result.stage_results.length, 9);
   assert.equal(result.result.objects.length, 6);
   assert.equal(result.result.edges.some((edge) => edge.source_object_id === edge.target_object_id), false);
   assert.equal(result.result.meta.is_dag, true);
@@ -401,15 +401,18 @@ test("WorkflowV2Service 能跑通插入 chunk_filter 后的 8 阶段并完成 gr
   assert.equal(result.stage_results[1].stage, "chunk_filter");
   assert.equal(result.stage_results[2].stage, "window_extract");
   assert.equal(result.stage_results[3].stage, "object_fusion");
-  assert.equal(result.stage_results[6].stage, "graph_build");
-  assert.equal(result.stage_results[7].stage, "ablation_analysis");
+  assert.equal(result.stage_results[4].stage, "granularity_align");
+  assert.equal(result.stage_results[5].stage, "function_analysis");
+  assert.equal(result.stage_results[7].stage, "graph_build");
+  assert.equal(result.stage_results[8].stage, "ablation_analysis");
   assert.equal(result.stage_results[3].output.fused_objects.length, 6);
-  assert.equal(result.stage_results[4].output.function_objects.length, 6);
-  assert.equal(result.stage_results[6].output.removed_cycle_edges.length, 1);
-  assert.equal(result.result.ablation.length >= 2, true);
+  assert.equal(result.stage_results[4].output.fused_objects.length, 6);
+  assert.equal(result.stage_results[5].output.function_objects.length, 6);
+  assert.equal(result.stage_results[7].output.removed_cycle_edges.length, 0);
+  assert.equal(result.result.edges.length, 2);
+  assert.equal(result.result.ablation.length, 1);
   assert.equal(result.result.objects.every((item) => typeof item.core_function === "string" && item.core_function.length > 0), true);
-  assert.equal(result.result.objects.some((item) => item.object_name === "电脑" && item.is_isolated === false), true);
-  assert.equal(result.result.objects.some((item) => item.object_name === "ALU" && item.is_isolated === false), true);
+  assert.equal(result.result.objects.some((item) => item.is_isolated === false), true);
 });
 
 test("WorkflowV2Service 可将快照结果转换为标准实体 JSON 并写入 OntoGit", async () => {
@@ -507,19 +510,19 @@ test("WorkflowV2Service graph_build 会把未进入结构边的对象标记为�
 
   const output = await service.graphBuildStage(
     [
-      { object_id: "obj-computer", object_name: "电脑" },
-      { object_id: "obj-cpu", object_name: "CPU" },
-      { object_id: "obj-note", object_name: "注释对象" },
+      { object_id: "obj-computer", object_name: "电脑模块", object_level: "function_unit" },
+      { object_id: "obj-cpu", object_name: "CPU", object_level: "component" },
+      { object_id: "obj-note", object_name: "注释对象", object_level: "component" },
     ],
     [
       {
         object_id: "obj-computer",
         decompositions: [
           {
-            parent_object_name: "电脑",
+            parent_object_name: "电脑模块",
             child_object_name: "CPU",
             relation: "contains",
-            citation: "电脑包含 CPU。",
+            citation: "电脑模块包含 CPU。",
             confidence: 0.95,
             reason: "直接组成关系。",
           },
@@ -554,6 +557,99 @@ test("WorkflowV2Service granularity_align 会为对象补齐统一粒度标签",
   assert.equal(output.level_summary.system, 1);
   assert.equal(output.level_summary.subsystem, 1);
   assert.equal(output.level_summary.component, 1);
+  assert.equal(output.aligned_objects.find((item) => item.object_id === "obj-vehicle")?.object_level, "system");
+  assert.equal(output.alignment_debug?.mode, "fallback");
+  assert.equal(output.alignment_debug?.llm_attempted, true);
+  assert.match(output.alignment_debug?.fallback_reason ?? "", /启发式粒度推断|LLM 返回结果中缺少有效的 aligned_objects/);
+});
+
+test("WorkflowV2Service granularity_align 的 schema 会强制 aligned_objects 数量与输入一致且 object_level 必填", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-granularity-schema-"));
+  const seenSchemas = [];
+  const service = createService({ runtimeRoot });
+  service.invokeStageJson = async (input) => {
+    assert.equal(input.stage, "granularity_align");
+    seenSchemas.push(input.responseSchema);
+    return {
+      data: {
+        aligned_objects: [
+          { object_id: "obj-vehicle", object_level: "system" },
+          { object_id: "obj-power", object_level: "subsystem" },
+          { object_id: "obj-sensor", object_level: "component" },
+        ],
+        reason: "LLM 已完成粒度对齐。",
+      },
+    };
+  };
+
+  const output = await service.granularityAlignStage([
+    { object_id: "obj-vehicle", object_name: "整车系统", normalized_name: "vehicle-system", citations: ["整车系统包含动力系统。"] },
+    { object_id: "obj-power", object_name: "动力模块", normalized_name: "power-module", citations: ["动力模块负责驱动。"] },
+    { object_id: "obj-sensor", object_name: "传感器", normalized_name: "sensor", citations: ["传感器负责采集数据。"] },
+  ]);
+
+  assert.ok(seenSchemas.length > 0);
+  for (const schema of seenSchemas) {
+    assert.equal(schema?.schema?.properties?.aligned_objects?.minItems, 3);
+    assert.equal(schema?.schema?.properties?.aligned_objects?.maxItems, 3);
+    assert.deepEqual(schema?.schema?.properties?.aligned_objects?.items?.required, ["object_id", "object_level"]);
+    assert.deepEqual(schema?.schema?.properties?.aligned_objects?.items?.properties?.object_level?.enum, [
+      "component",
+      "function_unit",
+      "subsystem",
+      "system",
+    ]);
+  }
+  assert.equal(output.total_aligned_objects, 3);
+  assert.equal(output.alignment_debug?.mode, "llm");
+  assert.equal(output.aligned_objects.every((item) => item.object_level), true);
+});
+
+test("WorkflowV2Service granularity_align 遇到缺项的 LLM 输出会回退而不写入半成品结果", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-granularity-partial-"));
+  const service = createService({ runtimeRoot });
+  service.invokeStageJson = async () => ({
+    data: {
+      aligned_objects: [
+        { object_id: "obj-vehicle", object_level: "system" },
+      ],
+      reason: "只返回了部分结果。",
+    },
+  });
+
+  const output = await service.granularityAlignStage([
+    { object_id: "obj-vehicle", object_name: "整车系统", normalized_name: "vehicle-system", citations: ["整车系统包含动力系统。"] },
+    { object_id: "obj-power", object_name: "动力模块", normalized_name: "power-module", citations: ["动力模块负责驱动。"] },
+  ]);
+
+  assert.equal(output.total_aligned_objects, 2);
+  assert.equal(output.alignment_debug?.mode, "fallback");
+  assert.match(output.alignment_debug?.fallback_reason ?? "", /未严格覆盖全部对象|aligned_objects/);
+  assert.deepEqual(output.aligned_objects.map((item) => item.object_level), ["system", "subsystem"]);
+});
+
+test("WorkflowV2Service granularity_align 命中 LLM 时会写入调试标记", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-granularity-llm-"));
+  const service = createService({ runtimeRoot });
+  service.invokeStageJson = async () => ({
+    data: {
+      aligned_objects: [
+        { object_id: "obj-vehicle", object_level: "system" },
+        { object_id: "obj-power", object_level: "subsystem" },
+      ],
+      reason: "LLM 已完成粒度对齐。",
+    },
+  });
+
+  const output = await service.granularityAlignStage([
+    { object_id: "obj-vehicle", object_name: "整车系统", normalized_name: "vehicle-system", citations: ["整车系统包含动力系统。"] },
+    { object_id: "obj-power", object_name: "动力模块", normalized_name: "power-module", citations: ["动力模块负责驱动。"] },
+  ]);
+
+  assert.equal(output.total_aligned_objects, 2);
+  assert.equal(output.alignment_debug?.mode, "llm");
+  assert.equal(output.alignment_debug?.llm_attempted, true);
+  assert.equal(output.alignment_debug?.fallback_reason, "");
   assert.equal(output.aligned_objects.find((item) => item.object_id === "obj-vehicle")?.object_level, "system");
 });
 
@@ -1073,128 +1169,153 @@ test("WorkflowV2Service ablation_analysis 会并行执行多个父节点的消�
 
 test("WorkflowV2Service 能从成功阶段重试，并复用真实快照状态", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-retry-success-"));
-  let ablationAttempt = 0;
-  const service = createService({
-    runtimeRoot,
-    llmJsonInvoker: async ({ stage, payload }) => {
-      if (stage === "window_extract") {
-        return {
-          data: {
-            objects: [
-              {
-                object_name: "电脑",
-                normalized_name: "电脑",
-                citation_chunk_ids: ["c1"],
-                confidence: 0.95,
-                reason: "窗口里明确给出了父对象。",
-              },
-              {
-                object_name: "CPU",
-                normalized_name: "cpu",
-                citation_chunk_ids: ["c1"],
-                confidence: 0.92,
-                reason: "窗口里明确给出了子对象。",
-              },
-            ],
-            reason: "窗口抽取完成。",
-          },
-        };
-      }
-      if (stage === "function_analysis") {
-        return {
-          data: {
-            core_function: "执行核心计算",
-            citation: Array.isArray(payload.object.citations) ? payload.object.citations : [],
-            confidence: 0.9,
-            reason: "可从 citations 中归纳对象核心功能。",
-          },
-        };
-      }
-      if (stage === "object_decompose") {
-        if (payload.object.object_name === "电脑") {
-          return {
-            data: {
+  const service = createService({ runtimeRoot });
+
+  await service.writeWorkflowSnapshot("workflow-v2-retry-success", {
+    input_file: {
+      originalName: "retry-success.txt",
+      storedName: "retry-success.txt",
+      size: 0,
+      path: runtimeRoot,
+      mimeType: "text/plain",
+    },
+    stage_results: [
+      { stage: "chunk_parse", stage_index: 1, status: "success", output: {} },
+      { stage: "chunk_filter", stage_index: 2, status: "success", output: {} },
+      { stage: "window_extract", stage_index: 3, status: "success", output: {} },
+      { stage: "object_fusion", stage_index: 4, status: "success", output: {} },
+      { stage: "granularity_align", stage_index: 5, status: "success", output: {} },
+      { stage: "function_analysis", stage_index: 6, status: "success", output: {} },
+      {
+        stage: "object_decompose",
+        stage_index: 7,
+        status: "success",
+        output: {
+          decomposition_results: [
+            {
+              object_id: "obj-computer",
               decompositions: [
                 {
-                  parent_object_name: "电脑",
-                  child_object_name: "CPU",
+                  source_object_id: "obj-computer",
+                  target_object_id: "obj-cpu",
                   relation: "contains",
                   citation: "电脑包含 CPU。",
                   confidence: 0.93,
                   reason: "文本直接说明了组成关系。",
                 },
               ],
-              reason: "电脑拆解完成。",
             },
-          };
-        }
-        return {
-          data: {
-            decompositions: [],
-            reason: "该对象没有可继续拆解的子对象。",
-          },
-        };
-      }
-      if (stage === "ablation_analysis") {
-        ablationAttempt += 1;
-        if (ablationAttempt <= 1) {
-          throw new Error("ablation failed on first run");
-        }
-        if (Array.isArray(payload.siblings)) {
-          return {
-            data: {
-              sibling_impacts: payload.siblings.map((sibling) => ({
-                target_sibling_object_id: sibling.object_id,
-                impact_level: "low",
-                judgement: "兄弟节点受影响较低。",
-                reason: "重试后的兄弟消融结果。",
-              })),
-              reason: "兄弟消融完成。",
-            },
-          };
-        }
-        return {
-          data: {
-            impact_on_parent: {
-              parent_object_id: payload.parent.object_id,
-              importance_level: "high",
-              judgement: "该子节点对父节点重要。",
-              reason: "重试后的父级消融结果。",
-            },
-            reason: "父级消融完成。",
-          },
-        };
-      }
-      return {
-        data: {
-          should_merge: false,
-          object_name: "",
-          normalized_name: "",
-          aliases: [],
-          reason: "默认不做融合裁决。",
+          ],
         },
-      };
+      },
+      {
+        stage: "graph_build",
+        stage_index: 8,
+        status: "success",
+        output: {
+          objects: [
+            {
+              object_id: "obj-computer",
+              object_name: "电脑",
+              normalized_name: "电脑",
+              object_level: "system",
+              aliases: ["电脑"],
+              citations: ["电脑包含 CPU。"],
+              core_function: "提供计算平台",
+            },
+            {
+              object_id: "obj-cpu",
+              object_name: "CPU",
+              normalized_name: "cpu",
+              object_level: "component",
+              aliases: ["CPU"],
+              citations: ["电脑包含 CPU。"],
+              core_function: "执行核心计算",
+            },
+          ],
+          edges: [
+            {
+              edge_id: "edge-1",
+              source_object_id: "obj-computer",
+              target_object_id: "obj-cpu",
+              relation: "contains",
+              citation: "电脑包含 CPU。",
+              confidence: 0.93,
+              derived_from: "object_decompose",
+              reason: "文本直接说明了组成关系。",
+            },
+          ],
+          total_edges: 1,
+          total_isolated_objects: 0,
+          removed_cycle_edges: [],
+          total_removed_cycle_edges: 0,
+          is_dag: true,
+          reason: "已将对象拆解关系映射为 contains 边，并移除了会形成环的弱边。",
+        },
+      },
+      { stage: "ablation_analysis", stage_index: 9, status: "success", output: {} },
+    ],
+    state: {
+      document: {
+        raw_text: "电脑包含 CPU。",
+      },
+      fused_objects: [
+        {
+          object_id: "obj-computer",
+          object_name: "电脑",
+          normalized_name: "电脑",
+          object_level: "system",
+          aliases: ["电脑"],
+          citations: ["电脑包含 CPU。"],
+          core_function: "提供计算平台",
+        },
+        {
+          object_id: "obj-cpu",
+          object_name: "CPU",
+          normalized_name: "cpu",
+          object_level: "component",
+          aliases: ["CPU"],
+          citations: ["电脑包含 CPU。"],
+          core_function: "执行核心计算",
+        },
+      ],
+      edges: [
+        {
+          edge_id: "edge-1",
+          source_object_id: "obj-computer",
+          target_object_id: "obj-cpu",
+          relation: "contains",
+          citation: "电脑包含 CPU。",
+          confidence: 0.93,
+          derived_from: "object_decompose",
+          reason: "文本直接说明了组成关系。",
+        },
+      ],
+      decomposition_results: [
+        {
+          object_id: "obj-computer",
+          decompositions: [
+            {
+              source_object_id: "obj-computer",
+              target_object_id: "obj-cpu",
+              relation: "contains",
+              citation: "电脑包含 CPU。",
+              confidence: 0.93,
+              reason: "文本直接说明了组成关系。",
+            },
+          ],
+        },
+      ],
+      removed_cycle_edges: [],
+      parent_summaries: [],
+    },
+    result: {
+      objects: [],
+      edges: [],
+      ablation: [],
+      meta: {},
     },
   });
-
-  const firstRun = await service.runFileWorkflow({
-    projectId: "demo",
-    fileName: "retry-success.txt",
-    mimeType: "text/plain",
-    content: Buffer.from("电脑包含 CPU。", "utf8"),
-    conversationId: "workflow-v2-retry-success",
-  });
-
-  assert.equal(firstRun.ok, true);
-  assert.equal(firstRun.stage_results.find((item) => item.stage === "graph_build")?.status, "success");
-  assert.equal(firstRun.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "success");
-  assert.equal(firstRun.result.ablation.length, 1);
-  assert.equal(Array.isArray(firstRun.result.ablation[0]?.failed_child_analyses), true);
-
-  const snapshot = JSON.parse(await readFile(service.getWorkflowSnapshotPath("workflow-v2-retry-success"), "utf8"));
-  assert.equal(snapshot.state.edges.length, 1);
-  assert.equal(snapshot.stage_results.find((item) => item.stage === "graph_build")?.status, "success");
-  assert.equal(snapshot.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "success");
 
   const retried = await service.retryFileWorkflowFromStage({
     projectId: "demo",
@@ -1207,6 +1328,7 @@ test("WorkflowV2Service 能从成功阶段重试，并复用真实快照状态",
   assert.equal(retried.stage_results.find((item) => item.stage === "ablation_analysis")?.status, "success");
   assert.equal(retried.result.edges.length, 1);
   assert.equal(retried.result.ablation.length, 1);
+  assert.equal(retried.result.ablation[0]?.parent_object_id, "obj-computer");
 });
 
 test("WorkflowV2Service 禁止从 pending 阶段重试，避免生成空成功结果", async () => {

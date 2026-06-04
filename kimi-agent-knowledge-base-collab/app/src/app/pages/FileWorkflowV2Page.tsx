@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Info,
   FileJson,
   FileSearch,
   GitBranchPlus,
@@ -54,6 +55,11 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -79,6 +85,7 @@ import {
   subscribeWorkflowV2Session,
   subscribeWorkflowV2Sessions,
   terminateWorkflowV2Run,
+  type WorkflowV2RunResponse,
   type WorkflowV2RunSession,
 } from '@/features/workflow/runtimeV2';
 import {
@@ -111,6 +118,8 @@ import {
   extractWorkflowV2WritebackSummary,
   getWorkflowV2ImpactEdgeStyle,
 } from './fileWorkflowV2View';
+import { buildWorkflowV2L0L4Graph } from './workflowV2L0L4View';
+import { WorkflowV2L0L4GraphPanel } from './WorkflowV2L0L4GraphPanel';
 import { WorkflowTrioPreview } from './WorkflowTrioPreview';
 import { WorkflowV2SystemDecompositionPanel } from './WorkflowV2SystemDecompositionPanel';
 
@@ -127,6 +136,55 @@ const STAGE_ICONS: Record<string, ReactNode> = {
   structure_quality_gate: <Check className="h-4 w-4" />,
   ablation_analysis: <Activity className="h-4 w-4" />,
 };
+
+type WorkflowV2GraphLegendItem = {
+  key: string;
+  label: string;
+  description: string;
+  stroke: string;
+  strokeWidth: number;
+  strokeDasharray?: string;
+};
+
+const WORKFLOW_V2_GRAPH_LEGEND_ITEMS: WorkflowV2GraphLegendItem[] = [
+  {
+    key: 'structure',
+    label: '结构边',
+    description: '蓝色实线箭头，表示对象之间的结构包含/关联关系。',
+    stroke: 'rgba(14,165,233,0.88)',
+    strokeWidth: 2.5,
+  },
+  {
+    key: 'impact-high',
+    label: '高影响',
+    description: '红色加粗实线箭头，对应 impactLevel = high，表示影响最强。',
+    stroke: 'rgba(239,68,68,0.8)',
+    strokeWidth: 4,
+  },
+  {
+    key: 'impact-medium',
+    label: '中影响',
+    description: '橙色实线箭头，对应 impactLevel = medium。',
+    stroke: 'rgba(245,158,11,0.78)',
+    strokeWidth: 3.25,
+  },
+  {
+    key: 'impact-low',
+    label: '低影响',
+    description: '蓝色虚线箭头，对应 impactLevel = low，表示影响较弱。',
+    stroke: 'rgba(14,165,233,0.72)',
+    strokeWidth: 2.5,
+    strokeDasharray: '8 6',
+  },
+  {
+    key: 'impact-none',
+    label: '默认/未知',
+    description: '灰色虚线箭头，用于 impactLevel 未识别或缺省的情况。',
+    stroke: 'rgba(148,163,184,0.58)',
+    strokeWidth: 1.75,
+    strokeDasharray: '4 8',
+  },
+] as const;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -158,6 +216,142 @@ function formatJson(value: unknown) {
 function asCount(value: unknown, fallback = 0) {
   const next = Number(value);
   return Number.isFinite(next) && next >= 0 ? Math.floor(next) : fallback;
+}
+
+function getWorkflowV2PreviewSource(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  return searchParams.get('workflowV2Preview')?.trim() || '';
+}
+
+function compactPreviewChunkList(chunks: Array<Record<string, unknown>>, limit = 24) {
+  return chunks.slice(0, limit).map((chunk) => ({
+    chunk_id: asText(chunk.chunk_id),
+    order: chunk.order,
+    text: asText(chunk.text),
+    reason: asText(chunk.reason),
+  }));
+}
+
+function buildWorkflowV2PreviewChunkFilterStage(
+  result: Record<string, unknown>,
+): WorkflowV2RunResponse['stage_results'][number] | null {
+  const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+  if (chunks.length === 0) {
+    return null;
+  }
+
+  const selectedChunks = compactPreviewChunkList(chunks);
+  return {
+    stage: 'chunk_filter',
+    order: 2,
+    status: 'success',
+    started_at: undefined,
+    finished_at: undefined,
+    output: {
+      total_input_chunks: chunks.length,
+      total_selected_chunks: chunks.length,
+      skipped_count: 0,
+      used_fallback: true,
+      reason: '原始预览文件未包含 chunk_filter 阶段输出，已根据最终 chunks 回填以便预览。',
+      error: '',
+      selected_chunk_ids: selectedChunks.map((item) => item.chunk_id).filter(Boolean),
+      selected_chunks: selectedChunks,
+    },
+    error: null,
+  };
+}
+
+function normalizeWorkflowV2PreviewStageResults(input: Record<string, unknown>) {
+  const stageResults = Array.isArray(input.stage_results)
+    ? (input.stage_results as WorkflowV2RunResponse['stage_results'])
+    : [];
+  const result = asRecord(input.result);
+  const normalizedStageResults = stageResults.filter((item): item is WorkflowV2RunResponse['stage_results'][number] => (
+    Boolean(item) && typeof item === 'object' && Boolean(asText((item as { stage?: unknown }).stage))
+  ));
+
+  if (!normalizedStageResults.some((item) => item.stage === 'chunk_filter')) {
+    const syntheticChunkFilter = buildWorkflowV2PreviewChunkFilterStage(result);
+    if (syntheticChunkFilter) {
+      normalizedStageResults.push(syntheticChunkFilter);
+    }
+  }
+
+  return normalizedStageResults;
+}
+
+function normalizeWorkflowV2PreviewRunResponse(input: Record<string, unknown>): WorkflowV2RunResponse {
+  const result = asRecord(input.result);
+  const state = asRecord(input.state);
+  const stageResults = normalizeWorkflowV2PreviewStageResults(input);
+  const previewMeta = result.meta && typeof result.meta === 'object' && !Array.isArray(result.meta)
+    ? (result.meta as Record<string, unknown>)
+    : ({} as Record<string, unknown>);
+
+  return {
+    ok: typeof input.ok === 'boolean' ? input.ok : true,
+    workflow: {
+      mode: asText((input.workflow as Record<string, unknown> | undefined)?.mode) || 'analysis-v2',
+      status: asText((input.workflow as Record<string, unknown> | undefined)?.status) || 'completed',
+      steps: Array.isArray((input.workflow as Record<string, unknown> | undefined)?.steps)
+        ? ((input.workflow as Record<string, unknown> | undefined)?.steps as string[])
+        : [],
+    },
+    input_file: input.input_file && typeof input.input_file === 'object' && !Array.isArray(input.input_file)
+      ? (input.input_file as WorkflowV2RunResponse['input_file'])
+      : undefined,
+    stage_results: stageResults,
+    errors: Array.isArray(input.errors) ? input.errors as Array<{ stage: string; message: string }> : [],
+    runtime_root: asText(input.runtime_root),
+    result: {
+      document: result.document && typeof result.document === 'object' && !Array.isArray(result.document)
+        ? (result.document as Record<string, unknown>)
+        : (state.document && typeof state.document === 'object' && !Array.isArray(state.document)
+          ? (state.document as Record<string, unknown>)
+          : null),
+      chunks: Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [],
+      windows: Array.isArray(result.windows) ? result.windows as Array<Record<string, unknown>> : [],
+      objects: Array.isArray(result.objects) ? result.objects as Array<Record<string, unknown>> : [],
+      edges: Array.isArray(result.edges) ? result.edges as Array<Record<string, unknown>> : [],
+      ablation: Array.isArray(result.ablation) ? result.ablation as Array<Record<string, unknown>> : [],
+      meta: previewMeta,
+      reason: asText(result.reason) || undefined,
+    },
+    started_at: asText(input.started_at) || undefined,
+    finished_at: asText(input.finished_at) || undefined,
+  };
+}
+
+function buildWorkflowV2PreviewSession(runResult: WorkflowV2RunResponse, previewSource: string): WorkflowV2RunSession {
+  const timestamp = runResult.finished_at || runResult.started_at || new Date().toISOString();
+  const fileName = runResult.input_file?.originalName || 'workflow-v2 预览';
+
+  return {
+    conversationId: `workflow-v2-preview-${Date.now().toString(36)}`,
+    projectId: 'preview',
+    statusMessage: runResult.ok
+      ? `已加载 ${fileName} 的预览结果`
+      : `已加载 ${fileName} 的预览结果，当前为非完成态`,
+    isRunning: false,
+    runResult,
+    windowExtractProgress: null,
+    objectDecomposeProgress: null,
+    ablationAnalysisProgress: null,
+    logs: [
+      {
+        id: `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        level: runResult.ok ? 'success' : 'info',
+        message: `已从 ${previewSource} 加载本地 workflow V2 结果`,
+        createdAt: new Date().toLocaleTimeString(),
+      },
+    ],
+    lastRunAt: timestamp,
+    updatedAt: timestamp,
+  };
 }
 
 function extractErrorDiagnosticEntries(value: unknown) {
@@ -829,10 +1023,15 @@ type WorkflowV2AnalysisSectionState = {
 };
 
 export function FileWorkflowV2Page() {
+  const previewSource = getWorkflowV2PreviewSource();
   const [projects, setProjects] = useState<XgProject[]>([]);
   const [selectedProjectId, setSelectedProjectIdState] = useState(() => getStoredSelectedProjectId() || 'demo');
-  const [session, setSession] = useState<WorkflowV2RunSession | null>(null);
-  const [sessions, setSessions] = useState<WorkflowV2RunSession[]>(() => getAllWorkflowV2Sessions());
+  const [session, setSession] = useState<WorkflowV2RunSession | null>(() => (
+    previewSource ? null : getLatestWorkflowV2Session()
+  ));
+  const [sessions, setSessions] = useState<WorkflowV2RunSession[]>(() => (
+    previewSource ? [] : getAllWorkflowV2Sessions()
+  ));
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [config, setConfig] = useState<WorkflowV2Config>({
     workflowModel: 'deepseek/deepseek-v4-flash',
@@ -867,7 +1066,8 @@ export function FileWorkflowV2Page() {
   const [graphFocusNodeId, setGraphFocusNodeId] = useState('');
   const [systemViewOpen, setSystemViewOpen] = useState(false);
   const [graphViewOpen, setGraphViewOpen] = useState(false);
-  const [hideIsolatedNodes, setHideIsolatedNodes] = useState(true);
+  const [graphMode, setGraphMode] = useState<'structure' | 'l0l4'>('structure');
+  const [hideIsolatedNodes, setHideIsolatedNodes] = useState(() => !previewSource);
   const [graphZoom, setGraphZoom] = useState(1);
   const [mermaidCopied, setMermaidCopied] = useState(false);
   const [writing, setWriting] = useState(false);
@@ -885,6 +1085,9 @@ export function FileWorkflowV2Page() {
   };
 
   useEffect(() => {
+    if (previewSource) {
+      return;
+    }
     void fetchXgProjects()
       .then((items) => {
         setProjects(items);
@@ -893,9 +1096,12 @@ export function FileWorkflowV2Page() {
         }
       })
       .catch(() => {});
-  }, [selectedProjectId]);
+  }, [previewSource, selectedProjectId]);
 
   useEffect(() => {
+    if (previewSource) {
+      return;
+    }
     const unsubscribeSessionList = subscribeWorkflowV2Sessions(setSessions);
     const unsubscribeProject = subscribeSelectedProjectIdChange((projectId) => {
       if (projectId) {
@@ -906,24 +1112,33 @@ export function FileWorkflowV2Page() {
       unsubscribeSessionList();
       unsubscribeProject();
     };
-  }, []);
+  }, [previewSource]);
 
   const activeConversationId = session?.conversationId ?? '';
   useEffect(() => {
+    if (previewSource) {
+      return undefined;
+    }
     if (!activeConversationId) return undefined;
     return subscribeWorkflowV2Session(activeConversationId, setSession);
-  }, [activeConversationId]);
+  }, [activeConversationId, previewSource]);
 
   useEffect(() => {
+    if (previewSource) {
+      return;
+    }
     if (!session) {
       return;
     }
     if (!sessions.some((item) => item.conversationId === session.conversationId)) {
       setSession(null);
     }
-  }, [session, sessions]);
+  }, [previewSource, session, sessions]);
 
   useEffect(() => {
+    if (previewSource) {
+      return;
+    }
     let cancelled = false;
 
     const loadConfig = async () => {
@@ -956,7 +1171,41 @@ export function FileWorkflowV2Page() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [previewSource]);
+
+  useEffect(() => {
+    if (!previewSource) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadPreview = async () => {
+      try {
+        const response = await fetch(previewSource, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`加载预览文件失败：${response.status} ${response.statusText}`);
+        }
+        const rawPayload = await response.json() as Record<string, unknown>;
+        const runResult = normalizeWorkflowV2PreviewRunResponse(rawPayload);
+        const nextSession = buildWorkflowV2PreviewSession(runResult, previewSource);
+        if (cancelled) {
+          return;
+        }
+        setSession(nextSession);
+        setSessions([nextSession]);
+      } catch (error) {
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : '加载 V2 预览失败');
+        }
+      }
+    };
+
+    void loadPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewSource]);
 
   useEffect(() => {
     setExpandedPanels((current) => ({ ...current, debug: false }));
@@ -987,6 +1236,7 @@ export function FileWorkflowV2Page() {
   const chunkFilterOutput = asRecord(stageResults.find((item) => item.stage === 'chunk_filter')?.output);
   const windowOutput = asRecord(stageResults.find((item) => item.stage === 'window_extract')?.output);
   const fusionOutput = asRecord(stageResults.find((item) => item.stage === 'object_fusion')?.output);
+  const granularityOutput = asRecord(stageResults.find((item) => item.stage === 'granularity_align')?.output);
   const functionOutput = asRecord(stageResults.find((item) => item.stage === 'function_analysis')?.output);
   const decomposeOutput = asRecord(stageResults.find((item) => item.stage === 'object_decompose')?.output);
   const graphOutput = asRecord(stageResults.find((item) => item.stage === 'graph_build')?.output);
@@ -1018,6 +1268,12 @@ export function FileWorkflowV2Page() {
     ? functionOutput.function_objects
     : (Array.isArray(fusionOutput.fused_objects) ? fusionOutput.fused_objects : []);
   const stageGraphEdges = Array.isArray(graphOutput.edges) ? graphOutput.edges : [];
+  const alignedGraphObjects = Array.isArray(granularityOutput.aligned_objects) && granularityOutput.aligned_objects.length > 0
+    ? granularityOutput.aligned_objects
+    : (Array.isArray(granularityOutput.objects) ? granularityOutput.objects : []);
+  const graphObjectSource = Array.isArray(result?.objects) && result.objects.length > 0
+    ? result.objects
+    : (alignedGraphObjects.length > 0 ? alignedGraphObjects : stageGraphObjects);
   const prefersStageGraphData = stageGraphObjects.length > 0
     && (stageGraphEdges.length > 0 || stageResults.some((item) => item.stage === 'graph_build' && item.status === 'success'));
 
@@ -1049,6 +1305,10 @@ export function FileWorkflowV2Page() {
       maxDepth: 2,
     })
   ), [prefersStageGraphData, result?.edges, result?.objects, stageGraphEdges, stageGraphObjects]);
+  const l0L4Graph = useMemo(() => buildWorkflowV2L0L4Graph({
+    objects: graphObjectSource,
+    edges: Array.isArray(result?.edges) && result.edges.length > 0 ? result.edges : stageGraphEdges,
+  }), [graphObjectSource, result?.edges, stageGraphEdges]);
 
   const windowProgressRecord = asRecord(windowOutput.progress);
   const decomposeProgressRecord = asRecord(decomposeOutput.progress);
@@ -1119,10 +1379,10 @@ export function FileWorkflowV2Page() {
   const selectedProjectName = projects.find((item) => item.id === selectedProjectId)?.name || selectedProjectId || '未选择项目';
   const objectLibraryItems = useMemo(
     () => buildWorkflowV2DisplayObjects(
-      Array.isArray(result?.objects) && result.objects.length > 0 ? result.objects : fusedObjectItems,
+      graphObjectSource.length > 0 ? graphObjectSource : fusedObjectItems,
       Array.isArray(result?.edges) && result.edges.length > 0 ? result.edges : stageGraphEdges,
     ),
-    [fusedObjectItems, result?.edges, result?.objects, stageGraphEdges],
+    [fusedObjectItems, graphObjectSource, result?.edges, stageGraphEdges],
   );
   const objectLibraryItemMap = useMemo(() => {
     return new Map(
@@ -1295,6 +1555,10 @@ export function FileWorkflowV2Page() {
   }, [graphFocusNodeId, graphNodeMap]);
 
   const handleStart = () => {
+    if (previewSource) {
+      toast.info('当前是预览模式，仅用于查看本地 workflow V2 结果');
+      return;
+    }
     if (!selectedFile) {
       toast.error('请先选择文件');
       return;
@@ -2146,34 +2410,68 @@ export function FileWorkflowV2Page() {
 
           <div id="analysis-graph" className="scroll-mt-6">
             <SectionCard
-              title="结构验证图"
-              description="查看图结构与节点关系。"
+              title="图谱幕布"
+              description="点击打开图谱幕布后，可在同一窗口切换结构验证图与 L0-L4 本体图。"
               action={(
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">节点 {graphNodeTotalCount}</Badge>
-                  <Badge variant="outline">主边 {graphEdgeTotalCount}</Badge>
-                  <Button type="button" variant="default" size="sm" className="rounded-full" onClick={() => setGraphViewOpen(true)}>
-                    打开结构验证图
-                  </Button>
-                </div>
+                <Button type="button" variant="default" size="sm" className="rounded-full" onClick={() => setGraphViewOpen(true)}>
+                  打开图谱幕布
+                </Button>
               )}
             >
-              {selectedGraphNode ? (
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">已聚焦 {selectedGraphNode.label}</Badge>
-                </div>
-              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">结构图节点 {graphNodeTotalCount}</Badge>
+                <Badge variant="outline">结构图主边 {graphEdgeTotalCount}</Badge>
+                <Badge variant="outline">L0-L4 节点 {l0L4Graph.summary.total_nodes}</Badge>
+                <Badge variant="outline">L0-L4 边 {l0L4Graph.summary.total_edges}</Badge>
+              </div>
             </SectionCard>
             <Dialog open={graphViewOpen} onOpenChange={setGraphViewOpen}>
               <DialogContent className="grid h-[min(96vh,1120px)] w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-[28px] border-border/60 bg-background/95 p-0 shadow-2xl sm:w-[min(97vw,1900px)] sm:max-w-none">
                 <DialogHeader className="border-b border-border/50 px-6 py-5">
                   <DialogTitle className="text-2xl font-black tracking-tight">结构验证图</DialogTitle>
                   <DialogDescription className="text-sm leading-6">
-                    在大视图中验证图结构，支持节点聚焦、缩放、孤立节点切换和 Mermaid 复制。
+                    在同一幕布中切换结构验证图与 L0-L4 本体图，支持节点聚焦、缩放、孤立节点切换和节点详情查看。
                   </DialogDescription>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="inline-flex rounded-full border border-border/60 bg-background/80 p-1">
+                      <Button
+                        type="button"
+                        variant={graphMode === 'structure' ? 'default' : 'ghost'}
+                        size="sm"
+                        className="rounded-full"
+                        onClick={() => setGraphMode('structure')}
+                      >
+                        结构图
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={graphMode === 'l0l4' ? 'default' : 'ghost'}
+                        size="sm"
+                        className="rounded-full"
+                        onClick={() => setGraphMode('l0l4')}
+                      >
+                        L0-L4 本体图
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {graphMode === 'structure' ? (
+                        <>
+                          <Badge variant="outline">节点 {graphNodeTotalCount}</Badge>
+                          <Badge variant="outline">主边 {graphEdgeTotalCount}</Badge>
+                        </>
+                      ) : (
+                        <>
+                          <Badge variant="outline">节点 {l0L4Graph.summary.total_nodes}</Badge>
+                          <Badge variant="outline">边 {l0L4Graph.summary.total_edges}</Badge>
+                          <Badge variant="outline">pending {l0L4Graph.summary.pending_node_count}</Badge>
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </DialogHeader>
                 <div className="overflow-auto px-6 py-5">
-                  <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
+                  {graphMode === 'structure' ? (
+                    <div className="rounded-3xl border border-border/60 bg-muted/15 p-4">
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
@@ -2249,21 +2547,72 @@ export function FileWorkflowV2Page() {
                         </Button>
                       </div>
                     </div>
-
                     {graphLayout.nodes.length > 0 ? (
                       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-                        <div className="overflow-auto rounded-2xl border border-border/50 bg-background/60">
-                          <svg
-                            viewBox={`0 0 ${graphCanvasWidth} ${graphCanvasHeight}`}
-                            className="block"
-                            style={{
-                              width: `${graphScaledWidth}px`,
-                              height: `${graphScaledHeight}px`,
-                              minWidth: `${graphScaledWidth}px`,
-                              minHeight: `${graphScaledHeight}px`,
-                            }}
-                          >
-                            <defs>
+                        <div className="relative">
+                          <div className="pointer-events-none absolute right-3 top-3 z-20">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  aria-label="查看结构验证图图例说明"
+                                  className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-border/60 bg-white/95 text-slate-900 shadow-lg shadow-black/10 transition-transform transition-colors hover:-translate-y-0.5 hover:bg-white hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                >
+                                  <Info className="h-4.5 w-4.5 stroke-[2.25]" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="bottom"
+                                className="w-80 max-w-[calc(100vw-2rem)] border border-border/60 bg-white text-slate-900 shadow-2xl shadow-black/10 text-left"
+                              >
+                                <div className="space-y-3">
+                                  <div className="text-xs font-semibold text-slate-500">图例说明</div>
+                                  <div className="space-y-3">
+                                    {WORKFLOW_V2_GRAPH_LEGEND_ITEMS.map((item) => (
+                                      <div key={item.key} className="flex items-start gap-3">
+                                        <svg
+                                          aria-hidden="true"
+                                          viewBox="0 0 44 12"
+                                          className="mt-0.5 h-3.5 w-10 shrink-0"
+                                        >
+                                          <line
+                                            x1="2"
+                                            y1="6"
+                                            x2="34"
+                                            y2="6"
+                                            stroke={item.stroke}
+                                            strokeWidth={item.strokeWidth}
+                                            strokeDasharray={item.strokeDasharray}
+                                            strokeLinecap="round"
+                                          />
+                                          <path
+                                            d="M 34 2 L 42 6 L 34 10 Z"
+                                            fill={item.stroke}
+                                          />
+                                        </svg>
+                                        <div className="min-w-0">
+                                          <div className="text-sm font-medium text-slate-900">{item.label}</div>
+                                          <div className="mt-1 text-xs leading-5 text-slate-600">{item.description}</div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                          <div className="overflow-auto rounded-2xl border border-border/50 bg-background/60">
+                            <svg
+                              viewBox={`0 0 ${graphCanvasWidth} ${graphCanvasHeight}`}
+                              className="block"
+                              style={{
+                                width: `${graphScaledWidth}px`,
+                                height: `${graphScaledHeight}px`,
+                                minWidth: `${graphScaledWidth}px`,
+                                minHeight: `${graphScaledHeight}px`,
+                              }}
+                            >
+                              <defs>
                               <marker id="workflow-v2-dag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                                 <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(14,165,233,0.75)" />
                               </marker>
@@ -2279,8 +2628,8 @@ export function FileWorkflowV2Page() {
                               <marker id="workflow-v2-impact-arrow-none" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
                                 <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(148,163,184,0.72)" />
                               </marker>
-                            </defs>
-                            {graphLayout.edges.map((edge) => {
+                              </defs>
+                              {graphLayout.edges.map((edge) => {
                               const source = graphNodeMap.get(edge.sourceId);
                               const target = graphNodeMap.get(edge.targetId);
                               if (!source || !target) return null;
@@ -2299,8 +2648,8 @@ export function FileWorkflowV2Page() {
                                   markerEnd="url(#workflow-v2-dag-arrow)"
                                 />
                               );
-                            })}
-                            {graphRenderableImpactEdges.map((edge) => {
+                              })}
+                              {graphRenderableImpactEdges.map((edge) => {
                               const source = graphNodeMap.get(edge.sourceId);
                               const target = graphNodeMap.get(edge.targetId);
                               if (!source || !target) return null;
@@ -2322,8 +2671,8 @@ export function FileWorkflowV2Page() {
                                   markerEnd={`url(#workflow-v2-impact-arrow-${edge.impactLevel})`}
                                 />
                               );
-                            })}
-                            {graphLayout.nodes.map((node) => {
+                              })}
+                              {graphLayout.nodes.map((node) => {
                               const isSelected = node.id === selectedGraphNodeIdValue;
                               const isConnected = selectedGraphNodeIdValue ? graphFocusedNeighborIds.has(node.id) : true;
                               const isDimmed = selectedGraphNodeIdValue ? !isConnected : false;
@@ -2375,8 +2724,9 @@ export function FileWorkflowV2Page() {
                                   ) : null}
                                 </g>
                               );
-                            })}
-                          </svg>
+                              })}
+                            </svg>
+                          </div>
                         </div>
 
                         <div className="rounded-2xl border border-border/60 bg-background/80 p-4">
@@ -2524,7 +2874,10 @@ export function FileWorkflowV2Page() {
                         图构建阶段完成后，会在这里显示 DAG 校验图。
                       </div>
                     )}
-                  </div>
+                    </div>
+                  ) : (
+                    <WorkflowV2L0L4GraphPanel graph={l0L4Graph} />
+                  )}
                 </div>
               </DialogContent>
             </Dialog>

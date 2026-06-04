@@ -7,6 +7,7 @@
     "server": "node ./server.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "workflowv2:preview": "node ./scripts/previewWorkflowV2.mjs",
     "test": "tsx --test ./tests/**/*.test.* ./src/**/*.test.*",
     "test:server": "node --test ./server/tests/*.test.mjs",
     "migrate:entity-ids": "node ./server/scripts/migrateDuplicateEntityIds.mjs",

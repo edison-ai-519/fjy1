@@ -74,6 +74,166 @@ function normalizeObjectName(value) {
     .replace(/^[\s"'`“”‘’()[\]{}<>,.:;!?，。；：！？、]+|[\s"'`“”‘’()[\]{}<>,.:;!?，。；：！？、]+$/g, "");
 }
 
+const OBJECT_LEVEL_VALUES = new Set([
+  "component",
+  "function_unit",
+  "subsystem",
+  "system",
+]);
+const OBJECT_LEVEL_RANK = new Map([
+  ["component", 0],
+  ["function_unit", 1],
+  ["subsystem", 2],
+  ["system", 3],
+]);
+
+function normalizeObjectLevel(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+
+  if (OBJECT_LEVEL_VALUES.has(text)) {
+    return text;
+  }
+
+  const aliasMap = {
+    sub_system: "subsystem",
+    subsystem_level: "subsystem",
+    module: "function_unit",
+    function: "function_unit",
+    function_module: "function_unit",
+    unit: "function_unit",
+    part: "component",
+    element: "component",
+    device: "component",
+    entity: "component",
+    object: "component",
+  };
+
+  return aliasMap[text] ?? "component";
+}
+
+function getWorkflowV2ObjectLevelRank(value) {
+  return OBJECT_LEVEL_RANK.get(normalizeObjectLevel(value)) ?? -1;
+}
+
+function isAllowedContainsEdge(sourceObject, targetObject) {
+  const sourceRank = getWorkflowV2ObjectLevelRank(sourceObject?.object_level);
+  const targetRank = getWorkflowV2ObjectLevelRank(targetObject?.object_level);
+  return sourceRank >= 0 && targetRank >= 0 && sourceRank === targetRank + 1;
+}
+
+function buildWorkflowV2NameLookup(objects) {
+  const lookup = new Map();
+  for (const object of Array.isArray(objects) ? objects : []) {
+    const objectId = asText(object?.object_id);
+    if (!objectId) {
+      continue;
+    }
+    const candidates = uniqueStrings([
+      object?.object_name,
+      object?.normalized_name,
+      ...(Array.isArray(object?.aliases) ? object.aliases : []),
+    ]);
+    for (const candidate of candidates) {
+      lookup.set(normalizeObjectName(candidate), objectId);
+    }
+  }
+  return lookup;
+}
+
+function filterWorkflowV2DecompositionResults(objects, decompositionResults) {
+  const safeObjects = Array.isArray(objects) ? objects : [];
+  const safeResults = Array.isArray(decompositionResults) ? decompositionResults : [];
+  const objectById = new Map();
+  const objectByName = new Map();
+  const objectNameLookup = buildWorkflowV2NameLookup(safeObjects);
+
+  for (const object of safeObjects) {
+    const objectId = asText(object?.object_id);
+    if (!objectId) {
+      continue;
+    }
+    objectById.set(objectId, object);
+    const names = uniqueStrings([
+      object?.object_name,
+      object?.normalized_name,
+      ...(Array.isArray(object?.aliases) ? object.aliases : []),
+    ]);
+    for (const candidate of names) {
+      objectByName.set(normalizeObjectName(candidate), object);
+    }
+  }
+
+  const filteredResults = [];
+  const skippedEdges = [];
+
+  for (const item of safeResults) {
+    const sourceObject = objectById.get(asText(item?.object_id))
+      || objectByName.get(normalizeObjectName(item?.object_name));
+    const validDecompositions = [];
+    const itemSkippedEdges = [];
+
+    for (const decomposition of Array.isArray(item?.decompositions) ? item.decompositions : []) {
+      const sourceObjectId = asText(decomposition?.source_object_id)
+        || asText(decomposition?.source)
+        || asText(decomposition?.from)
+        || asText(item?.object_id)
+        || objectNameLookup.get(normalizeObjectName(decomposition?.parent_object_name))
+        || objectNameLookup.get(normalizeObjectName(item?.object_name));
+      const targetObjectId = asText(decomposition?.target_object_id)
+        || asText(decomposition?.target)
+        || asText(decomposition?.to)
+        || objectNameLookup.get(normalizeObjectName(decomposition?.child_object_name));
+      const resolvedSourceObject = objectById.get(sourceObjectId) || sourceObject;
+      const resolvedTargetObject = objectById.get(targetObjectId) || objectByName.get(normalizeObjectName(decomposition?.child_object_name));
+      if (isAllowedContainsEdge(resolvedSourceObject, resolvedTargetObject)) {
+        validDecompositions.push({
+          ...decomposition,
+          source_object_id: sourceObjectId,
+          target_object_id: targetObjectId,
+          source_object_level: normalizeObjectLevel(resolvedSourceObject?.object_level),
+          target_object_level: normalizeObjectLevel(resolvedTargetObject?.object_level),
+          relation: "contains",
+          relation_type: "contains",
+        });
+        continue;
+      }
+
+      itemSkippedEdges.push({
+        ...decomposition,
+        source_object_id: sourceObjectId,
+        target_object_id: targetObjectId,
+        source_object_level: normalizeObjectLevel(resolvedSourceObject?.object_level),
+        target_object_level: normalizeObjectLevel(resolvedTargetObject?.object_level),
+        relation: "contains",
+        relation_type: "contains",
+        status: "pending",
+        reason: "object_level 不满足相邻层级 contains 约束",
+      });
+    }
+
+    filteredResults.push({
+      ...item,
+      object_name: asText(item?.object_name) || asText(sourceObject?.object_name),
+      decompositions: validDecompositions,
+      reason: asText(item?.reason),
+      llm_ensemble: item?.llm_ensemble ?? null,
+      failed_object: item?.failed_object ?? null,
+    });
+    skippedEdges.push(...itemSkippedEdges);
+  }
+
+  return {
+    decomposition_results: filteredResults,
+    valid_decomposition_edge_count: filteredResults.reduce(
+      (sum, item) => sum + (Array.isArray(item.decompositions) ? item.decompositions.length : 0),
+      0,
+    ),
+    skipped_decomposition_edge_count: skippedEdges.length,
+    pending_decomposition_edge_count: skippedEdges.length,
+    skipped_decomposition_edges: skippedEdges,
+  };
+}
+
 function buildSlug(value, fallback = "item") {
   const normalized = asText(value)
     .toLowerCase()
@@ -283,15 +443,33 @@ function validateWorkflowV2ValueAgainstSchema(value, schema, path = "root") {
   }
 
   if (expectedType === "string") {
-    return typeof value === "string" ? "" : `${path} 必须是字符串`;
+    if (typeof value !== "string") {
+      return `${path} 必须是字符串`;
+    }
+    if (Array.isArray(schemaRecord.enum) && !schemaRecord.enum.includes(value)) {
+      return `${path} 必须是枚举值之一`;
+    }
+    return "";
   }
 
   if (expectedType === "number") {
-    return typeof value === "number" && Number.isFinite(value) ? "" : `${path} 必须是数字`;
+    if (!(typeof value === "number" && Number.isFinite(value))) {
+      return `${path} 必须是数字`;
+    }
+    if (Array.isArray(schemaRecord.enum) && !schemaRecord.enum.includes(value)) {
+      return `${path} 必须是枚举值之一`;
+    }
+    return "";
   }
 
   if (expectedType === "boolean") {
-    return typeof value === "boolean" ? "" : `${path} 必须是布尔值`;
+    if (typeof value !== "boolean") {
+      return `${path} 必须是布尔值`;
+    }
+    if (Array.isArray(schemaRecord.enum) && !schemaRecord.enum.includes(value)) {
+      return `${path} 必须是枚举值之一`;
+    }
+    return "";
   }
 
   return "";
@@ -891,7 +1069,19 @@ function annotateStructuredObjects(objects, edges) {
 
 function buildWorkflowV2ResultFromState(state) {
   const safeState = asRecord(state);
-  const objects = Array.isArray(safeState.fused_objects) ? safeState.fused_objects : [];
+  const alignedObjects = Array.isArray(safeState.function_objects)
+    ? safeState.function_objects
+    : [];
+  const objects = Array.isArray(safeState.fused_objects)
+    ? safeState.fused_objects.map((object) => {
+      const objectId = asText(object?.object_id);
+      const alignedObject = alignedObjects.find((item) => asText(item?.object_id) === objectId) ?? null;
+      return {
+        ...object,
+        object_level: normalizeObjectLevel(alignedObject?.object_level ?? object?.object_level),
+      };
+    })
+    : [];
   const edges = Array.isArray(safeState.edges) ? safeState.edges : [];
   const filteredChunks = Array.isArray(safeState.filtered_chunks) && safeState.filtered_chunks.length > 0
     ? safeState.filtered_chunks
@@ -1519,11 +1709,79 @@ function buildObjectFunctionPrompt(object) {
   };
 }
 
+function buildGranularityAlignPrompt(objects) {
+  const expectedCount = Array.isArray(objects) ? objects.length : 0;
+  return {
+    instruction: [
+      "你是一个对象粒度对齐器。",
+      "请根据对象名称、归一化名称、别名、引用片段等信息，为每个对象标注唯一的 object_level。",
+      `输入共有 ${expectedCount} 个对象，aligned_objects 必须与输入一一对应，数量必须恰好等于 ${expectedCount}，并且顺序必须与输入一致。`,
+      "每个 aligned_objects 项都必须同时包含 object_id 和 object_level。",
+      "object_level 只能是 component、function_unit、subsystem、system 之一。",
+      "component 表示具体实体、设备、传感器、数据、代码、接口、参数、请求、动作、控制项等细粒度对象。",
+      "function_unit 表示功能模块、方案、设计、实现、计划、效果等功能性单元。",
+      "subsystem 表示子系统、阶段、流程段等中层结构。",
+      "system 表示总系统、平台、架构、总对象等最高层级对象。",
+      "无法明确判断时，优先返回 component。",
+      "不要修改 object_id，也不要遗漏任何输入对象。",
+      "请保持输入对象的顺序，并为每个对象返回一条对应记录。",
+      buildWorkflowV2OutputExampleText({
+        aligned_objects: [
+          { object_id: "obj-1", object_level: "component" },
+          { object_id: "obj-2", object_level: "system" },
+        ],
+        reason: "已按对象名称与文本语义完成粒度对齐。",
+      }),
+    ].join("\n"),
+    responseSchema: {
+      name: "workflow_v2_granularity_align",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          aligned_objects: {
+            type: "array",
+            minItems: expectedCount,
+            maxItems: expectedCount,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                object_id: { type: "string" },
+                object_level: {
+                  type: "string",
+                  enum: [
+                    "component",
+                    "function_unit",
+                    "subsystem",
+                    "system",
+                  ],
+                },
+              },
+              required: ["object_id", "object_level"],
+            },
+          },
+          reason: { type: "string" },
+        },
+        required: ["aligned_objects", "reason"],
+      },
+    },
+    payload: {
+      objects,
+    },
+  };
+}
+
 function buildObjectDecomposePrompt(object) {
   return {
     instruction: [
       "你是一个结构拆解器。",
       "请基于对象自身的 citations，提取它直接包含的子对象。",
+      "你只能抽取相邻层级的直接 contains 关系。",
+      "source 必须是父级对象，target 必须是直接子级对象。",
+      "允许：system contains subsystem、subsystem contains function_unit、function_unit contains component。",
+      "禁止：跨层 contains、反向 contains、证据不足的 contains、为了连通图谱伪造中间对象或中间关系。",
+      "如果文档只暗示跨层关系，但没有中间层证据，不要强行连边；这类候选关系应交给后端记录为 pending/skipped。",
       "只提取能够由 citation 支持或判断出的组成/包含关系。",
       "允许结合 citation 上下文和必要的常识或领域知识，辅助判断最合理的组成关系。",
       "允许根据 citation 中的结构表达进行等价归纳，例如“由…组成”“包括…”“分为…部分”“包含…”都可以视为 contains。",
@@ -1570,7 +1828,7 @@ function buildObjectDecomposePrompt(object) {
               properties: {
                 parent_object_name: { type: "string" },
                 child_object_name: { type: "string" },
-                relation: { type: "string" },
+                relation: { type: "string", enum: ["contains"] },
                 citation: { type: "string" },
                 confidence: { type: "number" },
                 reason: { type: "string" },
@@ -3769,42 +4027,124 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
   async granularityAlignStage(objects, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
-    const alignedObjects = (Array.isArray(objects) ? objects : []).map((object) => {
+    const safeObjects = Array.isArray(objects) ? objects : [];
+    const fallbackAlignedObjects = safeObjects.map((object) => {
       const granularity = inferWorkflowV2ObjectLevel(object);
       return {
         ...object,
-        object_level: granularity.level,
+        object_level: normalizeObjectLevel(granularity.level),
         granularity_confidence: granularity.confidence,
         granularity_reason: granularity.reason,
       };
     });
+
+    if (fallbackAlignedObjects.length === 0) {
+      return {
+        fused_objects: [],
+        aligned_objects: [],
+        objects: [],
+        total_aligned_objects: 0,
+        level_summary: countWorkflowV2Values([]),
+        alignment_debug: {
+          mode: "fallback",
+          llm_attempted: false,
+          fallback_reason: "没有可对齐的融合对象。",
+        },
+        reason: "没有可对齐的融合对象。",
+      };
+    }
+
+    let alignedObjects = fallbackAlignedObjects;
+    let reason = "已为融合对象补齐统一粒度标签，减少系统、子系统、组件在同一层混写的问题。";
+    let alignmentMode = "fallback";
+    let fallbackReason = "已使用启发式粒度推断作为回退结果。";
+    try {
+      const prompt = buildGranularityAlignPrompt(fallbackAlignedObjects);
+      const llmResult = await this.invokeStageJson({
+        stage: "granularity_align",
+        instruction: prompt.instruction,
+        payload: prompt.payload,
+        responseSchema: prompt.responseSchema,
+        signal: options?.signal,
+      });
+      const payload = asRecord(llmResult.data);
+      const expectedObjectIds = fallbackAlignedObjects.map((item) => asText(item.object_id)).filter(Boolean);
+      const alignedObjectsPayload = Array.isArray(payload.aligned_objects) ? payload.aligned_objects : [];
+      const expectedObjectIdSet = new Set(expectedObjectIds);
+      const alignedLevels = new Map();
+      let alignedObjectsAreComplete = alignedObjectsPayload.length === expectedObjectIds.length && expectedObjectIds.length > 0;
+      if (alignedObjectsAreComplete) {
+        for (const [index, item] of alignedObjectsPayload.entries()) {
+          const objectId = asText(item?.object_id);
+          const rawObjectLevel = asText(item?.object_level);
+          if (
+            !objectId
+            || objectId !== expectedObjectIds[index]
+            || !expectedObjectIdSet.has(objectId)
+            || !OBJECT_LEVEL_VALUES.has(rawObjectLevel)
+            || alignedLevels.has(objectId)
+          ) {
+            alignedObjectsAreComplete = false;
+            break;
+          }
+          alignedLevels.set(objectId, normalizeObjectLevel(rawObjectLevel));
+        }
+      }
+      if (alignedObjectsAreComplete && alignedLevels.size === expectedObjectIds.length) {
+        alignedObjects = fallbackAlignedObjects.map((object) => ({
+          ...object,
+          object_level: alignedLevels.get(asText(object.object_id)) ?? normalizeObjectLevel(object.object_level),
+        }));
+        reason = asText(payload.reason) || reason;
+        alignmentMode = "llm";
+        fallbackReason = "";
+      } else {
+        fallbackReason = `LLM 返回结果未严格覆盖全部对象，要求 ${expectedObjectIds.length} 个 aligned_objects 且每项必须按输入顺序包含 object_id 与 object_level（四选一），已回退到启发式粒度推断。`;
+      }
+    } catch (error) {
+      throwIfWorkflowV2Aborted(options?.signal);
+      const message = getErrorMessage(error, "granularity_align llm failed");
+      fallbackReason = `LLM 粒度对齐调用失败：${message}，已回退到启发式粒度推断。`;
+    }
+
     const levelSummary = countWorkflowV2Values(alignedObjects.map((item) => item.object_level));
 
     return {
+      fused_objects: alignedObjects,
       aligned_objects: alignedObjects,
+      objects: alignedObjects,
       total_aligned_objects: alignedObjects.length,
       level_summary: levelSummary,
-      reason: "已为融合对象补齐统一粒度标签，减少系统、子系统、组件在同一层混写的问题。",
+      alignment_debug: {
+        mode: alignmentMode,
+        llm_attempted: true,
+        fallback_reason: alignmentMode === "llm" ? "" : fallbackReason,
+      },
+      reason,
     };
   }
 
   async functionAnalysisStage(objects, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
+    const safeObjects = (Array.isArray(objects) ? objects : []).map((object) => ({
+      ...object,
+      object_level: normalizeObjectLevel(object?.object_level),
+    }));
     let processedObjects = 0;
     let failedObjectsCount = 0;
     options?.onProgress?.({
       stage: "function_analysis",
       completed: 0,
-      total: objects.length,
+      total: safeObjects.length,
       failed: 0,
-      message: objects.length > 0
-        ? `第六阶段功能分析进行中：已完成 0 / ${objects.length} 个对象。`
+      message: safeObjects.length > 0
+        ? `第六阶段功能分析进行中：已完成 0 / ${safeObjects.length} 个对象。`
         : "第六阶段没有可分析核心功能的对象。",
     });
 
     const functionObjects = await mapWithConcurrency(
-      objects,
-      Math.min(4, Math.max(1, objects.length || 1)),
+      safeObjects,
+      Math.min(4, Math.max(1, safeObjects.length || 1)),
       async (object) => {
         throwIfWorkflowV2Aborted(options?.signal);
         try {
@@ -3835,11 +4175,11 @@ export class WorkflowV2Service extends LinearWorkflowService {
           options?.onProgress?.({
             stage: "function_analysis",
             completed: processedObjects,
-            total: objects.length,
+            total: safeObjects.length,
             failed: failedObjectsCount,
             object_id: object.object_id,
             object_name: object.object_name,
-            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${safeObjects.length} 个对象，失败 ${failedObjectsCount} 个。`,
           });
           return nextObject;
         } catch (error) {
@@ -3850,12 +4190,12 @@ export class WorkflowV2Service extends LinearWorkflowService {
           options?.onProgress?.({
             stage: "function_analysis",
             completed: processedObjects,
-            total: objects.length,
+            total: safeObjects.length,
             failed: failedObjectsCount,
             object_id: object.object_id,
             object_name: object.object_name,
             skipped: true,
-            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+            message: `第六阶段功能分析进行中：已完成 ${processedObjects} / ${safeObjects.length} 个对象，失败 ${failedObjectsCount} 个。`,
           });
           return {
             ...object,
@@ -3917,7 +4257,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
       total_function_objects: functionObjects.length,
       progress: {
         completed: functionObjects.length,
-        total: objects.length,
+        total: safeObjects.length,
         failed: failedFunctionObjects.length,
       },
       reason: failedFunctionObjects.length > 0
@@ -3928,21 +4268,25 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
   async objectDecomposeStage(objects, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
+    const safeObjects = (Array.isArray(objects) ? objects : []).map((object) => ({
+      ...object,
+      object_level: normalizeObjectLevel(object?.object_level),
+    }));
     let completedObjects = 0;
     let failedObjectsCount = 0;
     options?.onProgress?.({
       stage: "object_decompose",
       completed: 0,
-      total: objects.length,
+      total: safeObjects.length,
       failed: 0,
-      message: objects.length > 0
-        ? `第七阶段对象拆解进行中：已完成 0 / ${objects.length} 个对象。`
+      message: safeObjects.length > 0
+        ? `第七阶段对象拆解进行中：已完成 0 / ${safeObjects.length} 个对象。`
         : "第七阶段没有可拆解的对象。",
     });
 
     const decompositionResults = await mapWithConcurrency(
-      objects,
-      Math.min(4, Math.max(1, objects.length || 1)),
+      safeObjects,
+      Math.min(4, Math.max(1, safeObjects.length || 1)),
       async (object) => {
         throwIfWorkflowV2Aborted(options?.signal);
         const prompt = buildObjectDecomposePrompt(object);
@@ -3992,15 +4336,16 @@ export class WorkflowV2Service extends LinearWorkflowService {
           options?.onProgress?.({
             stage: "object_decompose",
             completed: completedObjects,
-            total: objects.length,
+            total: safeObjects.length,
             failed: failedObjectsCount,
             object_id: object.object_id,
             object_name: object.object_name,
             skipped: true,
-            message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+            message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${safeObjects.length} 个对象，失败 ${failedObjectsCount} 个。`,
           });
           return {
             object_id: object.object_id,
+            object_name: object.object_name,
             decompositions: [],
             reason: `对象 ${object.object_name} 拆解失败，已跳过该对象。`,
             failed_object: failedObject,
@@ -4021,21 +4366,22 @@ export class WorkflowV2Service extends LinearWorkflowService {
           }).filter((item) => item.parent_object_name && item.child_object_name && item.citation)
           : [];
 
-        options?.onProgress?.({
-          stage: "object_decompose",
-          completed: completedObjects,
-          total: objects.length,
-          failed: failedObjectsCount,
-          object_id: object.object_id,
-          object_name: object.object_name,
-          skipped: false,
-          message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${objects.length} 个对象，失败 ${failedObjectsCount} 个。`,
-        });
-        return {
-          object_id: object.object_id,
-          decompositions,
-          reason: asText(successPayload.data.reason) || `已基于 ${object.object_name} 的 citations 完成拆解。`,
-          llm_ensemble: successPayload.llm_ensemble ?? null,
+          options?.onProgress?.({
+            stage: "object_decompose",
+            completed: completedObjects,
+            total: safeObjects.length,
+            failed: failedObjectsCount,
+            object_id: object.object_id,
+            object_name: object.object_name,
+            skipped: false,
+            message: `第七阶段对象拆解进行中：已完成 ${completedObjects} / ${safeObjects.length} 个对象，失败 ${failedObjectsCount} 个。`,
+          });
+          return {
+            object_id: object.object_id,
+            object_name: object.object_name,
+            decompositions,
+            reason: asText(successPayload.data.reason) || `已基于 ${object.object_name} 的 citations 完成拆解。`,
+            llm_ensemble: successPayload.llm_ensemble ?? null,
           failed_object: null,
         };
       },
@@ -4044,26 +4390,26 @@ export class WorkflowV2Service extends LinearWorkflowService {
     const failedObjects = decompositionResults
       .map((item) => item.failed_object)
       .filter(Boolean);
+    const filteredDecomposition = filterWorkflowV2DecompositionResults(safeObjects, decompositionResults);
 
     return {
-      decomposition_results: decompositionResults.map((item) => ({
-        object_id: item.object_id,
-        decompositions: item.decompositions,
-        reason: item.reason,
-        llm_ensemble: item.llm_ensemble ?? null,
-      })),
+      decomposition_results: filteredDecomposition.decomposition_results,
       failed_objects: failedObjects,
-      total_decomposition_groups: decompositionResults.length,
-      total_decompositions: decompositionResults.reduce((sum, item) => sum + (Array.isArray(item.decompositions) ? item.decompositions.length : 0), 0),
+      skipped_decomposition_edges: filteredDecomposition.skipped_decomposition_edges,
+      valid_decomposition_edge_count: filteredDecomposition.valid_decomposition_edge_count,
+      pending_decomposition_edge_count: filteredDecomposition.pending_decomposition_edge_count,
+      skipped_decomposition_edge_count: filteredDecomposition.skipped_decomposition_edge_count,
+      total_decomposition_groups: filteredDecomposition.decomposition_results.length,
+      total_decompositions: filteredDecomposition.valid_decomposition_edge_count,
       total_failed_objects: failedObjects.length,
       progress: {
         completed: decompositionResults.length,
-        total: objects.length,
+        total: safeObjects.length,
         failed: failedObjects.length,
       },
       reason: failedObjects.length > 0
-        ? "已针对每个融合对象尝试拆解直接组成关系；失败对象已记录并跳过。"
-        : "已针对每个融合对象，依据其 citations 抽取直接组成关系。",
+        ? "已针对每个融合对象尝试拆解直接组成关系；失败对象已记录并跳过，同时过滤了不满足相邻层级约束的关系。"
+        : "已针对每个融合对象，依据其 citations 抽取直接组成关系，并过滤了不满足相邻层级约束的关系。",
     };
   }
 
@@ -4081,13 +4427,22 @@ export class WorkflowV2Service extends LinearWorkflowService {
   async graphBuildStage(objects, decompositionResults, options = {}) {
     throwIfWorkflowV2Aborted(options?.signal);
     const objectIdMap = this.mapObjectNameToId(objects);
+    const objectById = new Map((Array.isArray(objects) ? objects : []).map((object) => [asText(object?.object_id), object]));
     const edgeMap = new Map();
 
     for (const item of decompositionResults) {
       for (const decomposition of item.decompositions ?? []) {
-        const sourceObjectId = objectIdMap.get(normalizeObjectName(decomposition.parent_object_name));
-        const targetObjectId = objectIdMap.get(normalizeObjectName(decomposition.child_object_name));
-        if (!sourceObjectId || !targetObjectId || sourceObjectId === targetObjectId) {
+        const sourceObjectId = asText(decomposition.source_object_id)
+          || asText(decomposition.source)
+          || asText(decomposition.from)
+          || objectIdMap.get(normalizeObjectName(decomposition.parent_object_name));
+        const targetObjectId = asText(decomposition.target_object_id)
+          || asText(decomposition.target)
+          || asText(decomposition.to)
+          || objectIdMap.get(normalizeObjectName(decomposition.child_object_name));
+        const sourceObject = objectById.get(sourceObjectId);
+        const targetObject = objectById.get(targetObjectId);
+        if (!sourceObjectId || !targetObjectId || sourceObjectId === targetObjectId || !isAllowedContainsEdge(sourceObject, targetObject)) {
           continue;
         }
         const edgeKey = `${sourceObjectId}->${targetObjectId}->contains`;
@@ -4735,6 +5090,27 @@ export class WorkflowV2Service extends LinearWorkflowService {
         });
       }
       if (stageStartIndex <= 4) {
+        await runStage("granularity_align", async () => this.granularityAlignStage(state.fused_objects, {
+          signal: input?.signal,
+          llmClient: this.llmClient,
+          options: input?.options,
+        }), (output) => {
+          const alignedObjects = Array.isArray(output.fused_objects)
+            ? output.fused_objects
+            : Array.isArray(output.aligned_objects)
+              ? output.aligned_objects
+              : Array.isArray(output.objects)
+                ? output.objects
+                : state.fused_objects;
+          state.fused_objects = Array.isArray(alignedObjects)
+            ? alignedObjects.map((object) => ({
+              ...object,
+              object_level: normalizeObjectLevel(object?.object_level),
+            }))
+            : state.fused_objects;
+        });
+      }
+      if (stageStartIndex <= 5) {
         await runStage("function_analysis", async () => this.functionAnalysisStage(state.fused_objects, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4743,7 +5119,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.fused_objects = output.updated_objects;
         });
       }
-      if (stageStartIndex <= 5) {
+      if (stageStartIndex <= 6) {
         await runStage("object_decompose", async () => this.objectDecomposeStage(state.fused_objects, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4751,7 +5127,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.decomposition_results = output.decomposition_results;
         });
       }
-      if (stageStartIndex <= 6) {
+      if (stageStartIndex <= 7) {
         await runStage("graph_build", async () => this.graphBuildStage(state.fused_objects, state.decomposition_results, {
           signal: input?.signal,
         }), (output) => {
@@ -4760,7 +5136,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
           state.removed_cycle_edges = output.removed_cycle_edges;
         });
       }
-      if (stageStartIndex <= 7) {
+      if (stageStartIndex <= 8) {
         await runStage("ablation_analysis", async () => this.ablationAnalysisStage(state.fused_objects, state.edges, {
           signal: input?.signal,
           onProgress: (progressPayload) => handlers.onStatus?.(progressPayload),
@@ -4771,7 +5147,7 @@ export class WorkflowV2Service extends LinearWorkflowService {
 
       const result = {
         ...buildWorkflowV2ResultFromState(state),
-        reason: "已完成文档分块、预筛 chunk、对象抽取、对象融合、核心功能分析、拆解建图与消融分析的全流程。",
+        reason: "已完成文档分块、预筛 chunk、对象抽取、对象融合、粒度对齐、核心功能分析、拆解建图与消融分析的全流程。",
       };
       const finishedAt = new Date().toISOString();
       await this.writeWorkflowSnapshot(conversationId, {

@@ -36,8 +36,17 @@ export const WORKFLOW_V2_STAGE_DEFINITIONS = [
     exitCriteria: ["fused objects 已生成"],
   },
   {
-    key: "function_analysis",
+    key: "granularity_align",
     short: "05",
+    title: "粒度对齐",
+    detail: "对融合后的对象做层级/粒度归一，标注 component、function_unit、subsystem、system",
+    retryable: true,
+    entryCriteria: ["fused objects 已生成"],
+    exitCriteria: ["object_level 已生成", "object_level 已归一"],
+  },
+  {
+    key: "function_analysis",
+    short: "06",
     title: "功能分析",
     detail: "基于 citation 提取对象核心功能",
     retryable: true,
@@ -46,7 +55,7 @@ export const WORKFLOW_V2_STAGE_DEFINITIONS = [
   },
   {
     key: "object_decompose",
-    short: "06",
+    short: "07",
     title: "对象拆解",
     detail: "基于 citation 提取直接组成关系",
     retryable: true,
@@ -55,7 +64,7 @@ export const WORKFLOW_V2_STAGE_DEFINITIONS = [
   },
   {
     key: "graph_build",
-    short: "07",
+    short: "08",
     title: "图构建",
     detail: "构建 contains DAG 并消解环",
     retryable: true,
@@ -64,7 +73,7 @@ export const WORKFLOW_V2_STAGE_DEFINITIONS = [
   },
   {
     key: "ablation_analysis",
-    short: "08",
+    short: "09",
     title: "消融",
     detail: "按核心功能标准做兄弟/父级影响分析",
     retryable: true,
